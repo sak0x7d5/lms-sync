@@ -1,3 +1,3 @@
-module github.com/sak0x7d5/sakai-sync
+module github.com/sak0x7d5/lms-sync
 
 go 1.21

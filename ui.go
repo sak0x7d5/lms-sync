@@ -69,7 +69,7 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 	}
 
 	url := fmt.Sprintf("http://%s/?t=%s", ln.Addr().String(), s.token)
-	fmt.Println("sakai-sync is running at:")
+	fmt.Println("lms-sync is running at:")
 	fmt.Println("   ", url)
 	fmt.Println("\nClose this window to quit.")
 

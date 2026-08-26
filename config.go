@@ -286,7 +286,7 @@ func (c *Config) Save() error {
 	}
 
 	var b strings.Builder
-	b.WriteString("# sakai-sync configuration\n#\n")
+	b.WriteString("# lms-sync configuration\n#\n")
 	b.WriteString("# Personal file: your account, your courses, your password.\n")
 	b.WriteString("# Git-ignored by default. Never commit it or send it to anyone.\n\n")
 	fmt.Fprintf(&b, "base_url    = %s\n", tomlQuote(c.BaseURL))
@@ -357,7 +357,7 @@ func (c *Config) Validate() error {
 			"No username. This is your LMS login, often a roll number.", nil)
 	case c.Password == "":
 		return failf(KindConfig, "check settings",
-			"No password. Put it in config.toml or set SAKAI_PASS.", nil)
+			"No password. Put it in config.toml or set LMS_PASS.", nil)
 	}
 	return nil
 }

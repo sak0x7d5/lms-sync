@@ -38,7 +38,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
-          out=sakai-sync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          out=lms-sync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           go build -trimpath -ldflags="-s -w" -o "$out" .
           echo "ARTIFACT=$out" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4

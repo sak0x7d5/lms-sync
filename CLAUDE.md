@@ -9,16 +9,25 @@ A single-binary Go tool that mirrors Sakai LMS course material to a local folder
 ## Commands
 
 ```bash
-go build                    # produces sakai-sync(.exe) in the repo root
+go build                    # produces lms-sync(.exe) in the repo root
 go vet ./...
 go test ./...               # ~7s; the cancellation test sleeps
 go test -run TestSyncEndToEnd -v .    # one test
-go build -trimpath -ldflags="-s -w" -o sakai-sync-linux-amd64 .   # release-style build (GOOS/GOARCH to cross-compile)
+go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style build (GOOS/GOARCH to cross-compile)
 ```
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
 Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`.
+
+## Naming: the tool is `lms-sync`, the protocol is Sakai
+
+The project was renamed from `sakai-sync` because students know the thing as "the LMS", not as Sakai. The generic name is deliberate; so is every remaining mention of Sakai. Keep the distinction:
+
+- **Project identity** — binary, module path, repo, window title, user agent, `LMS_USER` / `LMS_PASS` — is `lms-sync`.
+- **Sakai stays wherever it is a factual claim about the server software**: the `fakeSakai` test harness, the comments describing Sakai's 200-with-login-form login and its directory index, the hint text in errors.go, and the README's supported-platform section.
+
+It only speaks native Sakai form login — not Canvas, Moodle or Blackboard, and not any SSO front end. Don't let the generic name lead to copy that implies otherwise.
 
 ## Hard constraint: standard library only
 
@@ -63,7 +72,7 @@ Bind loopback-only on a random port; a random hex token generated at startup is 
 
 ## Config and secrets
 
-`config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `SAKAI_USER` / `SAKAI_PASS` override the file.
+`config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file.
 
 The TOML reader is deliberately partial: top-level keys, one `[courses]` table, single/double-quoted strings, ints, string arrays. Unrecognised lines are skipped rather than treated as fatal. The writer emits single-quoted literal strings so Windows paths (`'D:\Uni\Courses'`) survive.
 
@@ -71,4 +80,4 @@ The TOML reader is deliberately partial: top-level keys, one `[courses]` table, 
 
 ## Tests
 
-All in [sakai_test.go](sakai_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`. Extend that fake rather than reaching for the network; there are no live-server tests.
+All in [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`. Extend that fake rather than reaching for the network; there are no live-server tests.

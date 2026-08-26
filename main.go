@@ -33,7 +33,7 @@ func run() int {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Println("sakai-sync", version)
+		fmt.Println("lms-sync", version)
 		return 0
 	}
 
@@ -55,10 +55,10 @@ func run() int {
 	}
 	// Environment wins over the file, so a scheduled run can avoid storing
 	// a password on disk.
-	if v := os.Getenv("SAKAI_USER"); v != "" {
+	if v := os.Getenv("LMS_USER"); v != "" {
 		cfg.Username = v
 	}
-	if v := os.Getenv("SAKAI_PASS"); v != "" {
+	if v := os.Getenv("LMS_PASS"); v != "" {
 		cfg.Password = v
 	}
 
@@ -78,12 +78,12 @@ func run() int {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `sakai-sync %s — mirror Sakai LMS course material.
+	fmt.Fprintf(os.Stderr, `lms-sync %s — mirror Sakai LMS course material.
 
-  sakai-sync                 open the interface (default)
-  sakai-sync --sync          sync and exit, for scheduled runs
-  sakai-sync --discover      find your courses and save them
-  sakai-sync --dry-run       show what would download, write nothing
+  lms-sync                 open the interface (default)
+  lms-sync --sync          sync and exit, for scheduled runs
+  lms-sync --discover      find your courses and save them
+  lms-sync --dry-run       show what would download, write nothing
 
 Options:
 `, version)

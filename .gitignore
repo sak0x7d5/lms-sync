@@ -9,9 +9,9 @@ manifest.json
 Courses/
 
 # Build output
-sakai-sync
-sakai-sync.exe
-sakai-sync-*
+lms-sync
+lms-sync.exe
+lms-sync-*
 dist/
 
 # OS

@@ -1,4 +1,4 @@
-# sakai-sync
+# lms-sync
 
 Mirror your course materials from a [Sakai](https://www.sakailms.org/) LMS to a
 folder on your machine — slides, handouts and code, as ordinary local files.
@@ -15,7 +15,7 @@ small window opens in your browser. Fill in four fields once and press Sync.
 ## Use it
 
 1. Download the binary for your system from
-   [Releases](https://github.com/sak0x7d5/sakai-sync/releases).
+   [Releases](https://github.com/sak0x7d5/lms-sync/releases).
 2. Put it in a folder of its own — it keeps `config.toml` and `manifest.json`
    beside itself.
 3. Run it. Your browser opens.
@@ -34,27 +34,27 @@ The interface is optional. Every function works headless, which is what you
 want for a scheduled run:
 
 ```
-sakai-sync                 open the interface (default)
-sakai-sync --sync          sync and exit
-sakai-sync --discover      find courses, save them, exit
-sakai-sync --dry-run       show what would download, write nothing
-sakai-sync --dest PATH     override the destination
-sakai-sync --insecure      skip TLS verification (last resort)
+lms-sync                 open the interface (default)
+lms-sync --sync          sync and exit
+lms-sync --discover      find courses, save them, exit
+lms-sync --dry-run       show what would download, write nothing
+lms-sync --dest PATH     override the destination
+lms-sync --insecure      skip TLS verification (last resort)
 ```
 
 Exit codes: `0` success, `1` some files failed, `2` bad credentials or
 configuration, `130` interrupted. Enough for a scheduler to act on.
 
-**Windows** — Task Scheduler → Daily → Program `sakai-sync.exe`, arguments
+**Windows** — Task Scheduler → Daily → Program `lms-sync.exe`, arguments
 `--sync`, "Start in" set to its folder.
 
-**macOS / Linux** — `0 19 * * * cd ~/sakai-sync && ./sakai-sync --sync`
+**macOS / Linux** — `0 19 * * * cd ~/lms-sync && ./lms-sync --sync`
 
 ## Build from source
 
 ```bash
-git clone https://github.com/sak0x7d5/sakai-sync
-cd sakai-sync
+git clone https://github.com/sak0x7d5/lms-sync
+cd lms-sync
 go build
 ```
 
@@ -64,8 +64,8 @@ vendor or audit. `go test ./...` runs the suite against a fake Sakai server.
 Cross-compile for everything from one machine:
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o sakai-sync.exe
-GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o sakai-sync-mac
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o lms-sync.exe
+GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-mac
 ```
 
 ---
@@ -116,7 +116,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 |---|---|---|
 | `base_url` | — | your LMS; a bare hostname is accepted |
 | `username` | — | LMS login, often a roll number rather than an email |
-| `password` | — | or set `SAKAI_PASS` in the environment instead |
+| `password` | — | or set `LMS_PASS` in the environment instead |
 | `destination` | `Courses` | where files are saved |
 | `timeout` | `60` | seconds per request |
 | `delay` | `200` | milliseconds between requests |
@@ -124,7 +124,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `login_path` | auto | pin the login endpoint |
 | `extensions` | common types | which files to download |
 
-`SAKAI_USER` and `SAKAI_PASS` override the file, so a scheduled run need not
+`LMS_USER` and `LMS_PASS` override the file, so a scheduled run need not
 store a password on disk.
 
 **Never commit `config.toml`.** It's git-ignored. A password pushed once stays
