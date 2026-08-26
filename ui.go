@@ -28,6 +28,7 @@ type server struct {
 
 	mu       sync.Mutex
 	running  bool
+	browsing bool
 	cancel   context.CancelFunc
 	subs     map[chan Event]struct{}
 	subsMu   sync.Mutex
@@ -58,6 +59,7 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 	mux.HandleFunc("/api/discover", s.auth(s.handleDiscover))
 	mux.HandleFunc("/api/sync", s.auth(s.handleSync))
 	mux.HandleFunc("/api/stop", s.auth(s.handleStop))
+	mux.HandleFunc("/api/browse", s.auth(s.handleBrowse))
 	mux.HandleFunc("/api/events", s.auth(s.handleEvents))
 
 	// Bind to loopback only. Without this, anything else on the network
@@ -136,6 +138,7 @@ type configPayload struct {
 	Running     bool     `json:"running"`
 	Version     string   `json:"version"`
 	DefaultLMS  string   `json:"default_lms"`
+	CanBrowse   bool     `json:"can_browse"`
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -175,6 +178,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Running:     s.running,
 		Version:     version,
 		DefaultLMS:  DefaultLMS,
+		CanBrowse:   canBrowse,
 	})
 }
 
@@ -307,6 +311,46 @@ func hintSuffix(err error) string {
 		return "\n\n" + h
 	}
 	return ""
+}
+
+// canBrowse is resolved once at startup: whether a chooser exists cannot
+// change while the program runs, and the answer decides whether the browser
+// shows a Browse button at all. Offering one that cannot work is worse than
+// not offering it.
+var canBrowse = func() bool { _, ok := folderPicker(); return ok }()
+
+// handleBrowse opens the operating system's folder chooser and returns what
+// the user picked. Nothing is saved here — the path goes back into the form,
+// so a mistaken choice costs nothing until Save is pressed.
+func (s *server) handleBrowse(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.browsing {
+		s.mu.Unlock()
+		writeErr(w, http.StatusConflict, "A folder chooser is already open.",
+			"Finish with that window first.")
+		return
+	}
+	s.browsing = true
+	start := s.cfg.Destination
+	s.mu.Unlock()
+
+	defer func() {
+		s.mu.Lock()
+		s.browsing = false
+		s.mu.Unlock()
+	}()
+
+	path, err := pickFolder(r.Context(), start)
+	if err != nil {
+		// Closing the dialog is an ordinary answer, not a failure.
+		if KindOf(err) == KindCancelled {
+			json.NewEncoder(w).Encode(map[string]any{"cancelled": true})
+			return
+		}
+		writeErr(w, statusFor(err), err.Error(), hintOf(err))
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"path": path})
 }
 
 func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {

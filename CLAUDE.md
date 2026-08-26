@@ -43,6 +43,7 @@ Two front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local
 - [errors.go](errors.go) — `Kind`, `*Error`, `Explain`.
 - [names.go](names.go) — filename/folder/URL normalisation.
 - [manifest.go](manifest.go) — the "already downloaded" record.
+- [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 ### Errors are classified, and the classification is load-bearing
@@ -65,6 +66,15 @@ These encode bugs that already cost someone real time — the comments in the so
 ### Freshness check
 
 `manifest.json` maps file URL → byte size. A file is skipped only if it exists on disk *and* the manifest size matches — that catches an instructor re-uploading a corrected deck under the same name. The manifest is saved after each course so an interrupt doesn't force a full re-fetch.
+
+### Why the folder chooser is server-side
+
+A browser is never told the real path of a folder the user picks — the File System Access API returns an opaque handle, and `webkitdirectory` gives relative paths only. So `/api/browse` has the *native* process open the OS chooser (PowerShell `FolderBrowserDialog`, `osascript choose folder`, `zenity`/`kdialog`) and return the path. Two things to preserve if you touch it:
+
+- The starting folder travels in the `LMS_SYNC_START` environment variable, never interpolated into the PowerShell or AppleScript source, so a path containing a quote cannot be executed as code.
+- Cancelling is not a failure. Each tool signals it differently, which is why `interpretPicker` is a pure function tested without a display (`TestInterpretPicker`). A red banner on a plain cancel is the bug to avoid.
+
+`canBrowse` is resolved once at startup and sent to the page, which hides the button entirely when no chooser exists — better than a button that does nothing.
 
 ### The web UI's security model
 

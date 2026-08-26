@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -469,5 +470,88 @@ func TestSessionExpiryDetected(t *testing.T) {
 	if KindOf(err) != KindSession {
 		t.Fatalf("kind = %v, want session (expiry must be distinguishable "+
 			"from a bad password)", KindOf(err))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The folder chooser
+// ---------------------------------------------------------------------------
+
+// Every chooser reports "the user closed the dialog" differently, and the one
+// mistake that matters is showing a red error for a plain cancel. This runs
+// without a display attached.
+func TestInterpretPicker(t *testing.T) {
+	exit1 := &exec.ExitError{ProcessState: &os.ProcessState{}}
+
+	cases := []struct {
+		name      string
+		stdout    string
+		stderr    string
+		runErr    error
+		want      string
+		cancelled bool
+		fails     bool
+	}{
+		{name: "powershell chose a folder",
+			stdout: `C:\University\Courses`, want: `C:\University\Courses`},
+		{name: "powershell cancelled: exits 0 having printed nothing",
+			cancelled: true},
+		{name: "osascript cancelled",
+			stderr: "execution error: User canceled. (-128)", runErr: exit1, cancelled: true},
+		{name: "zenity cancelled: exits 1 in silence",
+			runErr: exit1, cancelled: true},
+		{name: "zenity chose a folder, with GTK noise on stderr",
+			stdout: "/home/sarim/Courses\n",
+			stderr: "Gtk-Message: Failed to load module \"canberra-gtk-module\"",
+			want:   "/home/sarim/Courses"},
+		{name: "zenity cancelled, with GTK noise on stderr",
+			stderr: "Gtk-Message: Failed to load module \"canberra-gtk-module\"",
+			runErr: exit1, cancelled: true},
+		{name: "a genuine failure is not mistaken for a cancel",
+			stderr: "Add-Type : Cannot find type System.Windows.Forms",
+			runErr: exit1, fails: true},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, cancelled, err := interpretPicker(c.stdout, c.stderr, c.runErr)
+			if c.fails {
+				if err == nil {
+					t.Fatalf("expected a failure, got path %q cancelled=%v", got, cancelled)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected failure: %v", err)
+			}
+			if cancelled != c.cancelled {
+				t.Errorf("cancelled = %v, want %v", cancelled, c.cancelled)
+			}
+			if got != c.want {
+				t.Errorf("path = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// A start folder that no longer exists must be dropped, not passed on: the
+// macOS chooser raises instead of opening when handed a missing path.
+func TestUsableStartDir(t *testing.T) {
+	dir := t.TempDir()
+	if got := usableStartDir(dir); got != dir {
+		t.Errorf("existing folder: got %q, want %q", got, dir)
+	}
+	if got := usableStartDir(filepath.Join(dir, "nope")); got != "" {
+		t.Errorf("missing folder: got %q, want empty", got)
+	}
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := usableStartDir(file); got != "" {
+		t.Errorf("a file is not a folder: got %q, want empty", got)
+	}
+	if got := usableStartDir("   "); got != "" {
+		t.Errorf("blank: got %q, want empty", got)
 	}
 }

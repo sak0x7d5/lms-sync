@@ -60,6 +60,9 @@
                 border-radius:20px;padding:3px 10px;margin:3px 4px 0 0;color:var(--ink)}
   .link{background:none;border:none;color:var(--accent);padding:0;font-weight:500;
         text-decoration:underline;cursor:pointer;font-size:13px}
+  .picker{display:flex;gap:8px;align-items:center}
+  .picker input{flex:1;min-width:0}
+  .picker button{white-space:nowrap;flex:none}
   .hidden{display:none}
 </style>
 </head>
@@ -90,7 +93,10 @@
     </div>
     <div class="field">
       <label for="dest">Save files to</label>
-      <input type="text" id="dest" spellcheck="false">
+      <div class="picker">
+        <input type="text" id="dest" spellcheck="false">
+        <button type="button" id="browse" class="hidden">Browse…</button>
+      </div>
       <div class="hint">Only course folders go here. Point it at Google Drive to sync everywhere.</div>
     </div>
     <div class="row">
@@ -147,6 +153,7 @@ function setRunning(on) {
   $("dry").disabled = on;
   $("stop").disabled = !on;
   $("discover").disabled = on;
+  $("browse").disabled = on;
 }
 
 async function loadConfig() {
@@ -159,6 +166,8 @@ async function loadConfig() {
     $("dest").value = c.destination || "";
     $("pass").placeholder = c.configured ? "•••••••• (saved)" : "";
     $("ver").textContent = "v" + c.version;
+    // The server decides: a button that cannot open anything is worse than none.
+    $("browse").classList.toggle("hidden", !c.can_browse);
     showCourses(c.courses || []);
     // Configured already? Collapse settings and get out of the way.
     if (c.configured && (c.courses || []).length) $("settings").classList.add("hidden");
@@ -194,6 +203,27 @@ async function save(quiet) {
   $("pass").placeholder = c.configured ? "•••••••• (saved)" : "";
   if (!quiet) banner("Settings saved.", "ok");
 }
+
+$("browse").onclick = async () => {
+  const btn = $("browse"), label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Choosing…";
+  try {
+    const r = await api("/api/browse", { method: "POST" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "the folder chooser could not be opened");
+    // A closed dialog is not an error; leave the field exactly as it was.
+    if (data.path) {
+      $("dest").value = data.path;
+      banner("", "");
+    }
+  } catch (e) {
+    banner(String(e.message || e), "err");
+  } finally {
+    btn.textContent = label;
+    btn.disabled = running;
+  }
+};
 
 $("save").onclick = async () => {
   try { await save(false); } catch (e) { banner(e.message, "err"); }
