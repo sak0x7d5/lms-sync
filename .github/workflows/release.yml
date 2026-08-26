@@ -38,8 +38,15 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: '0'
         run: |
+          # A tagged build reports the tag; a manual run reports the commit,
+          # so a dispatch artifact can never be mistaken for a release.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev+${GITHUB_SHA::7}"
+          fi
           out=lms-sync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-          go build -trimpath -ldflags="-s -w" -o "$out" .
+          go build -trimpath -ldflags="-s -w -X main.version=$VERSION" -o "$out" .
           echo "ARTIFACT=$out" >> "$GITHUB_ENV"
       - uses: actions/upload-artifact@v4
         with:

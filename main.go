@@ -11,7 +11,10 @@ import (
 	"syscall"
 )
 
-const version = "1.0.0"
+// version is stamped at build time by the release workflow:
+//   go build -ldflags "-X main.version=1.2.0"
+// A local build reports -dev, so an untagged binary never claims a release.
+var version = "1.0.0-dev"
 
 func main() {
 	os.Exit(run())
