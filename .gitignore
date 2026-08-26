@@ -1,0 +1,19 @@
+# Personal — identifies your account, may hold your password
+config.toml
+
+# Local state
+manifest.json
+*.part
+
+# Downloaded course material (not yours to redistribute)
+Courses/
+
+# Build output
+sakai-sync
+sakai-sync.exe
+sakai-sync-*
+dist/
+
+# OS
+.DS_Store
+Thumbs.db

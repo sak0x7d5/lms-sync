@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sakai-sync</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#fff; --ink:#14181f; --muted:#5d6673;
+    --line:#e2e6ec; --accent:#2f6fed; --ok:#1a7f4b; --warn:#a86200; --bad:#b4232a;
+    --radius:10px;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#14171c;--panel:#1b1f26;--ink:#e8ecf2;--muted:#98a2b3;
+          --line:#2b313b;--accent:#5b8dff;--ok:#4ac07f;--warn:#e0a33a;--bad:#ff6b6b}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
+  .wrap{max-width:720px;margin:0 auto;padding:28px 20px 60px}
+  header{display:flex;align-items:baseline;gap:10px;margin-bottom:22px}
+  h1{font-size:19px;margin:0;letter-spacing:-.01em}
+  .ver{color:var(--muted);font-size:12px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:20px;margin-bottom:16px}
+  label{display:block;font-size:12px;font-weight:600;color:var(--muted);
+        text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}
+  input[type=text],input[type=password]{
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
+    background:var(--bg);color:var(--ink);font:inherit;font-size:14px}
+  input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
+  .field{margin-bottom:14px}
+  .hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  button{font:inherit;font-size:14px;font-weight:600;padding:9px 16px;border-radius:7px;
+         border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .spacer{flex:1}
+  #log{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:12px;
+       height:260px;overflow-y:auto;font-family:ui-monospace,"Cascadia Code",Consolas,monospace;
+       font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+  #log:empty::after{content:"Ready.";color:var(--muted)}
+  .l-course{color:var(--accent);font-weight:600;margin-top:8px}
+  .l-file{color:var(--ok)}
+  .l-warn{color:var(--warn)}
+  .l-error{color:var(--bad);font-weight:600}
+  .l-done{color:var(--muted);margin-top:8px}
+  .stats{display:flex;gap:18px;font-size:13px;color:var(--muted);margin-top:12px}
+  .stats b{color:var(--ink);font-variant-numeric:tabular-nums}
+  .banner{border-radius:7px;padding:11px 13px;margin-bottom:14px;font-size:13.5px;
+          white-space:pre-wrap;display:none}
+  .banner.err{display:block;background:color-mix(in srgb,var(--bad) 12%,transparent);
+              border:1px solid var(--bad)}
+  .banner.ok{display:block;background:color-mix(in srgb,var(--ok) 12%,transparent);
+             border:1px solid var(--ok)}
+  .courses{font-size:13px;color:var(--muted);margin-top:10px}
+  .courses span{display:inline-block;background:var(--bg);border:1px solid var(--line);
+                border-radius:20px;padding:3px 10px;margin:3px 4px 0 0;color:var(--ink)}
+  .link{background:none;border:none;color:var(--accent);padding:0;font-weight:500;
+        text-decoration:underline;cursor:pointer;font-size:13px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>sakai-sync</h1><span class="ver" id="ver"></span>
+    <div class="spacer"></div>
+    <button class="link" id="toggleSettings">Settings</button>
+  </header>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="card" id="settings">
+    <div class="field">
+      <label for="base">LMS address</label>
+      <input type="text" id="base" spellcheck="false" autocapitalize="off">
+      <div class="hint">Your university's LMS. A bare hostname works.</div>
+    </div>
+    <div class="field">
+      <label for="user">Username</label>
+      <input type="text" id="user" spellcheck="false" autocapitalize="off">
+      <div class="hint">Your LMS login — often a roll number, not an email.</div>
+    </div>
+    <div class="field">
+      <label for="pass">Password</label>
+      <input type="password" id="pass" autocomplete="current-password">
+    </div>
+    <div class="field">
+      <label for="dest">Save files to</label>
+      <input type="text" id="dest" spellcheck="false">
+      <div class="hint">Only course folders go here. Point it at Google Drive to sync everywhere.</div>
+    </div>
+    <div class="row">
+      <button id="save">Save</button>
+      <button id="discover">Find my courses</button>
+    </div>
+    <div class="courses" id="courses"></div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:14px">
+      <button class="primary" id="sync">Sync</button>
+      <button id="dry">Dry run</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+    <div id="log"></div>
+    <div class="stats">
+      <div>New <b id="s-new">0</b></div>
+      <div>Current <b id="s-cur">0</b></div>
+      <div>Failed <b id="s-fail">0</b></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const token = new URLSearchParams(location.search).get("t") || "";
+const $ = id => document.getElementById(id);
+let running = false;
+
+const api = (path, opts = {}) => fetch(path + (path.includes("?") ? "&" : "?") + "t=" + token, {
+  ...opts, headers: { "Content-Type": "application/json", "X-Token": token, ...(opts.headers||{}) }
+});
+
+function banner(msg, kind) {
+  const b = $("banner");
+  b.textContent = msg || "";
+  b.className = "banner" + (msg ? " " + kind : "");
+}
+
+function line(text, cls) {
+  const log = $("log");
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+  const div = document.createElement("div");
+  div.className = cls;
+  div.textContent = text;
+  log.appendChild(div);
+  // Only follow the tail if the user hasn't scrolled up to read something.
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function setRunning(on) {
+  running = on;
+  $("sync").disabled = on;
+  $("dry").disabled = on;
+  $("stop").disabled = !on;
+  $("discover").disabled = on;
+}
+
+async function loadConfig() {
+  try {
+    const r = await api("/api/config");
+    if (!r.ok) throw new Error("could not load settings");
+    const c = await r.json();
+    $("base").value = c.base_url || c.default_lms || "";
+    $("user").value = c.username || "";
+    $("dest").value = c.destination || "";
+    $("pass").placeholder = c.configured ? "•••••••• (saved)" : "";
+    $("ver").textContent = "v" + c.version;
+    showCourses(c.courses || []);
+    // Configured already? Collapse settings and get out of the way.
+    if (c.configured && (c.courses || []).length) $("settings").classList.add("hidden");
+    setRunning(c.running);
+  } catch (e) { banner(String(e.message || e), "err"); }
+}
+
+function showCourses(list) {
+  const el = $("courses");
+  el.innerHTML = "";
+  if (!list.length) { el.textContent = "No courses yet — use “Find my courses”."; return; }
+  list.forEach(c => {
+    const s = document.createElement("span");
+    s.textContent = c.Folder || c.folder;
+    el.appendChild(s);
+  });
+}
+
+async function save(quiet) {
+  const body = JSON.stringify({
+    base_url: $("base").value.trim(),
+    username: $("user").value.trim(),
+    password: $("pass").value,
+    destination: $("dest").value.trim(),
+  });
+  const r = await api("/api/config", { method: "POST", body });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || "settings could not be saved");
+  }
+  $("pass").value = "";
+  const c = await r.json();
+  $("pass").placeholder = c.configured ? "•••••••• (saved)" : "";
+  if (!quiet) banner("Settings saved.", "ok");
+}
+
+$("save").onclick = async () => {
+  try { await save(false); } catch (e) { banner(e.message, "err"); }
+};
+
+$("toggleSettings").onclick = () => $("settings").classList.toggle("hidden");
+
+$("discover").onclick = async () => {
+  banner("", "");
+  try {
+    await save(true);
+    $("discover").disabled = true;
+    $("discover").textContent = "Looking…";
+    const r = await api("/api/discover", { method: "POST" });
+    const data = await r.json();
+    if (!r.ok) throw new Error((data.error || "discovery failed") + (data.hint ? "\n\n" + data.hint : ""));
+    showCourses(data.courses || []);
+    banner("Found " + (data.courses || []).length + " course(s).", "ok");
+  } catch (e) {
+    banner(e.message, "err");
+  } finally {
+    $("discover").disabled = false;
+    $("discover").textContent = "Find my courses";
+  }
+};
+
+async function startSync(dry) {
+  banner("", "");
+  $("log").innerHTML = "";
+  $("s-new").textContent = $("s-cur").textContent = $("s-fail").textContent = "0";
+  try {
+    await save(true);
+    const r = await api("/api/sync?dry=" + (dry ? "1" : "0"), { method: "POST" });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error((e.error || "could not start") + (e.hint ? "\n\n" + e.hint : ""));
+    }
+    setRunning(true);
+    line(dry ? "Dry run — nothing will be written." : "Syncing…", "l-done");
+  } catch (e) { banner(e.message, "err"); }
+}
+
+$("sync").onclick = () => startSync(false);
+$("dry").onclick = () => startSync(true);
+$("stop").onclick = () => api("/api/stop", { method: "POST" });
+
+// Server-Sent Events: the stream stays open for the life of the page and
+// reconnects itself if the connection drops.
+const es = new EventSource("/api/events?t=" + token);
+es.onmessage = ev => {
+  let e; try { e = JSON.parse(ev.data); } catch { return; }
+  switch (e.type) {
+    case "course": line(e.course, "l-course"); break;
+    case "file":   line("  + " + e.path, "l-file"); break;
+    case "warn":   line("  ! " + (e.path ? e.path + " " : "") + e.message, "l-warn"); break;
+    case "error":  line(e.message, "l-error"); banner(e.message, "err"); break;
+    case "done":
+      setRunning(false);
+      line(e.message || ("Finished — " + e.new + " new, " + e.current + " current, " + e.failed + " failed."), "l-done");
+      break;
+  }
+  if (e.new !== undefined)     $("s-new").textContent = e.new;
+  if (e.current !== undefined) $("s-cur").textContent = e.current;
+  if (e.failed !== undefined)  $("s-fail").textContent = e.failed;
+};
+
+loadConfig();
+</script>
+</body>
+</html>
