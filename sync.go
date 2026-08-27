@@ -143,7 +143,7 @@ func (c *Client) Discover(ctx context.Context) ([]Course, error) {
 // Event is one thing worth telling the user about. The CLI prints these; the
 // web UI streams them to the browser.
 type Event struct {
-	Type    string `json:"type"` // course | section | file | skip | warn | error | done
+	Type    string `json:"type"` // start | course | section | file | skip | warn | error | done
 	Course  string `json:"course,omitempty"`
 	Section string `json:"section,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -222,6 +222,12 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 			"Could not create the destination folder. Check the drive exists\n"+
 				"and that you have permission to write there.", err)
 	}
+
+	// Say where the files are going before writing any. A relative
+	// destination resolves against the working directory, not the folder the
+	// executable sits in, so "where did my files go?" is otherwise a genuinely
+	// hard question to answer from the log alone.
+	report(Event{Type: "start", Path: dest})
 
 	r := &syncRun{c: c, cfg: cfg, manifest: manifest, dest: dest,
 		dryRun: dryRun, report: report}

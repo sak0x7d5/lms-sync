@@ -179,6 +179,8 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 
 	report := func(e Event) {
 		switch e.Type {
+		case "start":
+			fmt.Printf("\nSaving to %s\n", e.Path)
 		case "course":
 			fmt.Printf("\n%s\n", e.Course)
 		case "section":

@@ -278,6 +278,7 @@ const es = new EventSource("/api/events?t=" + token);
 es.onmessage = ev => {
   let e; try { e = JSON.parse(ev.data); } catch { return; }
   switch (e.type) {
+    case "start":   line("Saving to " + e.path, "l-done"); break;
     case "course":  line(e.course, "l-course"); break;
     case "section": line("  [" + e.section + "]", "l-section"); break;
     case "file":    line("  + " + e.path, "l-file"); break;
