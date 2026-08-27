@@ -986,3 +986,43 @@ func TestUnknownSectionsAreDropped(t *testing.T) {
 		t.Error("a config with no valid section would sync nothing at all")
 	}
 }
+
+// A manifest entry is not on its own permission to skip a file. If the file
+// is gone from disk — deleted by hand, or never written in the first place —
+// the record must not hide that. This is what makes deleting manifest.json
+// unnecessary as a repair: a missing file is always fetched again.
+func TestMissingFileIsFetchedAgainDespiteTheManifest(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"resources", "syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	ctx := context.Background()
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(ctx, client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// Remove one download and one rendered page, leaving the manifest intact.
+	page := filepath.Join(cfg.Destination, "Programming", "Syllabus", "Syllabus.html")
+	pdf := filepath.Join(cfg.Destination, "Programming", "syllabus.pdf")
+	for _, p := range []string{page, pdf} {
+		if err := os.Remove(p); err != nil {
+			t.Fatalf("could not stage the test: %v", err)
+		}
+	}
+
+	res, err := Sync(ctx, client, cfg, manifest, false, func(Event) {})
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if res.New != 2 {
+		t.Errorf("new = %d, want 2 — the manifest hid a file that was gone", res.New)
+	}
+	for _, p := range []string{page, pdf} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("not restored: %v", err)
+		}
+	}
+}
