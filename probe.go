@@ -89,8 +89,9 @@ func (c *Client) Probe(ctx context.Context, course Course, eid string) probeRepo
 	// The status alone doesn't settle it: a 200 whose shape we can't read is
 	// just as much a fallback case as a 404.
 	if items, err := c.syllabusFromAPI(ctx, course.ID); err == nil && len(items) > 0 {
-		syl.Result += fmt.Sprintf(" — parsed %d entr%s", len(items),
-			plural(len(items), "y", "ies"))
+		syl.Result += fmt.Sprintf(" — parsed %d entr%s, %d attachment%s",
+			len(items), plural(len(items), "y", "ies"),
+			len(attachmentURLs(c, items)), plural(len(attachmentURLs(c, items)), "", "s"))
 	} else if strings.HasPrefix(syl.Result, "HTTP 200") {
 		syl.Result += " — but no syllabus entries could be read from it"
 	}
@@ -100,7 +101,11 @@ func (c *Client) Probe(ctx context.Context, course Course, eid string) probeRepo
 		check := probeCheck{Label: "Syllabus (tool page)", URL: t.URL,
 			Result: c.probeURL(ctx, t.URL)}
 		if items, err := c.syllabusFromPage(ctx, t); err == nil && len(items) > 0 {
-			check.Result += " — content captured"
+			// The attachment count is the number that matters: on most
+			// courses the syllabus is a linked PDF, not text on the page.
+			n := len(attachmentURLs(c, items))
+			check.Result += fmt.Sprintf(" — content captured, %d attachment%s",
+				n, plural(n, "", "s"))
 		} else if err == nil {
 			check.Result += " — reached, but nothing readable was found in it"
 		}

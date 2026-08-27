@@ -317,9 +317,11 @@ func (s syllabusSection) Collect(ctx context.Context, c *Client, siteID string,
 
 	// Attachments are ordinary files under /access/content/attachment.
 	for _, u := range attachmentURLs(c, items) {
+		// Beside the page, not in an "attachments" subfolder: on most courses
+		// this PDF is the syllabus, and burying it would be perverse.
 		out = append(out, artifact{
 			url:   u,
-			parts: []string{"Syllabus", "attachments", SafeName(lastSegment(u))},
+			parts: []string{"Syllabus", SafeName(lastSegment(u))},
 		})
 	}
 	return out, nil
@@ -387,9 +389,19 @@ func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]syllabus
 			item.Body = e.Data
 		}
 		for _, a := range e.Attachments {
-			if a.URL != "" {
-				item.Attachments = append(item.Attachments, a.URL)
+			// The API returns these absolute on some versions and
+			// root-relative on others.
+			if a.URL == "" {
+				continue
 			}
+			if ref, err := url.Parse(a.URL); err == nil {
+				if base, err := url.Parse(c.base); err == nil {
+					item.Attachments = append(item.Attachments,
+						base.ResolveReference(ref).String())
+					continue
+				}
+			}
+			item.Attachments = append(item.Attachments, a.URL)
 		}
 		if item.Title != "" || item.Body != "" || len(item.Attachments) > 0 {
 			out = append(out, item)
@@ -426,14 +438,17 @@ func (c *Client) syllabusFromPage(ctx context.Context, t tool) ([]syllabusItem, 
 		return nil, failf(KindSession, "open the Syllabus tab", hintSession, nil)
 	}
 
-	// The portal frames the real tool; one hop is enough to reach it.
+	// The portal frames the real tool; one hop is enough to reach it. The URL
+	// has to be carried along, because the links inside are resolved against
+	// the page they were written on, not the one we started from.
+	pageURL := t.URL
 	if m := iframeRe.FindStringSubmatch(body); m != nil {
 		if ref, err := url.Parse(unescapeEntities(m[1])); err == nil {
-			if base, err := url.Parse(t.URL); err == nil {
+			if base, err := url.Parse(pageURL); err == nil {
 				inner := base.ResolveReference(ref).String()
 				if strings.HasPrefix(inner, c.base) {
 					if framed, err := c.getText(ctx, inner); err == nil {
-						body = framed
+						body, pageURL = framed, inner
 					}
 				}
 			}
@@ -444,33 +459,74 @@ func (c *Client) syllabusFromPage(ctx context.Context, t tool) ([]syllabusItem, 
 	if m := contentRe.FindStringSubmatch(body); m != nil {
 		body = m[1]
 	}
-	if strings.TrimSpace(tagRe.ReplaceAllString(body, "")) == "" {
+
+	item := syllabusItem{
+		Title:       "Syllabus",
+		Body:        body,
+		Attachments: contentLinks(c, body, pageURL),
+	}
+	if strings.TrimSpace(tagRe.ReplaceAllString(body, "")) == "" &&
+		len(item.Attachments) == 0 {
 		return nil, nil // nothing readable; the caller reports it
 	}
-	return []syllabusItem{{Title: "Syllabus", Body: body}}, nil
+	return []syllabusItem{item}, nil
 }
 
-var attachmentRe = regexp.MustCompile(`(?i)https?://[^\s"'<>]+/access/content/(?:attachment|group)/[^\s"'<>]+`)
+// contentLinks pulls the downloadable files a rendered tool page points at.
+//
+// Instructors' links come in every form HTML allows: relative, root-relative
+// and absolute. Resolving each against the page it was written on is the only
+// way to catch all three — and it is the fix for a real bug, because matching
+// absolute URLs with a regex silently missed the root-relative form
+// (/access/content/attachment/...) that Sakai actually emits, which is the
+// common case. A syllabus that is nothing but a link to a PDF produced an
+// empty-handed sync.
+//
+// The allowlist still decides what may be fetched, so a link out of the
+// course tree is dropped here rather than followed.
+func contentLinks(c *Client, body, pageURL string) []string {
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range parseLinks(body) {
+		if l.href == "" || strings.HasPrefix(l.href, "#") ||
+			strings.HasPrefix(l.href, "mailto:") || strings.HasPrefix(l.href, "javascript:") {
+			continue
+		}
+		ref, err := url.Parse(l.href)
+		if err != nil {
+			continue
+		}
+		abs := base.ResolveReference(ref)
+		abs.Fragment = ""
+		u := abs.String()
+		if seen[u] || !c.allowedContent(u) {
+			continue
+		}
+		seen[u] = true
+		out = append(out, u)
+	}
+	sort.Strings(out) // stable order keeps runs comparable
+	return out
+}
 
 // attachmentURLs collects the files a syllabus points at, dropping anything
 // outside the allowlist.
 func attachmentURLs(c *Client, items []syllabusItem) []string {
 	seen := map[string]bool{}
 	var out []string
-	add := func(u string) {
-		u = strings.TrimSpace(unescapeEntities(u))
-		if u == "" || seen[u] || !c.allowedContent(u) {
-			return
-		}
-		seen[u] = true
-		out = append(out, u)
-	}
 	for _, item := range items {
 		for _, a := range item.Attachments {
-			add(a)
-		}
-		for _, m := range attachmentRe.FindAllString(item.Body, -1) {
-			add(m)
+			a = strings.TrimSpace(unescapeEntities(a))
+			if a == "" || seen[a] || !c.allowedContent(a) {
+				continue
+			}
+			seen[a] = true
+			out = append(out, a)
 		}
 	}
 	sort.Strings(out) // stable order keeps runs comparable

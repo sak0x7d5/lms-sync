@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -312,10 +313,16 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprint(w, `<html><script>never captured</script>
+		// Root-relative hrefs, which is what Sakai really emits. An earlier
+		// version of this fake served absolute URLs, and that difference
+		// alone hid a bug: the syllabus of most courses is nothing but a
+		// link to a PDF, and none of them were being downloaded.
+		io.WriteString(w, `<html><script>never captured</script>
 		  <div id="portletBody">
 		    <h3>Course outline</h3><p>Weekly plan and grading policy.</p>
-		    <a href="`+f.URL+`/access/content/attachment/site-prog/Syllabus/outline.pdf">outline</a>
+		    <a href="/access/content/attachment/site-prog/Syllabus/Course%20Outline%20ITS%20Fall%202026.pdf">Course Outline ITS Fall 2026.pdf</a>
+		    <a href="https://elsewhere.example/steal.pdf">off the LMS entirely</a>
+		    <a href="/portal/site/site-prog/tool/t-samigo">a quiz link in the page body</a>
 		  </div></html>`)
 	})
 
@@ -808,9 +815,17 @@ func TestSyllabusFallsBackToRenderedPage(t *testing.T) {
 		t.Error("page scripts were kept; they must be stripped")
 	}
 
-	attach := filepath.Join(cfg.Destination, "Programming", "Syllabus", "attachments", "outline.pdf")
+	// The syllabus of most courses IS this PDF; missing it made the whole
+	// section pointless.
+	attach := filepath.Join(cfg.Destination, "Programming", "Syllabus",
+		"Course Outline ITS Fall 2026.pdf")
 	if _, err := os.Stat(attach); err != nil {
-		t.Errorf("attachment not downloaded: %v", err)
+		t.Errorf("the linked syllabus PDF was not downloaded: %v", err)
+	}
+
+	// The page body also links off the LMS and at a quiz. Neither is ours.
+	if srv.requested("samigo") {
+		t.Error("followed a quiz link found in the syllabus body")
 	}
 
 	// A rendered page has no server-side size to compare, so freshness rests
