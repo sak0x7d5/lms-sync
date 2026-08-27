@@ -38,6 +38,7 @@ lms-sync                 open the interface (default)
 lms-sync --sync          sync and exit
 lms-sync --discover      find courses, save them, exit
 lms-sync --dry-run       show what would download, write nothing
+lms-sync --probe         report which tabs your LMS offers, and how
 lms-sync --dest PATH     override the destination
 lms-sync --insecure      skip TLS verification (last resort)
 ```
@@ -123,6 +124,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `retries` | `3` | attempts on timeout / 429 / 5xx |
 | `login_path` | auto | pin the login endpoint |
 | `extensions` | common types | which files to download |
+| `sections` | `resources`, `syllabus`, `dropbox` | which tabs to mirror |
 
 `LMS_USER` and `LMS_PASS` override the file, so a scheduled run need not
 store a password on disk.
@@ -136,11 +138,35 @@ readable in git history even after the file is deleted.
 
 1. **Log in.** Native Sakai form auth, with a cookie jar for the session.
 2. **Discover.** Course links on the portal page yield the site ids.
-3. **Walk.** Each course's Resources is a directory index; it recurses.
-4. **Download.** Only new or changed files, tracked in `manifest.json`.
+3. **Look at the tabs.** Each course lists its own tools, so only the tabs a
+   course actually has are visited.
+4. **Walk or capture.** Resources and Drop Box are directory indexes and
+   recurse. Syllabus has no files — its content is captured as a page.
+5. **Download.** Only new or changed items, tracked in `manifest.json`.
 
 It only ever reads. There is no upload or delete path, so it cannot damage an
 instructor's folder — worth knowing, since Sakai's WebDAV interface *can*.
+
+### Which tabs
+
+| Tab | What you get |
+|---|---|
+| Resources | the files, in the course folder itself |
+| Syllabus | `Syllabus/Syllabus.html` plus its attachments |
+| Drop Box | your own Drop Box folder |
+
+Everything else is left alone. **Tests & Quizzes is never opened**: on some
+Sakai versions the link into an assessment is an ordinary page load that
+*begins an attempt*, and there is nothing there to mirror anyway.
+
+Installs differ, so if a tab you expected is missing, ask the server:
+
+```bash
+./lms-sync --probe
+```
+
+That reports each course's tabs and which endpoints answered, and downloads
+nothing.
 
 ### Error handling
 

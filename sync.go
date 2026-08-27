@@ -143,8 +143,9 @@ func (c *Client) Discover(ctx context.Context) ([]Course, error) {
 // Event is one thing worth telling the user about. The CLI prints these; the
 // web UI streams them to the browser.
 type Event struct {
-	Type    string `json:"type"` // course | file | skip | warn | error | done
+	Type    string `json:"type"` // course | section | file | skip | warn | error | done
 	Course  string `json:"course,omitempty"`
+	Section string `json:"section,omitempty"`
 	Path    string `json:"path,omitempty"`
 	Message string `json:"message,omitempty"`
 	New     int    `json:"new"`
@@ -158,120 +159,283 @@ type Result struct {
 	New, Current, Failed int
 }
 
-type file struct {
-	url   string
-	parts []string
+// artifact is one thing to save, in either of the two forms an LMS tab can
+// offer.
+//
+// Resources hands out files: a URL, fetched byte for byte. Syllabus and the
+// other content tabs have no files at all — their content lives in the
+// server's database and is rendered into a page here, so it arrives as a body
+// with no URL behind it. Everything downstream of Collect treats the two the
+// same except where it cannot: freshness, and the extension filter.
+type artifact struct {
+	url   string   // remote file to download; empty for a rendered page
+	body  []byte   // rendered content; nil for a download
+	key   string   // manifest key; defaults to url, which is what downloads use
+	parts []string // path under the course folder
 }
 
-// Sync mirrors every configured course. Individual file failures are
-// recorded and skipped — one unreadable PDF must not abandon the run.
+func (a artifact) manifestKey() string {
+	if a.key != "" {
+		return a.key
+	}
+	return a.url
+}
+
+// section is one LMS tab worth mirroring.
+//
+// Adding a tab means implementing this and listing it in allSections — the
+// Sync loop, the CLI and the web UI then handle it without changes.
+type section interface {
+	ID() string   // stable id used in config: "resources", "syllabus"
+	Name() string // label shown to the user, matching the tab in the LMS
+	Collect(ctx context.Context, c *Client, siteID string, report Reporter) ([]artifact, error)
+}
+
+// syncRun is the state one Sync call threads through its sections. It exists
+// so the save path can stay one readable function rather than eleven
+// arguments.
+type syncRun struct {
+	c        *Client
+	cfg      *Config
+	manifest *Manifest
+	dest     string
+	dryRun   bool
+	report   Reporter
+	res      Result
+}
+
+// Sync mirrors every configured course. Individual failures are recorded and
+// skipped — one unreadable PDF must not abandon the run, and neither must one
+// tab the account cannot read.
 func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 	dryRun bool, report Reporter) (Result, error) {
 
-	var res Result
+	var zero Result
 
 	dest, err := filepath.Abs(os.ExpandEnv(cfg.Destination))
 	if err != nil {
-		return res, failf(KindFS, "resolve destination",
+		return zero, failf(KindFS, "resolve destination",
 			"That destination path could not be understood.", err)
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return res, failf(KindFS, "create "+dest,
+		return zero, failf(KindFS, "create "+dest,
 			"Could not create the destination folder. Check the drive exists\n"+
 				"and that you have permission to write there.", err)
 	}
 
+	r := &syncRun{c: c, cfg: cfg, manifest: manifest, dest: dest,
+		dryRun: dryRun, report: report}
+
 	for _, course := range cfg.Courses {
 		if ctx.Err() != nil {
-			return res, failf(KindCancelled, "stopped", "", ctx.Err())
+			return r.res, failf(KindCancelled, "stopped", "", ctx.Err())
 		}
-		report(Event{Type: "course", Course: course.Folder})
+		if err := r.course(ctx, course); err != nil {
+			return r.res, err
+		}
+	}
 
-		courseDir := filepath.Join(dest, SafeName(course.Folder))
-		files, err := c.walk(ctx, course.ID, cfg.MaxDepth, report)
+	report(Event{Type: "done", New: r.res.New, Current: r.res.Current,
+		Failed: r.res.Failed})
+	return r.res, nil
+}
+
+// course mirrors every enabled tab of one course. It returns an error only
+// for the failures that end the whole run; anything narrower is counted and
+// reported.
+func (r *syncRun) course(ctx context.Context, course Course) error {
+	r.report(Event{Type: "course", Course: course.Folder})
+	courseDir := filepath.Join(r.dest, SafeName(course.Folder))
+
+	sections, err := r.c.sectionsFor(ctx, course.ID, r.cfg)
+	if err != nil {
+		if fatal(err) {
+			return err
+		}
+		// A single broken course shouldn't end the run.
+		r.res.Failed++
+		r.report(Event{Type: "error", Course: course.Folder, Message: err.Error()})
+		return nil
+	}
+
+	for _, sec := range sections {
+		if ctx.Err() != nil {
+			return failf(KindCancelled, "stopped", "", ctx.Err())
+		}
+		r.report(Event{Type: "section", Course: course.Folder, Section: sec.Name()})
+
+		items, err := sec.Collect(ctx, r.c, course.ID, r.report)
 		if err != nil {
-			switch KindOf(err) {
-			case KindCancelled, KindTLS:
-				return res, err
-			case KindSession:
-				return res, err
-			default:
-				// A single broken course shouldn't end the run.
-				res.Failed++
-				report(Event{Type: "error", Course: course.Folder,
-					Message: err.Error()})
+			if fatal(err) {
+				return err
+			}
+			// A tab that is enabled but holds nothing readable is the normal
+			// state of a lot of courses, so it is reported and not counted:
+			// inflating the failure count would train people to ignore it.
+			if KindOf(err) == KindNotFound {
+				r.report(Event{Type: "skip", Course: course.Folder,
+					Section: sec.Name(), Message: err.Error()})
 				continue
 			}
+			// Anything else is a real failure, but still only this tab's:
+			// it must not cost the rest of the course.
+			r.res.Failed++
+			r.report(Event{Type: "error", Course: course.Folder,
+				Section: sec.Name(), Message: err.Error()})
+			continue
 		}
 
-		for _, f := range files {
-			if ctx.Err() != nil {
-				return res, failf(KindCancelled, "stopped", "", ctx.Err())
-			}
-			name := f.parts[len(f.parts)-1]
-			if !cfg.Wanted(name) {
-				continue
-			}
-			path := filepath.Join(append([]string{courseDir}, f.parts...)...)
-
-			if info, err := os.Stat(path); err == nil {
-				if size, ok := manifest.Get(f.url); ok && size == info.Size() {
-					res.Current++
-					continue
-				}
-			}
-
-			rel, _ := filepath.Rel(dest, path)
-			if dryRun {
-				res.New++
-				report(Event{Type: "file", Course: course.Folder, Path: rel,
-					New: res.New, Current: res.Current, Failed: res.Failed})
-				continue
-			}
-
-			size, err := c.download(ctx, f.url, path)
-			if err != nil {
-				if KindOf(err) == KindCancelled {
-					return res, err
-				}
-				res.Failed++
-				report(Event{Type: "warn", Course: course.Folder, Path: rel,
-					Message: err.Error(), New: res.New, Current: res.Current,
-					Failed: res.Failed})
-				continue
-			}
-			manifest.Set(f.url, size)
-			res.New++
-			report(Event{Type: "file", Course: course.Folder, Path: rel,
-				New: res.New, Current: res.Current, Failed: res.Failed})
-		}
-
-		if !dryRun {
-			// Save after each course so an interrupted run doesn't re-fetch
-			// everything next time.
-			if err := manifest.Save(); err != nil {
-				report(Event{Type: "warn", Message: err.Error()})
+		for _, a := range items {
+			if err := r.save(ctx, a, sec, course, courseDir); err != nil {
+				return err
 			}
 		}
 	}
 
-	report(Event{Type: "done", New: res.New, Current: res.Current, Failed: res.Failed})
-	return res, nil
+	if !r.dryRun {
+		// Save after each course so an interrupted run doesn't re-fetch
+		// everything next time.
+		if err := r.manifest.Save(); err != nil {
+			r.report(Event{Type: "warn", Message: err.Error()})
+		}
+	}
+	return nil
 }
 
-// walk lists every file under a course's Resources.
-func (c *Client) walk(ctx context.Context, siteID string, maxDepth int,
-	report Reporter) ([]file, error) {
+// fatal reports whether an error should end the whole run rather than be
+// counted and skipped.
+func fatal(err error) bool {
+	switch KindOf(err) {
+	case KindCancelled, KindTLS, KindSession:
+		return true
+	}
+	return false
+}
 
-	root := c.base + "/access/content/group/" + siteID + "/"
+func (r *syncRun) save(ctx context.Context, a artifact, sec section,
+	course Course, courseDir string) error {
+
+	if ctx.Err() != nil {
+		return failf(KindCancelled, "stopped", "", ctx.Err())
+	}
+
+	// The extension filter exists to skip the .exe an instructor left in
+	// Resources, so it applies to harvested files only. A page this tool
+	// rendered itself is the whole point of enabling its tab, and the default
+	// extension list holds no .html — filtering those would quietly produce
+	// nothing at all.
+	name := a.parts[len(a.parts)-1]
+	if a.body == nil && !r.cfg.Wanted(name) {
+		return nil
+	}
+
+	path := filepath.Join(append([]string{courseDir}, a.parts...)...)
+	rel, _ := filepath.Rel(r.dest, path)
+	key := a.manifestKey()
+
+	if info, err := os.Stat(path); err == nil {
+		if e, ok := r.manifest.Get(key); ok && current(e, info, a) {
+			r.res.Current++
+			return nil
+		}
+	}
+
+	if r.dryRun {
+		r.res.New++
+		r.reportFile(course, sec, rel)
+		return nil
+	}
+
+	var e entry
+	var err error
+	if a.body != nil {
+		e, err = writeRendered(path, a.body)
+	} else {
+		var size int64
+		size, err = r.c.download(ctx, a.url, path)
+		e = entry{Size: size}
+	}
+	if err != nil {
+		if KindOf(err) == KindCancelled {
+			return err
+		}
+		r.res.Failed++
+		r.report(Event{Type: "warn", Course: course.Folder, Section: sec.Name(),
+			Path: rel, Message: err.Error(), New: r.res.New,
+			Current: r.res.Current, Failed: r.res.Failed})
+		return nil
+	}
+
+	r.manifest.Set(key, e)
+	r.res.New++
+	r.reportFile(course, sec, rel)
+	return nil
+}
+
+func (r *syncRun) reportFile(course Course, sec section, rel string) {
+	r.report(Event{Type: "file", Course: course.Folder, Section: sec.Name(),
+		Path: rel, New: r.res.New, Current: r.res.Current, Failed: r.res.Failed})
+}
+
+// current decides whether what is on disk is already what we would write.
+//
+// A download is judged by size, which is what catches an instructor
+// re-uploading a corrected deck under the same name. A rendered page has no
+// server-side size to compare, so it is judged by hashing the content we are
+// holding against the hash of what we wrote last time.
+func current(e entry, info os.FileInfo, a artifact) bool {
+	if a.body != nil {
+		return e.Hash != "" && e.Hash == hashBytes(a.body)
+	}
+	return e.Size == info.Size()
+}
+
+// writeRendered saves rendered content with the same temp-then-rename dance a
+// download uses, so an interrupted run never leaves half a page looking whole.
+func writeRendered(dest string, body []byte) (entry, error) {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return entry{}, failf(KindFS, "create folder for "+filepath.Base(dest),
+			"Check the destination drive is available and writable.", err)
+	}
+
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".render-*.part")
+	if err != nil {
+		return entry{}, failf(KindFS, "create temp file", "Check free disk space.", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	if _, err := tmp.Write(body); err != nil {
+		tmp.Close()
+		return entry{}, failf(KindFS, "write "+filepath.Base(dest), "", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return entry{}, failf(KindFS, "close "+filepath.Base(dest), "", err)
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		return entry{}, failf(KindFS, "save "+filepath.Base(dest),
+			"The page was written but could not be moved into place.\n"+
+				"It may be open in another program.", err)
+	}
+	return entry{Size: int64(len(body)), Hash: hashBytes(body)}, nil
+}
+
+// walkTree lists every file under a content collection.
+//
+// Resources, Drop Box and the attachment areas behind Syllabus and
+// Assignments are all the same thing on a Sakai server: a plain directory
+// index under /access/content. Only the root differs, which is why this takes
+// one rather than deriving it from a site id.
+func (c *Client) walkTree(ctx context.Context, root string, base []string,
+	maxDepth int, report Reporter) ([]artifact, error) {
 
 	type item struct {
 		url   string
 		parts []string
 		depth int
 	}
-	stack := []item{{url: root}}
-	var out []file
+	stack := []item{{url: root, parts: base}}
+	var out []artifact
 
 	for len(stack) > 0 {
 		cur := stack[len(stack)-1]
@@ -294,13 +458,16 @@ func (c *Client) walk(ctx context.Context, siteID string, maxDepth int,
 			}
 		}
 		if loginFormRe.MatchString(body) {
-			return nil, failf(KindSession, "walk course", hintSession, nil)
+			return nil, failf(KindSession, "walk "+shortURL(cur.url), hintSession, nil)
 		}
 
 		dirs, files := childLinks(body, cur.url)
 		for _, f := range files {
 			name := SafeName(lastSegment(f))
-			out = append(out, file{url: f, parts: append(append([]string{}, cur.parts...), name)})
+			out = append(out, artifact{
+				url:   f,
+				parts: append(append([]string{}, cur.parts...), name),
+			})
 		}
 		for _, d := range dirs {
 			name := SafeName(lastSegment(strings.TrimSuffix(d, "/")))

@@ -43,6 +43,8 @@
        font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
   #log:empty::after{content:"Ready.";color:var(--muted)}
   .l-course{color:var(--accent);font-weight:600;margin-top:8px}
+  .l-section{color:var(--ink);font-weight:600}
+  .l-skip{color:var(--muted)}
   .l-file{color:var(--ok)}
   .l-warn{color:var(--warn)}
   .l-error{color:var(--bad);font-weight:600}
@@ -276,8 +278,12 @@ const es = new EventSource("/api/events?t=" + token);
 es.onmessage = ev => {
   let e; try { e = JSON.parse(ev.data); } catch { return; }
   switch (e.type) {
-    case "course": line(e.course, "l-course"); break;
-    case "file":   line("  + " + e.path, "l-file"); break;
+    case "course":  line(e.course, "l-course"); break;
+    case "section": line("  [" + e.section + "]", "l-section"); break;
+    case "file":    line("  + " + e.path, "l-file"); break;
+    // A tab that is enabled but empty is normal, not a failure — it is shown
+    // quietly so the log explains itself without looking alarming.
+    case "skip":    line("  - " + e.section + ": " + e.message, "l-skip"); break;
     case "warn":   line("  ! " + (e.path ? e.path + " " : "") + e.message, "l-warn"); break;
     case "error":  line(e.message, "l-error"); banner(e.message, "err"); break;
     case "done":

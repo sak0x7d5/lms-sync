@@ -12,7 +12,9 @@ import (
 )
 
 // version is stamped at build time by the release workflow:
-//   go build -ldflags "-X main.version=1.2.0"
+//
+//	go build -ldflags "-X main.version=1.2.0"
+//
 // A local build reports -dev, so an untagged binary never claims a release.
 var version = "1.0.0-dev"
 
@@ -24,6 +26,7 @@ func run() int {
 	var (
 		doSync     = flag.Bool("sync", false, "sync and exit, no interface")
 		doDiscover = flag.Bool("discover", false, "find courses, save them, exit")
+		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
 		dryRun     = flag.Bool("dry-run", false, "list what would download, write nothing")
 		insecure   = flag.Bool("insecure", false, "skip TLS verification (last resort)")
 		showVer    = flag.Bool("version", false, "print version and exit")
@@ -73,6 +76,8 @@ func run() int {
 	switch {
 	case *doDiscover:
 		return cliDiscover(ctx, cfg, *insecure)
+	case *doProbe:
+		return cliProbe(ctx, cfg, *insecure)
 	case *doSync || *dryRun:
 		return cliSync(ctx, cfg, manifest, *dryRun, *insecure)
 	default:
@@ -87,6 +92,7 @@ func usage() {
   lms-sync --sync          sync and exit, for scheduled runs
   lms-sync --discover      find your courses and save them
   lms-sync --dry-run       show what would download, write nothing
+  lms-sync --probe         report which tabs your LMS offers, and how
 
 Options:
 `, version)
@@ -175,8 +181,12 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 		switch e.Type {
 		case "course":
 			fmt.Printf("\n%s\n", e.Course)
+		case "section":
+			fmt.Printf("  [%s]\n", e.Section)
 		case "file":
 			fmt.Printf("    + %s\n", e.Path)
+		case "skip":
+			fmt.Printf("    - %s: %s\n", e.Section, e.Message)
 		case "warn":
 			fmt.Printf("    ! %s %s\n", e.Path, e.Message)
 		case "error":
@@ -205,6 +215,57 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 	if res.Failed > 0 {
 		return 1
 	}
+	return 0
+}
+
+// cliProbe reports what this install actually offers.
+//
+// It exists because the endpoints behind the content tabs vary by Sakai
+// version and skin, and guessing wrong fails quietly. Running this on the
+// machine that can reach the LMS answers the question directly.
+func cliProbe(ctx context.Context, cfg *Config, insecure bool) int {
+	client, err := connect(ctx, cfg, insecure)
+	if err != nil {
+		return reportErr(err)
+	}
+
+	courses := cfg.Courses
+	if len(courses) == 0 {
+		courses, err = client.Discover(ctx)
+		if err != nil {
+			return reportErr(err)
+		}
+	}
+
+	for _, course := range courses {
+		rep := client.Probe(ctx, course, cfg.Username)
+		fmt.Printf("\n%s  (%s)\n", course.Folder, course.ID)
+
+		if rep.Err != nil {
+			fmt.Printf("  tabs: could not be listed — %s\n", rep.Err.Error())
+		} else {
+			fmt.Printf("  tabs, via %s:\n", rep.ToolsVia)
+			for _, t := range rep.Tools {
+				reg := t.Registration
+				if reg == "" {
+					reg = "?"
+				}
+				fmt.Printf("    %-24s %s\n", t.Title, reg)
+			}
+		}
+
+		fmt.Println("  endpoints:")
+		for _, ch := range rep.Checks {
+			fmt.Printf("    %-22s %s\n", ch.Label, ch.Result)
+			if ch.URL != "" {
+				fmt.Printf("    %-22s %s\n", "", ch.URL)
+			}
+		}
+	}
+
+	fmt.Println("\nNothing was downloaded. If a tab you expected is missing above,")
+	fmt.Println("that is what to report — it means the page did not name it in a")
+	fmt.Println("shape this tool recognises.")
 	return 0
 }
 

@@ -25,6 +25,7 @@ type Config struct {
 	Retries     int
 	MaxDepth    int
 	Extensions  []string
+	Sections    []string // which LMS tabs to mirror; see sections.go
 	Courses     []Course // ordered; a map would shuffle the folder list
 	path        string
 }
@@ -42,6 +43,7 @@ func DefaultConfig() *Config {
 		Delay:       200,
 		Retries:     3,
 		MaxDepth:    12,
+		Sections:    []string{"resources", "syllabus", "dropbox"},
 		Extensions: []string{
 			".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx",
 			".txt", ".md", ".rtf", ".odt", ".odp", ".ods",
@@ -50,6 +52,15 @@ func DefaultConfig() *Config {
 			".ipynb", ".csv", ".tsv", ".m", ".r",
 		},
 	}
+}
+
+// sections returns the tabs to mirror, never an empty list: a config that
+// enabled nothing would sync nothing and look broken rather than misconfigured.
+func (c *Config) sections() []string {
+	if len(c.Sections) == 0 {
+		return []string{"resources"}
+	}
+	return c.Sections
 }
 
 // Wanted reports whether a filename should be downloaded.
@@ -141,6 +152,10 @@ func LoadConfig(path string) (*Config, error) {
 			if list := parseArray(raw); len(list) > 0 {
 				cfg.Extensions = list
 			}
+		case "sections":
+			if list := parseArray(raw); len(list) > 0 {
+				cfg.Sections = list
+			}
 		}
 	}
 	if err := scan.Err(); err != nil {
@@ -177,6 +192,19 @@ func (c *Config) sanitise() {
 	}
 	if strings.TrimSpace(c.Destination) == "" {
 		c.Destination = "Courses"
+	}
+
+	// A misspelt section would otherwise be obeyed silently and simply never
+	// match anything. Drop what is unknown, and never end up with nothing.
+	kept := c.Sections[:0]
+	for _, id := range c.Sections {
+		if knownSections[strings.ToLower(strings.TrimSpace(id))] {
+			kept = append(kept, strings.ToLower(strings.TrimSpace(id)))
+		}
+	}
+	c.Sections = kept
+	if len(c.Sections) == 0 {
+		c.Sections = []string{"resources"}
 	}
 }
 
@@ -318,6 +346,13 @@ func (c *Config) Save() error {
 		b.WriteString("    " + strings.Join(quoted, ", ") + ",\n")
 	}
 	b.WriteString("]\n")
+	b.WriteString("\n# Which tabs to mirror. Available: 'resources', 'syllabus', 'dropbox'.\n")
+	b.WriteString("# Resources lands in the course folder itself; the others get a subfolder.\n")
+	quoted := make([]string, 0, len(c.sections()))
+	for _, id := range c.sections() {
+		quoted = append(quoted, tomlQuote(id))
+	}
+	fmt.Fprintf(&b, "sections    = [%s]\n", strings.Join(quoted, ", "))
 	b.WriteString("\n# Your courses. Rename folders freely; only the ids matter.\n[courses]\n")
 	for _, course := range c.Courses {
 		fmt.Fprintf(&b, "%s = %s\n", tomlQuote(course.ID), tomlQuote(course.Folder))

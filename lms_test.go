@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -115,6 +116,9 @@ func TestConfigRoundTripWindowsPath(t *testing.T) {
 	if len(back.Courses) != 1 || back.Courses[0].ID != "abc-123" {
 		t.Errorf("courses mangled: %v", back.Courses)
 	}
+	if strings.Join(back.Sections, ",") != strings.Join(cfg.Sections, ",") {
+		t.Errorf("sections mangled: %v, want %v", back.Sections, cfg.Sections)
+	}
 }
 
 // A hand-edited config with absurd values must be clamped, not obeyed.
@@ -157,10 +161,56 @@ type fakeSakai struct {
 	authed   atomic.Bool
 	failures atomic.Int32 // how many 500s to serve before succeeding
 	hits     atomic.Int32
+
+	// Every path the client asked for. Some tabs must never be fetched at
+	// all, and the only way to prove that is to record what was.
+	pathMu sync.Mutex
+	paths  []string
+}
+
+func (f *fakeSakai) record(path string) {
+	f.pathMu.Lock()
+	defer f.pathMu.Unlock()
+	f.paths = append(f.paths, path)
+}
+
+func (f *fakeSakai) requested(substr string) bool {
+	f.pathMu.Lock()
+	defer f.pathMu.Unlock()
+	for _, p := range f.paths {
+		if strings.Contains(p, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 const loginPage = `<html><form action="/access/login" method="post">
   <input name="eid"><input name="pw"><input type="submit"></form></html>`
+
+// The tool menu as the portal really emits it: the tab label is the link
+// text, and the tool's registration id appears nowhere but the icon class.
+// Tests & Quizzes is here on purpose — it must be discovered and then never
+// fetched.
+const toolMenuProg = `<html><ul>
+  <li><a href="/portal/site/site-prog/tool/t-over"><span class="icon-sakai--sakai-iframe-site"></span><span>Overview</span></a></li>
+  <li><a href="/portal/site/site-prog/tool/t-syllabus"><span class="icon-sakai--sakai-syllabus"></span><span>Syllabus</span></a></li>
+  <li><a href="/portal/site/site-prog/tool/t-res"><span class="icon-sakai--sakai-resources"></span><span>Resources</span></a></li>
+  <li><a href="/portal/site/site-prog/tool/t-drop"><span class="icon-sakai--sakai-dropbox"></span><span>Drop Box</span></a></li>
+  <li><a href="/portal/site/site-prog/tool/t-samigo"><span class="icon-sakai--sakai-samigo"></span><span>Tests &amp; Quizzes</span></a></li>
+</ul></html>`
+
+// Calculus has no Syllabus tab, which is the ordinary case a sync must
+// handle without calling it a failure.
+// A course whose Syllabus tab is enabled but empty — the state of a great
+// many real courses, and not a failure.
+const toolMenuEmpty = `<html><ul>
+  <li><a href="/portal/site/site-empty/tool/t-syllabus-empty"><span class="icon-sakai--sakai-syllabus"></span><span>Syllabus</span></a></li>
+</ul></html>`
+
+const toolMenuCalc = `<html><ul>
+  <li><a href="/portal/site/site-calc/tool/t-res"><span class="icon-sakai--sakai-resources"></span><span>Resources</span></a></li>
+</ul></html>`
 
 func newFakeSakai(t *testing.T, password string) *fakeSakai {
 	t.Helper()
@@ -232,7 +282,78 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 		}
 	})
 
-	f.Server = httptest.NewServer(mux)
+	// A course's tool menu, and the tool pages behind it.
+	mux.HandleFunc("/portal/site/", func(w http.ResponseWriter, r *http.Request) {
+		if !f.authed.Load() {
+			fmt.Fprint(w, loginPage)
+			return
+		}
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/tool/t-syllabus-empty"):
+			fmt.Fprint(w, `<html><div id="portletBody">   </div></html>`)
+		case r.URL.Path == "/portal/site/site-empty":
+			fmt.Fprint(w, toolMenuEmpty)
+		case strings.HasSuffix(r.URL.Path, "/tool/t-syllabus"):
+			// The portal frames the real tool rather than rendering it
+			// inline, which is the hop syllabusFromPage has to follow.
+			fmt.Fprint(w, `<html><div class="portletBody">
+			  <iframe src="/portal/tool/t-syllabus"></iframe></div></html>`)
+		case r.URL.Path == "/portal/site/site-prog":
+			fmt.Fprint(w, toolMenuProg)
+		case r.URL.Path == "/portal/site/site-calc":
+			fmt.Fprint(w, toolMenuCalc)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/portal/tool/", func(w http.ResponseWriter, r *http.Request) {
+		if !f.authed.Load() || r.URL.Path != "/portal/tool/t-syllabus" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, `<html><script>never captured</script>
+		  <div id="portletBody">
+		    <h3>Course outline</h3><p>Weekly plan and grading policy.</p>
+		    <a href="`+f.URL+`/access/content/attachment/site-prog/Syllabus/outline.pdf">outline</a>
+		  </div></html>`)
+	})
+
+	// Syllabus attachments are ordinary files in a different content area.
+	mux.HandleFunc("/access/content/attachment/", func(w http.ResponseWriter, r *http.Request) {
+		if !f.authed.Load() {
+			fmt.Fprint(w, loginPage)
+			return
+		}
+		fmt.Fprint(w, "%PDF-1.4 syllabus attachment")
+	})
+
+	// Drop Box is the same directory index as Resources, under the account's
+	// own folder.
+	mux.HandleFunc("/access/content/group-user/", func(w http.ResponseWriter, r *http.Request) {
+		if !f.authed.Load() {
+			fmt.Fprint(w, loginPage)
+			return
+		}
+		switch r.URL.Path {
+		case "/access/content/group-user/site-prog/37103/":
+			fmt.Fprint(w, `<a href="/access/content/group-user/site-prog/37103/assignment1.pdf">a1</a>`)
+		default:
+			if strings.HasSuffix(r.URL.Path, ".pdf") {
+				fmt.Fprint(w, "%PDF-1.4 dropbox file")
+				return
+			}
+			http.NotFound(w, r)
+		}
+	})
+
+	// Wrapping rather than recording per handler, so nothing can be fetched
+	// without the test seeing it.
+	f.Server = httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			f.record(r.URL.Path)
+			mux.ServeHTTP(w, r)
+		}))
 	t.Cleanup(f.Close)
 	return f
 }
@@ -248,6 +369,10 @@ func testConfig(t *testing.T, srv *fakeSakai) *Config {
 	cfg.Destination = filepath.Join(dir, "Courses")
 	cfg.Delay = 0
 	cfg.Timeout = 10
+	// These tests pin down Resources behaviour. Tests that want the other
+	// tabs enable them explicitly, so a change to the shipped defaults can
+	// never quietly rewrite what they assert.
+	cfg.Sections = []string{"resources"}
 	return cfg
 }
 
@@ -553,5 +678,311 @@ func TestUsableStartDir(t *testing.T) {
 	}
 	if got := usableStartDir("   "); got != "" {
 		t.Errorf("blank: got %q, want empty", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sections
+// ---------------------------------------------------------------------------
+
+func loggedInClient(t *testing.T, cfg *Config) *Client {
+	t.Helper()
+	client, err := NewClient(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Login(context.Background(), cfg.Username, cfg.Password); err != nil {
+		t.Fatalf("login: %v", err)
+	}
+	return client
+}
+
+// The registration id is the only reliable name for a tool, and on a portal
+// page it exists nowhere but the icon's class.
+func TestToolsFromPortal(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	client := loggedInClient(t, cfg)
+
+	tools, err := client.Tools(context.Background(), "site-prog")
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+
+	got := map[string]string{}
+	for _, tool := range tools {
+		got[tool.Title] = tool.Registration
+	}
+	if got["Syllabus"] != "sakai.syllabus" {
+		t.Errorf("Syllabus registration = %q, want sakai.syllabus", got["Syllabus"])
+	}
+	if got["Drop Box"] != "sakai.dropbox" {
+		t.Errorf("Drop Box registration = %q, want sakai.dropbox", got["Drop Box"])
+	}
+	if _, ok := got["Tests & Quizzes"]; !ok {
+		t.Error("Tests & Quizzes should be discovered — it is refused later, not hidden")
+	}
+}
+
+// Fetching a Samigo URL can open a student's timed assessment on some Sakai
+// versions. Discovering the tab is fine; requesting it never is.
+func TestQuizToolIsNeverFetched(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"resources", "syllabus", "dropbox"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if srv.requested("samigo") {
+		t.Fatal("a Samigo URL was requested — that can begin a quiz attempt")
+	}
+	// The allowlist is what guarantees it, so check it directly too.
+	if client.allowedContent(srv.URL + "/portal/site/site-prog/tool/t-samigo") {
+		t.Error("allowedContent let a tool URL through; it must only pass content paths")
+	}
+}
+
+func TestAllowedContentRejectsAnythingElse(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	client, _ := NewClient(cfg, false)
+
+	allowed := []string{
+		srv.URL + "/access/content/group/site-prog/week1.pdf",
+		srv.URL + "/access/content/group-user/site-prog/37103/a1.pdf",
+		srv.URL + "/access/content/attachment/site-prog/Syllabus/outline.pdf",
+	}
+	for _, u := range allowed {
+		if !client.allowedContent(u) {
+			t.Errorf("allowedContent(%q) = false, want true", u)
+		}
+	}
+
+	denied := []string{
+		srv.URL + "/portal/site/site-prog",
+		srv.URL + "/access/login",
+		"https://evil.example/access/content/group/x/y.pdf", // right path, wrong host
+		"://nonsense",
+	}
+	for _, u := range denied {
+		if client.allowedContent(u) {
+			t.Errorf("allowedContent(%q) = true, want false", u)
+		}
+	}
+}
+
+// The Entity Broker is off on this server, as on many real ones, so the
+// syllabus has to come from what the tool renders — through an iframe.
+func TestSyllabusFallsBackToRenderedPage(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	res, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	// The rendered page, plus the one attachment it links to.
+	if res.New != 2 {
+		t.Errorf("new = %d, want 2 (the page and its attachment)", res.New)
+	}
+
+	page := filepath.Join(cfg.Destination, "Programming", "Syllabus", "Syllabus.html")
+	body, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatalf("no syllabus written: %v", err)
+	}
+	if !strings.Contains(string(body), "Course outline") {
+		t.Error("the syllabus content was not captured")
+	}
+	if strings.Contains(string(body), "never captured") {
+		t.Error("page scripts were kept; they must be stripped")
+	}
+
+	attach := filepath.Join(cfg.Destination, "Programming", "Syllabus", "attachments", "outline.pdf")
+	if _, err := os.Stat(attach); err != nil {
+		t.Errorf("attachment not downloaded: %v", err)
+	}
+
+	// A rendered page has no server-side size to compare, so freshness rests
+	// entirely on hashing it. If the rendering is not byte-stable, every run
+	// rewrites the file and reports it as new.
+	res2, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.New != 0 || res2.Current != 2 {
+		t.Errorf("second run: new=%d current=%d, want 0/2 — the rendered page "+
+			"is not stable between runs", res2.New, res2.Current)
+	}
+}
+
+// A tab that is enabled but empty is the normal state of many courses.
+// Counting it as a failure would train people to ignore the failure count.
+func TestEmptySectionIsSkippedNotFailed(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-empty", Folder: "Empty"}}
+	client := loggedInClient(t, cfg)
+
+	var skipped int
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false,
+		func(e Event) {
+			if e.Type == "skip" {
+				skipped++
+			}
+		})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Errorf("failed = %d, want 0 — an empty tab is not a failure", res.Failed)
+	}
+	if skipped != 1 {
+		t.Errorf("skip events = %d, want 1 — the run must still say why", skipped)
+	}
+}
+
+// A course without the tab must not produce anything for it, quietly.
+func TestAbsentTabProducesNothing(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"resources", "syllabus"}
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Errorf("failed = %d, want 0 — Calculus simply has no Syllabus tab", res.Failed)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Calculus", "Syllabus")); err == nil {
+		t.Error("a Syllabus folder was created for a course that has no Syllabus tab")
+	}
+}
+
+func TestDropBoxLandsInItsOwnFolder(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"dropbox"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	want := filepath.Join(cfg.Destination, "Programming", "Drop Box", "assignment1.pdf")
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("drop box file missing: %v", err)
+	}
+}
+
+// Resources must keep landing at the course root. Moving it into a subfolder
+// would make every existing user re-download their whole library, because
+// freshness needs the file to still be where the manifest last saw it.
+func TestResourcesStayAtTheCourseRoot(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"resources", "syllabus", "dropbox"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Programming", "syllabus.pdf")); err != nil {
+		t.Errorf("Resources moved out of the course root: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Manifest compatibility
+// ---------------------------------------------------------------------------
+
+// Every manifest written before sections existed maps a URL to a bare number.
+// Failing to read it would reset the manifest and silently re-download
+// everything the user already has.
+func TestLegacyManifestIsStillRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+	os.WriteFile(path, []byte(`{"https://x.edu/a.pdf": 4096}`), 0o644)
+
+	m := LoadManifest(path)
+	e, ok := m.Get("https://x.edu/a.pdf")
+	if !ok {
+		t.Fatal("legacy entry not found — every user would re-download everything")
+	}
+	if e.Size != 4096 {
+		t.Errorf("size = %d, want 4096", e.Size)
+	}
+
+	// And a manifest holding only downloads must stay in the old shape, so an
+	// older build can still read it.
+	m.Set("https://x.edu/b.pdf", entry{Size: 12})
+	if err := m.Save(); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := os.ReadFile(path)
+	if strings.Contains(string(saved), `"size"`) {
+		t.Errorf("downloads should still serialise as bare numbers, got:\n%s", saved)
+	}
+}
+
+func TestRenderedEntriesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.json")
+
+	m := LoadManifest(path)
+	m.Set("syllabus:site-prog", entry{Size: 10, Hash: hashBytes([]byte("hello"))})
+	if err := m.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	back := LoadManifest(path)
+	e, ok := back.Get("syllabus:site-prog")
+	if !ok || e.Hash != hashBytes([]byte("hello")) {
+		t.Errorf("rendered entry did not survive a round trip: %+v", e)
+	}
+}
+
+// A misspelt section would otherwise be obeyed and match nothing.
+func TestUnknownSectionsAreDropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	os.WriteFile(path, []byte("sections = ['resources', 'sylabus', 'nonsense']\n"), 0o644)
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.Sections) != 1 || cfg.Sections[0] != "resources" {
+		t.Errorf("sections = %v, want just [resources]", cfg.Sections)
+	}
+
+	// And a config that enables nothing valid must still sync something.
+	os.WriteFile(path, []byte("sections = ['nonsense']\n"), 0o644)
+	cfg, _ = LoadConfig(path)
+	if len(cfg.sections()) == 0 {
+		t.Error("a config with no valid section would sync nothing at all")
 	}
 }

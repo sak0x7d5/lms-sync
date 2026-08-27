@@ -18,7 +18,7 @@ go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style 
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`.
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -46,6 +46,47 @@ Two front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
+### One core, many tabs
+
+A course is not one directory any more. `Sync` walks the enabled `section`s of
+each course; a section returns `artifact`s, which come in two shapes:
+
+- **fetched** — a `url`, downloaded byte for byte (Resources, Drop Box, and any
+  attachment). This is what the tool has always done.
+- **rendered** — a `body`, captured from a tool that has no files at all
+  (Syllabus). The content lives in the server's database, so it is rendered to
+  a local page instead of downloaded.
+
+Adding a tab means implementing `section` and listing it in `knownSections`.
+The `Sync` loop, the CLI and the web UI then handle it without changes —
+the same rule as before: **behaviour belongs in sync.go, not in a handler.**
+
+Sections are only run when the course actually offers the tab. `Client.Tools`
+finds that out with two independent signals, for the same reason
+`Authenticated` does: `/direct/site/<id>/pages.json` is clean but the Entity
+Broker is disabled on many installs, so the rendered portal is the fallback.
+On a portal page the tool's registration id exists nowhere but the menu
+icon's class name (`icon-sakai--sakai-syllabus`), which is why `toolsFromPortal`
+matches raw anchors rather than using `parseLinks`.
+
+Because installs vary, **`--probe` is how you find out what a server does**
+rather than guessing: it reports each course's tabs and which candidate
+endpoints answered, and downloads nothing.
+
+### The allowlist replaced an invariant that used to be structural
+
+`childLinks`' single-prefix rule used to make it *impossible* to wander out of
+one `/access/content` root, so nothing else needed saying. Mirroring several
+tabs gives that up, so the rule is now written down: `allowedContent` is an
+allowlist of content paths on the LMS's own host, and `deniedTools` refuses
+whole tools before their URLs are ever known.
+
+**This is not cosmetic. On several Sakai versions the link into a Samigo
+assessment is an ordinary GET that opens an attempt** — a crawler that follows
+it can start a student's timed quiz. Tests & Quizzes has nothing to mirror
+anyway. `TestQuizToolIsNeverFetched` asserts no Samigo URL is ever requested;
+keep it that way, and keep the list an allowlist rather than a blocklist.
+
 ### Errors are classified, and the classification is load-bearing
 
 Every failure is a `*Error` with a `Kind` (`auth`, `network`, `tls`, `session`, `server`, `not-found`, `config`, `filesystem`, `cancelled`). Callers branch on `KindOf(err)`, never on message text. Three places derive behaviour from `Kind` and must stay in sync when one is added: `Kind.String()`, `reportErr` in main.go (process exit codes: 0/1/2/130) and `statusFor` in ui.go (HTTP status).
@@ -62,6 +103,10 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Everything durable is written temp-then-rename**: downloads (`.part`), `config.toml`, `manifest.json`.
 - **One bad file must not end the run.** `KindNotFound` on a file is counted and skipped; only `cancelled`, `tls` and `session` abort the whole sync.
 - **A corrupt manifest starts fresh rather than failing**, and `sanitise()` clamps hand-edited config values.
+- **Resources stays at the course root**, never in a `Resources/` subfolder. Freshness needs the file to still be where the manifest last saw it, so moving the tree would silently re-download every existing user's whole library. `TestResourcesStayAtTheCourseRoot`.
+- **The manifest reads both of its shapes.** Entries written before sections existed are bare numbers; rendered pages need an object with a hash. `entry` unmarshals either, and still *writes* a bare number when there is no hash, so a downloads-only manifest stays readable by an older build. Rejecting the old shape would fail the decode, which the rule above turns into a full re-download. `TestLegacyManifestIsStillRead`.
+- **A rendered page must be byte-stable.** It has no server-side size, so freshness is decided by hashing what we would write. A timestamp in `renderSyllabus` would make every run rewrite the file and report it as new. `TestSyllabusFallsBackToRenderedPage` runs the sync twice to catch that.
+- **An enabled but empty tab is a `skip`, not a failure.** Plenty of courses leave a tool switched on and empty; counting those would train people to ignore the failure count. `TestEmptySectionIsSkippedNotFailed`.
 
 ### Freshness check
 
@@ -84,10 +129,18 @@ Bind loopback-only on a random port; a random hex token generated at startup is 
 
 `config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file.
 
+`sections` picks which tabs to mirror (`resources`, `syllabus`, `dropbox`);
+unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
+never end up empty.
+
 The TOML reader is deliberately partial: top-level keys, one `[courses]` table, single/double-quoted strings, ints, string arrays. Unrecognised lines are skipped rather than treated as fatal. The writer emits single-quoted literal strings so Windows paths (`'D:\Uni\Courses'`) survive.
 
 `DefaultLMS` in config.go is the one line to change when forking for another university.
 
 ## Tests
 
-All in [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`. Extend that fake rather than reaching for the network; there are no live-server tests.
+All in [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`, a portal tool menu that names registrations only in icon classes, a syllabus tool behind an iframe, and a course whose Syllabus tab is enabled but empty. Every request is recorded, so a test can assert what was *not* fetched (`srv.requested`). Extend that fake rather than reaching for the network; there are no live-server tests.
+
+`testConfig` pins `Sections` to `resources` on purpose: the older tests are
+about Resources behaviour, and a change to the shipped defaults must not
+quietly rewrite what they assert. Tests for other tabs enable them explicitly.
