@@ -42,6 +42,9 @@
        height:260px;overflow-y:auto;font-family:ui-monospace,"Cascadia Code",Consolas,monospace;
        font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
   #log:empty::after{content:"Ready.";color:var(--muted)}
+  .checks{display:flex;flex-wrap:wrap;gap:6px 14px;margin:2px 0 4px}
+  .check{display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer}
+  .check input{margin:0}
   .l-course{color:var(--accent);font-weight:600;margin-top:8px}
   .l-section{color:var(--ink);font-weight:600}
   .l-skip{color:var(--muted)}
@@ -100,6 +103,16 @@
         <button type="button" id="browse" class="hidden">Browse…</button>
       </div>
       <div class="hint">Only course folders go here. Point it at Google Drive to sync everywhere.</div>
+    </div>
+    <div class="field">
+      <label>Tabs to mirror</label>
+      <div class="checks" id="sections"></div>
+      <div class="hint">A tab is only visited when the course actually has it.</div>
+    </div>
+    <div class="field">
+      <label class="check"><input type="checkbox" id="keep"> Also save each tab's page</label>
+      <div class="hint">Most Syllabus tabs are just a link to a PDF, so only the files are
+        kept. Turn this on if your instructors type notes into the tab itself.</div>
     </div>
     <div class="row">
       <button id="save">Save</button>
@@ -170,11 +183,36 @@ async function loadConfig() {
     $("ver").textContent = "v" + c.version;
     // The server decides: a button that cannot open anything is worse than none.
     $("browse").classList.toggle("hidden", !c.can_browse);
+    showSections(c.all_sections || [], c.sections || []);
+    $("keep").checked = !!c.keep_pages;
     showCourses(c.courses || []);
     // Configured already? Collapse settings and get out of the way.
     if (c.configured && (c.courses || []).length) $("settings").classList.add("hidden");
     setRunning(c.running);
   } catch (e) { banner(String(e.message || e), "err"); }
+}
+
+// The tab list comes from the server rather than being hard-coded here, so
+// adding a tab in Go makes it appear in the interface on its own.
+function showSections(all, chosen) {
+  const el = $("sections");
+  el.innerHTML = "";
+  all.forEach(sec => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = sec.id;
+    box.checked = chosen.indexOf(sec.id) > -1;
+    label.appendChild(box);
+    label.appendChild(document.createTextNode(sec.name));
+    el.appendChild(label);
+  });
+}
+
+function chosenSections() {
+  return [].slice.call(document.querySelectorAll("#sections input:checked"))
+           .map(b => b.value);
 }
 
 function showCourses(list) {
@@ -194,6 +232,8 @@ async function save(quiet) {
     username: $("user").value.trim(),
     password: $("pass").value,
     destination: $("dest").value.trim(),
+    sections: chosenSections(),
+    keep_pages: $("keep").checked,
   });
   const r = await api("/api/config", { method: "POST", body });
   if (!r.ok) {
@@ -203,6 +243,10 @@ async function save(quiet) {
   $("pass").value = "";
   const c = await r.json();
   $("pass").placeholder = c.configured ? "•••••••• (saved)" : "";
+  // The server drops anything it does not recognise and never leaves the list
+  // empty, so redraw from what it actually stored.
+  showSections(c.all_sections || [], c.sections || []);
+  $("keep").checked = !!c.keep_pages;
   if (!quiet) banner("Settings saved.", "ok");
 }
 

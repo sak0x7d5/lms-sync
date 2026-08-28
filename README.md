@@ -163,8 +163,9 @@ Every run also writes **`index.html`** at the top of your courses folder: one
 page listing every file you have, newest first, with a box that filters as you
 type. Open that rather than digging through folders.
 
-A tab like Syllabus is nearly always a wrapper around a PDF, so only the
-linked files are kept. If your instructors type notes straight into a tab, set
+Both of these are in the interface — tick the tabs you want, and there is a
+switch for the page. A tab like Syllabus is nearly always a wrapper around a
+PDF, so only the linked files are kept. If your instructors type notes straight into a tab, set
 `keep_pages = true` to save the page as well. Either way, a tab that links to
 no files always gets its page, so nothing is ever lost silently.
 

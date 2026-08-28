@@ -134,11 +134,18 @@ type configPayload struct {
 	Password    string   `json:"password"`
 	Destination string   `json:"destination"`
 	Courses     []Course `json:"courses"`
-	Configured  bool     `json:"configured"`
-	Running     bool     `json:"running"`
-	Version     string   `json:"version"`
-	DefaultLMS  string   `json:"default_lms"`
-	CanBrowse   bool     `json:"can_browse"`
+
+	// Pointers so that "the field was not sent" is distinguishable from
+	// "the student unticked everything", which are different intentions.
+	Sections  *[]string `json:"sections,omitempty"`
+	KeepPages *bool     `json:"keep_pages,omitempty"`
+
+	AllSections []sectionInfo `json:"all_sections,omitempty"`
+	Configured  bool          `json:"configured"`
+	Running     bool          `json:"running"`
+	Version     string        `json:"version"`
+	DefaultLMS  string        `json:"default_lms"`
+	CanBrowse   bool          `json:"can_browse"`
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -161,6 +168,15 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if in.Destination != "" {
 			s.cfg.Destination = in.Destination
 		}
+		if in.Sections != nil {
+			s.cfg.Sections = *in.Sections
+		}
+		if in.KeepPages != nil {
+			s.cfg.KeepPages = *in.KeepPages
+		}
+		// The same guard the config file gets: unknown ids are dropped, and
+		// the list can never end up empty.
+		s.cfg.sanitise()
 		if err := s.cfg.Save(); err != nil {
 			writeErr(w, http.StatusInternalServerError, "Settings could not be saved.", Explain(err))
 			return
@@ -169,11 +185,15 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 
 	// The password is never sent back to the browser; the field shows a
 	// placeholder if one is stored.
+	sections := s.cfg.sections()
 	json.NewEncoder(w).Encode(configPayload{
 		BaseURL:     s.cfg.BaseURL,
 		Username:    s.cfg.Username,
 		Destination: s.cfg.Destination,
 		Courses:     s.cfg.Courses,
+		Sections:    &sections,
+		KeepPages:   &s.cfg.KeepPages,
+		AllSections: sectionCatalogue(),
 		Configured:  s.cfg.Password != "" && s.cfg.Username != "",
 		Running:     s.running,
 		Version:     version,

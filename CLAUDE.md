@@ -136,7 +136,12 @@ A browser is never told the real path of a folder the user picks — the File Sy
 
 ### The web UI's security model
 
-Bind loopback-only on a random port; a random hex token generated at startup is required by every `/api/*` route (`server.auth`, constant-time compare) and appears in the printed URL. The password is never sent back to the browser. `handleSync` guards a single run with `s.running` and copies the config (`cfg := *s.cfg`) before handing it to the goroutine. `broadcast` is non-blocking — a stalled tab drops lines rather than stalling the sync.
+Bind loopback-only on a random port; a random hex token generated at startup is required by every `/api/*` route (`server.auth`, constant-time compare) and appears in the printed URL. `sections` and `keep_pages` are editable from the page, and the checkbox list
+is built from `sectionCatalogue()` — derived from `pageSections`, so a new tab
+appears in the interface without being listed a second time. `handleConfig`
+takes them as pointers so "the field was not sent" stays distinguishable from
+"everything was unticked", and runs `sanitise()` over the result exactly as the
+config-file path does. The password is never sent back to the browser. `handleSync` guards a single run with `s.running` and copies the config (`cfg := *s.cfg`) before handing it to the goroutine. `broadcast` is non-blocking — a stalled tab drops lines rather than stalling the sync.
 
 ## Config and secrets
 

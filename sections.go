@@ -743,6 +743,23 @@ var pageSections = []struct {
 	},
 }
 
+// sectionInfo is one tab as the interface offers it.
+type sectionInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// sectionCatalogue is every tab that can be enabled, in the order the LMS
+// tends to show them. Derived from pageSections so a tab added there turns up
+// in the web interface without anyone remembering to list it twice.
+func sectionCatalogue() []sectionInfo {
+	out := []sectionInfo{{ID: "resources", Name: "Resources"}}
+	for _, ps := range pageSections {
+		out = append(out, sectionInfo{ID: ps.id, Name: ps.name})
+	}
+	return append(out, sectionInfo{ID: "dropbox", Name: "Drop Box"})
+}
+
 // sectionsFor decides which tabs of one course to mirror.
 //
 // Resources is always attempted, whatever the tool list says: it is the
