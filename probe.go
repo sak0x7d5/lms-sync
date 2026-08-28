@@ -97,24 +97,27 @@ func (c *Client) Probe(ctx context.Context, course Course, eid string) probeRepo
 	}
 	rep.Checks = append(rep.Checks, syl)
 
-	if t, ok := find(rep.Tools, []string{"sakai.syllabus"}, []string{"syllabus"}); ok {
-		check := probeCheck{Label: "Syllabus (tool page)", URL: t.URL,
+	for _, ps := range pageSections {
+		t, ok := find(rep.Tools, ps.regs, ps.titles)
+		if !ok {
+			rep.Checks = append(rep.Checks, probeCheck{
+				Label:  ps.name + " (tool page)",
+				Result: "no " + ps.name + " tab in this course's tool list",
+			})
+			continue
+		}
+		check := probeCheck{Label: ps.name + " (tool page)", URL: t.URL,
 			Result: c.probeURL(ctx, t.URL)}
-		if items, err := c.syllabusFromPage(ctx, t); err == nil && len(items) > 0 {
+		if items, err := c.capturePage(ctx, t); err == nil && len(items) > 0 {
 			// The attachment count is the number that matters: on most
-			// courses the syllabus is a linked PDF, not text on the page.
+			// courses the content is a linked PDF, not text on the page.
 			n := len(attachmentURLs(c, items))
-			check.Result += fmt.Sprintf(" — content captured, %d attachment%s",
+			check.Result += fmt.Sprintf(" — content captured, %d file%s",
 				n, plural(n, "", "s"))
 		} else if err == nil {
 			check.Result += " — reached, but nothing readable was found in it"
 		}
 		rep.Checks = append(rep.Checks, check)
-	} else {
-		rep.Checks = append(rep.Checks, probeCheck{
-			Label:  "Syllabus (tool page)",
-			Result: "no Syllabus tab found in this course's tool list",
-		})
 	}
 
 	return rep

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -228,11 +229,14 @@ func (c *Client) allowedContent(rawURL string) bool {
 
 // knownSections is every tab this tool can mirror. Config validates against
 // it so a misspelt entry is reported by being dropped rather than obeyed.
-var knownSections = map[string]bool{
-	"resources": true,
-	"syllabus":  true,
-	"dropbox":   true,
-}
+// Derived from pageSections so the two can never drift apart.
+var knownSections = func() map[string]bool {
+	m := map[string]bool{"resources": true, "dropbox": true}
+	for _, ps := range pageSections {
+		m[ps.id] = true
+	}
+	return m
+}()
 
 // resourcesSection mirrors the Resources tab.
 //
@@ -277,76 +281,110 @@ func (s dropboxSection) Collect(ctx context.Context, c *Client, siteID string,
 	return c.walkTree(ctx, root, []string{"Drop Box"}, s.maxDepth, report)
 }
 
-// syllabusSection mirrors the Syllabus tab.
+// pageSection mirrors a tab that has no files of its own.
 //
-// This is the first tab that is not a pile of files. The syllabus lives in
-// the server's database and is rendered by a tool, so there is nothing to
-// download: the content is captured and written out as one page, and only its
-// attachments are real files.
-type syllabusSection struct {
-	maxDepth int
+// Syllabus, Announcements and Assignments are the same shape underneath: the
+// content lives in the server's database and is rendered by a tool, so there
+// is nothing to walk. The page is captured, and the files it links to — very
+// often the thing that actually matters, an outline or an assignment brief —
+// are downloaded beside it.
+type pageSection struct {
+	id       string
+	name     string // the tab's label, and the folder it writes into
+	file     string // what the captured page is saved as
 	tool     tool
 	keepPage bool
+
+	// fromAPI is the clean route where the Entity Broker is switched on. It
+	// is optional: most installs have it disabled, and the captured page is
+	// then the only route.
+	fromAPI func(context.Context, *Client, string) ([]capturedItem, error)
 }
 
-func (syllabusSection) ID() string   { return "syllabus" }
-func (syllabusSection) Name() string { return "Syllabus" }
+func (s pageSection) ID() string   { return s.id }
+func (s pageSection) Name() string { return s.name }
 
-func (s syllabusSection) Collect(ctx context.Context, c *Client, siteID string,
+func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 	report Reporter) ([]artifact, error) {
 
-	items, err := c.syllabusFromAPI(ctx, siteID)
-	if err != nil || len(items) == 0 {
-		// The Entity Broker is off on many installs, so falling back to what
-		// the tool renders is the normal path, not the exceptional one.
-		items, err = c.syllabusFromPage(ctx, s.tool)
-		if err != nil {
-			return nil, err
+	var items []capturedItem
+	if s.fromAPI != nil {
+		if got, err := s.fromAPI(ctx, c, siteID); err == nil {
+			items = got
 		}
 	}
 	if len(items) == 0 {
-		return nil, failf(KindNotFound, "read the syllabus for "+siteID,
-			"The Syllabus tab is there but published nothing readable.", nil)
+		got, err := c.capturePage(ctx, s.tool)
+		if err != nil {
+			return nil, err
+		}
+		items = got
+	}
+	if len(items) == 0 {
+		return nil, failf(KindNotFound, "read "+s.name+" for "+siteID,
+			"The "+s.name+" tab is there but published nothing readable.", nil)
 	}
 
 	files := attachmentURLs(c, items)
+	local := localNames(files)
 
-	// The captured page is worth keeping when the instructor typed a syllabus
-	// into the tool, and mostly noise when the tab is a wrapper around a PDF.
-	// Which of those it is cannot be judged reliably from the markup — the
-	// tool's own chrome ("Expand All", "Print View") reads as content — so
-	// this is a setting rather than a guess. It is still written when a tab
-	// links to no files at all, so turning it off can never leave a course
-	// with nothing.
+	// The captured page is worth keeping when the instructor typed the
+	// content into the tool, and mostly noise when the tab is a wrapper
+	// around a PDF. Which of those it is cannot be judged reliably from the
+	// markup — the tool's own chrome ("Expand All", "Print View") reads as
+	// content — so this is a setting rather than a guess. It is still written
+	// when a tab links to no files at all, so turning it off can never leave
+	// a course with nothing.
 	var out []artifact
 	if s.keepPage || len(files) == 0 {
 		out = append(out, artifact{
-			body:  renderSyllabus(items),
-			key:   "syllabus:" + siteID,
-			parts: []string{"Syllabus", "Syllabus.html"},
+			body:  renderCaptured(s.name, items, local),
+			key:   s.id + ":" + siteID,
+			parts: []string{s.name, s.file},
 		})
 	}
 
-	// Attachments are ordinary files under /access/content/attachment.
+	// Beside the page, not in an "attachments" subfolder: on most courses one
+	// of these files IS the syllabus or the brief, and burying it would be
+	// perverse.
 	for _, u := range files {
-		// Beside the page, not in an "attachments" subfolder: on most courses
-		// this PDF is the syllabus, and burying it would be perverse.
-		out = append(out, artifact{
-			url:   u,
-			parts: []string{"Syllabus", SafeName(lastSegment(u))},
-		})
+		out = append(out, artifact{url: u, parts: []string{s.name, local[u]}})
 	}
 	return out, nil
 }
 
-// syllabusItem is one entry on the syllabus, however it was obtained.
-type syllabusItem struct {
+// capturedItem is one entry from a rendered tab, however it was obtained.
+type capturedItem struct {
 	Title       string
-	Body        string // HTML, as authored by the instructor
-	Attachments []string
+	Body        string   // HTML, as the instructor authored it
+	Attachments []string // absolute URLs
+	pageURL     string   // where Body came from, so its links can be resolved
 }
 
-func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]syllabusItem, error) {
+// localNames maps each attachment URL to the filename it is saved under.
+//
+// Duplicates have to be made unique: Sakai files attachments under opaque
+// per-item folders, so two assignments can both link a "brief.pdf" and the
+// second would otherwise overwrite the first. Compared case-insensitively,
+// because Windows would collide on names Linux keeps apart.
+func localNames(urls []string) map[string]string {
+	out := make(map[string]string, len(urls))
+	taken := map[string]bool{}
+	for _, u := range urls {
+		name := SafeName(lastSegment(u))
+		ext := filepath.Ext(name)
+		stem := strings.TrimSuffix(name, ext)
+		candidate := name
+		for n := 2; taken[strings.ToLower(candidate)]; n++ {
+			candidate = fmt.Sprintf("%s (%d)%s", stem, n, ext)
+		}
+		taken[strings.ToLower(candidate)] = true
+		out[u] = candidate
+	}
+	return out
+}
+
+func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
 	body, err := c.getText(ctx,
 		c.base+"/direct/syllabus/site/"+url.PathEscape(siteID)+".json")
 	if err != nil {
@@ -394,9 +432,11 @@ func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]syllabus
 		return nil, failf(KindNotFound, "read syllabus JSON", "", err)
 	}
 
-	out := make([]syllabusItem, 0, len(entries))
+	out := make([]capturedItem, 0, len(entries))
 	for _, e := range entries {
-		item := syllabusItem{Title: e.Title, Body: e.Asset}
+		// Links inside the asset are relative to the LMS root, since this
+		// content was never rendered on a page of its own.
+		item := capturedItem{Title: e.Title, Body: e.Asset, pageURL: c.base + "/"}
 		if item.Body == "" {
 			item.Body = e.Data
 		}
@@ -424,22 +464,25 @@ func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]syllabus
 
 var (
 	// RE2 has no backreferences, so each tag is spelled out.
-	scriptRe  = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<noscript\b[^>]*>.*?</noscript>`)
-	iframeRe  = regexp.MustCompile(`(?is)<iframe\b[^>]*\bsrc\s*=\s*["']([^"']+)["']`)
-	contentRe = regexp.MustCompile(`(?is)<div[^>]*\b(?:id|class)\s*=\s*["'][^"']*(?:portletBody|Mrphs-mainHeader|syllabus)[^"']*["'][^>]*>(.*)</div>`)
+	scriptRe = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<noscript\b[^>]*>.*?</noscript>`)
+	iframeRe = regexp.MustCompile(`(?is)<iframe\b[^>]*\bsrc\s*=\s*["']([^"']+)["']`)
+	// The opening tag of the region a tool renders its content into.
+	regionStartRe = regexp.MustCompile(`(?is)<div[^>]*\b(?:id|class)\s*=\s*["'][^"']*(?:portletbody|syllabus|announcement|assignment)[^"']*["'][^>]*>`)
+	eventAttrRe   = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	attrRe        = regexp.MustCompile(`(?i)\b(href|src)\s*=\s*["']([^"']*)["']`)
 )
 
-// syllabusFromPage captures what the tool renders.
+// capturePage captures what a tool renders.
 //
 // The markup here is the least predictable thing in the project: it varies by
 // Sakai version and skin, and the tool is usually inside an iframe on the
 // portal page. So this is deliberately forgiving — follow one iframe, strip
 // what is definitely chrome, and keep the rest. Capturing too much beats
 // capturing nothing, and --probe shows which path a given server takes.
-func (c *Client) syllabusFromPage(ctx context.Context, t tool) ([]syllabusItem, error) {
+func (c *Client) capturePage(ctx context.Context, t tool) ([]capturedItem, error) {
 	if t.URL == "" {
-		return nil, failf(KindNotFound, "open the Syllabus tab",
-			"This course does not appear to have a Syllabus tab.", nil)
+		return nil, failf(KindNotFound, "open the tab",
+			"This course does not appear to have that tab.", nil)
 	}
 
 	body, err := c.getText(ctx, t.URL)
@@ -447,7 +490,7 @@ func (c *Client) syllabusFromPage(ctx context.Context, t tool) ([]syllabusItem, 
 		return nil, err
 	}
 	if loginFormRe.MatchString(body) {
-		return nil, failf(KindSession, "open the Syllabus tab", hintSession, nil)
+		return nil, failf(KindSession, "open "+t.Title, hintSession, nil)
 	}
 
 	// The portal frames the real tool; one hop is enough to reach it. The URL
@@ -468,20 +511,56 @@ func (c *Client) syllabusFromPage(ctx context.Context, t tool) ([]syllabusItem, 
 	}
 
 	body = scriptRe.ReplaceAllString(body, "")
-	if m := contentRe.FindStringSubmatch(body); m != nil {
-		body = m[1]
+	if region, ok := extractRegion(body); ok {
+		body = region
 	}
 
-	item := syllabusItem{
-		Title:       "Syllabus",
+	item := capturedItem{
 		Body:        body,
+		pageURL:     pageURL,
 		Attachments: contentLinks(c, body, pageURL),
 	}
 	if strings.TrimSpace(tagRe.ReplaceAllString(body, "")) == "" &&
 		len(item.Attachments) == 0 {
 		return nil, nil // nothing readable; the caller reports it
 	}
-	return []syllabusItem{item}, nil
+	return []capturedItem{item}, nil
+}
+
+// extractRegion returns the contents of the element a tool renders into,
+// counting nested <div>s so that it stops at the matching closing tag.
+//
+// A greedy regex used to do this, and it read from the marker to the LAST
+// </div> on the page — which swallowed the portal's own navigation. Every
+// file linked anywhere in that navigation then looked like an attachment of
+// this one tab, and was downloaded into it.
+func extractRegion(body string) (string, bool) {
+	loc := regionStartRe.FindStringIndex(body)
+	if loc == nil {
+		return "", false
+	}
+	start := loc[1]
+
+	lower := strings.ToLower(body)
+	depth, i := 1, start
+	for i < len(body) {
+		open := strings.Index(lower[i:], "<div")
+		shut := strings.Index(lower[i:], "</div")
+		if shut < 0 {
+			break // unbalanced markup: keep what is left rather than nothing
+		}
+		if open >= 0 && open < shut {
+			depth++
+			i += open + len("<div")
+			continue
+		}
+		depth--
+		if depth == 0 {
+			return body[start : i+shut], true
+		}
+		i += shut + len("</div")
+	}
+	return body[start:], true
 }
 
 // contentLinks pulls the downloadable files a rendered tool page points at.
@@ -526,9 +605,9 @@ func contentLinks(c *Client, body, pageURL string) []string {
 	return out
 }
 
-// attachmentURLs collects the files a syllabus points at, dropping anything
+// attachmentURLs collects the files a tab points at, dropping anything
 // outside the allowlist.
-func attachmentURLs(c *Client, items []syllabusItem) []string {
+func attachmentURLs(c *Client, items []capturedItem) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, item := range items {
@@ -545,30 +624,85 @@ func attachmentURLs(c *Client, items []syllabusItem) []string {
 	return out
 }
 
-// renderSyllabus writes the captured syllabus as one self-contained page.
+// stripHandlers removes inline event handlers from captured markup. The page
+// ends up on the student's own disk and is opened from there; nothing an
+// instructor pasted into a syllabus needs to execute in order to be read.
+func stripHandlers(body string) string {
+	return eventAttrRe.ReplaceAllString(body, "")
+}
+
+// localiseLinks rewrites the links and image sources in captured markup.
 //
-// The output must be byte-for-byte identical when the syllabus has not
-// changed — freshness is decided by hashing it. Nothing here may include a
-// timestamp, a run id, or anything else that varies per run, or every run
-// would rewrite the file and report it as new.
-func renderSyllabus(items []syllabusItem) []byte {
+// What the LMS writes is root-relative ("/access/content/..."), which points
+// at nothing once the page is a file in a folder on a laptop: every link in a
+// saved page was dead. Links to files this run downloaded now point at the
+// local copy, so the page works with no network at all; everything else is
+// made absolute so it still opens the LMS in a browser.
+func localiseLinks(body, pageURL string, local map[string]string) string {
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return body
+	}
+	return attrRe.ReplaceAllStringFunc(body, func(match string) string {
+		g := attrRe.FindStringSubmatch(match)
+		raw := strings.TrimSpace(unescapeEntities(g[2]))
+		switch {
+		case raw == "", strings.HasPrefix(raw, "#"),
+			strings.HasPrefix(raw, "mailto:"), strings.HasPrefix(raw, "javascript:"),
+			strings.HasPrefix(raw, "data:"):
+			return match
+		}
+		ref, err := url.Parse(raw)
+		if err != nil {
+			return match
+		}
+		abs := base.ResolveReference(ref)
+		abs.Fragment = ""
+		if name, ok := local[abs.String()]; ok {
+			return g[1] + `="` + html.EscapeString(url.PathEscape(name)) + `"`
+		}
+		return g[1] + `="` + html.EscapeString(abs.String()) + `"`
+	})
+}
+
+// renderCaptured writes a captured tab as one self-contained page.
+//
+// The output must be byte-for-byte identical when the tab has not changed —
+// freshness is decided by hashing it. Nothing here may include a timestamp, a
+// run id, or anything else that varies per run, or every run would rewrite
+// the file and report it as new.
+func renderCaptured(title string, items []capturedItem, local map[string]string) []byte {
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<meta charset=\"utf-8\">\n")
-	b.WriteString("<title>Syllabus</title>\n")
+	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
 	b.WriteString("<style>body{font:16px/1.6 system-ui,sans-serif;max-width:48rem;" +
 		"margin:2rem auto;padding:0 1rem}h2{margin-top:2rem}</style>\n")
-	b.WriteString("<h1>Syllabus</h1>\n")
+	fmt.Fprintf(&b, "<h1>%s</h1>\n", html.EscapeString(title))
+
 	for _, item := range items {
 		if t := strings.TrimSpace(item.Title); t != "" {
 			fmt.Fprintf(&b, "<h2>%s</h2>\n", html.EscapeString(t))
 		}
-		// The body is the instructor's own HTML and is kept as written.
-		b.WriteString(strings.TrimSpace(item.Body))
+		body := localiseLinks(stripHandlers(item.Body), item.pageURL, local)
+		b.WriteString(strings.TrimSpace(body))
 		b.WriteString("\n")
-		for _, a := range item.Attachments {
-			fmt.Fprintf(&b, "<p>Attachment: %s</p>\n",
-				html.EscapeString(SafeName(lastSegment(a))))
+	}
+
+	// The downloaded files, listed plainly. The captured markup often buries
+	// them in the tool's own layout, and this is the half of the page a
+	// student actually came for.
+	if len(local) > 0 {
+		names := make([]string, 0, len(local))
+		for _, n := range local {
+			names = append(names, n)
 		}
+		sort.Strings(names)
+		b.WriteString("<h2>Files</h2>\n<ul>\n")
+		for _, n := range names {
+			fmt.Fprintf(&b, "<li><a href=\"%s\">%s</a></li>\n",
+				html.EscapeString(url.PathEscape(n)), html.EscapeString(n))
+		}
+		b.WriteString("</ul>\n")
 	}
 	return []byte(b.String())
 }
@@ -576,6 +710,37 @@ func renderSyllabus(items []syllabusItem) []byte {
 // ---------------------------------------------------------------------------
 // Choosing what to run
 // ---------------------------------------------------------------------------
+
+// pageSections describes every rendered tab this tool knows how to mirror.
+// Adding another is one entry here — the Sync loop, the CLI and the web UI
+// need no changes at all.
+var pageSections = []struct {
+	id, name, file string
+	regs, titles   []string
+	fromAPI        func(context.Context, *Client, string) ([]capturedItem, error)
+}{
+	{
+		id: "syllabus", name: "Syllabus", file: "Syllabus.html",
+		regs:   []string{"sakai.syllabus"},
+		titles: []string{"syllabus"},
+		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
+			return c.syllabusFromAPI(ctx, siteID)
+		},
+	},
+	{
+		id: "announcements", name: "Announcements", file: "Announcements.html",
+		regs:   []string{"sakai.announcements", "sakai.announcement"},
+		titles: []string{"announcements"},
+	},
+	{
+		// The registration is sakai.assignment.grades, but a portal icon
+		// class spells it with dashes, so both forms have to be matched.
+		id: "assignments", name: "Assignments", file: "Assignments.html",
+		regs: []string{"sakai.assignment.grades", "sakai.assignment-grades",
+			"sakai.assignment"},
+		titles: []string{"assignments"},
+	},
+}
 
 // sectionsFor decides which tabs of one course to mirror.
 //
@@ -595,7 +760,11 @@ func (c *Client) sectionsFor(ctx context.Context, siteID string, cfg *Config) ([
 	}
 
 	// Nothing below needs the tool list unless something below is enabled.
-	if !enabled["syllabus"] && !enabled["dropbox"] {
+	needsTools := enabled["dropbox"]
+	for _, ps := range pageSections {
+		needsTools = needsTools || enabled[ps.id]
+	}
+	if !needsTools {
 		return out, nil
 	}
 
@@ -608,10 +777,13 @@ func (c *Client) sectionsFor(ctx context.Context, siteID string, cfg *Config) ([
 		return out, nil
 	}
 
-	if enabled["syllabus"] {
-		if t, ok := find(tools, []string{"sakai.syllabus"}, []string{"syllabus"}); ok {
-			out = append(out, syllabusSection{maxDepth: cfg.MaxDepth, tool: t,
-				keepPage: cfg.KeepPages})
+	for _, ps := range pageSections {
+		if !enabled[ps.id] {
+			continue
+		}
+		if t, ok := find(tools, ps.regs, ps.titles); ok {
+			out = append(out, pageSection{id: ps.id, name: ps.name, file: ps.file,
+				tool: t, keepPage: cfg.KeepPages, fromAPI: ps.fromAPI})
 		}
 	}
 	if enabled["dropbox"] {

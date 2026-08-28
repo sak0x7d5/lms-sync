@@ -197,6 +197,8 @@ const toolMenuProg = `<html><ul>
   <li><a href="/portal/site/site-prog/tool/t-over"><span class="icon-sakai--sakai-iframe-site"></span><span>Overview</span></a></li>
   <li><a href="/portal/site/site-prog/tool/t-syllabus"><span class="icon-sakai--sakai-syllabus"></span><span>Syllabus</span></a></li>
   <li><a href="/portal/site/site-prog/tool/t-res"><span class="icon-sakai--sakai-resources"></span><span>Resources</span></a></li>
+  <li><a href="/portal/site/site-prog/tool/t-annc"><span class="icon-sakai--sakai-announcements"></span><span>Announcements</span></a></li>
+  <li><a href="/portal/site/site-prog/tool/t-asn"><span class="icon-sakai--sakai-assignment-grades"></span><span>Assignments</span></a></li>
   <li><a href="/portal/site/site-prog/tool/t-drop"><span class="icon-sakai--sakai-dropbox"></span><span>Drop Box</span></a></li>
   <li><a href="/portal/site/site-prog/tool/t-samigo"><span class="icon-sakai--sakai-samigo"></span><span>Tests &amp; Quizzes</span></a></li>
 </ul></html>`
@@ -296,6 +298,20 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			return
 		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/tool/t-annc"):
+			io.WriteString(w, `<html><div id="portletBody">
+			  <h3>Midterm moved to Friday</h3>
+			  <p>The midterm is now on Friday. Bring a calculator.</p>
+			  </div></html>`)
+		case strings.HasSuffix(r.URL.Path, "/tool/t-asn"):
+			// Two briefs sharing a basename, filed under different opaque
+			// parent folders — exactly how Sakai stores attachments.
+			io.WriteString(w, `<html><div id="portletBody">
+			  <h3>Assignment 1</h3>
+			  <a href="/access/content/attachment/site-prog/Assignments/a1/brief.pdf">brief.pdf</a>
+			  <h3>Assignment 2</h3>
+			  <a href="/access/content/attachment/site-prog/Assignments/a2/brief.pdf">brief.pdf</a>
+			  </div></html>`)
 		case strings.HasSuffix(r.URL.Path, "/tool/t-syllabus-text"):
 			fmt.Fprint(w, `<html><div id="portletBody">
 			  <h3>Grading</h3><p>40% midterm, 60% final. Nothing is attached.</p>
@@ -331,10 +347,15 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 		// link to a PDF, and none of them were being downloaded.
 		io.WriteString(w, `<html><script>never captured</script>
 		  <div id="portletBody">
-		    <h3>Course outline</h3><p>Weekly plan and grading policy.</p>
+		    <h3>Course outline</h3>
+		    <p onclick="alert('x')">Weekly plan and grading policy.</p>
+		    <div class="inner">nested, so the region must count depth</div>
 		    <a href="/access/content/attachment/site-prog/Syllabus/Course%20Outline%20ITS%20Fall%202026.pdf">Course Outline ITS Fall 2026.pdf</a>
 		    <a href="https://elsewhere.example/steal.pdf">off the LMS entirely</a>
 		    <a href="/portal/site/site-prog/tool/t-samigo">a quiz link in the page body</a>
+		  </div>
+		  <div id="siteNav">
+		    <a href="/access/content/group/site-prog/limits.pdf">a Resources file linked from the page chrome</a>
 		  </div></html>`)
 	})
 
@@ -1138,5 +1159,162 @@ func TestKeepPagesReadsAndWrites(t *testing.T) {
 	back, _ := LoadConfig(path)
 	if back.KeepPages {
 		t.Error("keep_pages did not survive a save/load round trip")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Captured pages
+// ---------------------------------------------------------------------------
+
+// The content region has to end at its own closing tag. A greedy match ran to
+// the last </div> on the page, swallowed the portal's navigation, and then
+// downloaded everything linked there as if it belonged to this one tab.
+func TestPageRegionDoesNotSwallowSiteNavigation(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if srv.requested("/access/content/group/site-prog/limits.pdf") {
+		t.Error("fetched a Resources file that was only linked from the page chrome")
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Programming",
+		"Syllabus", "limits.pdf")); err == nil {
+		t.Error("a file from the site navigation was filed under Syllabus")
+	}
+}
+
+// A saved page is opened from a folder on a laptop, where the LMS's
+// root-relative links point at nothing. They have to be rewritten or every
+// link in the page is dead.
+func TestSavedPageLinksWorkOffline(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cfg.Destination, "Programming",
+		"Syllabus", "Syllabus.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := string(body)
+
+	// The downloaded PDF is referenced by its local name, so the link opens
+	// the file sitting next to the page.
+	if !strings.Contains(page, `href="Course%20Outline%20ITS%20Fall%202026.pdf"`) {
+		t.Error("the link to the downloaded PDF was not made local")
+	}
+	// Nothing may still point at a path that only exists on the server.
+	if strings.Contains(page, `href="/access/`) {
+		t.Error("a root-relative link survived; it would be dead on disk")
+	}
+	// The off-site link stays, but absolute, so it still opens in a browser.
+	if !strings.Contains(page, "https://elsewhere.example/steal.pdf") {
+		t.Error("an unrelated link was mangled instead of left absolute")
+	}
+	if strings.Contains(strings.ToLower(page), "onclick") {
+		t.Error("an inline event handler survived into a file opened from disk")
+	}
+}
+
+func TestAnnouncementsAreCaptured(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"announcements"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cfg.Destination, "Programming",
+		"Announcements", "Announcements.html"))
+	if err != nil {
+		t.Fatalf("no announcements page: %v", err)
+	}
+	if !strings.Contains(string(body), "Midterm moved to Friday") {
+		t.Error("the announcement text was not captured")
+	}
+}
+
+// Sakai files attachments under opaque per-item folders, so two assignments
+// can both link a "brief.pdf". Without unique local names the second silently
+// overwrites the first.
+func TestAssignmentBriefsGetUniqueNames(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"assignments"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.New != 3 {
+		t.Errorf("new = %d, want 3 (the page and two briefs)", res.New)
+	}
+
+	dir := filepath.Join(cfg.Destination, "Programming", "Assignments")
+	for _, name := range []string{"brief.pdf", "brief (2).pdf"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("missing %s — one brief overwrote the other: %v", name, err)
+		}
+	}
+}
+
+func TestExtractRegionCountsNesting(t *testing.T) {
+	body := `<html><div id="nav"><a href="/before">x</a></div>
+	  <div class="portletBody">keep <div>this <div>too</div></div></div>
+	  <div id="footer"><a href="/after">y</a></div></html>`
+
+	got, ok := extractRegion(body)
+	if !ok {
+		t.Fatal("no region found")
+	}
+	if !strings.Contains(got, "keep") || !strings.Contains(got, "too") {
+		t.Errorf("region lost its own nested content: %q", got)
+	}
+	if strings.Contains(got, "/after") || strings.Contains(got, "/before") {
+		t.Errorf("region ran past its closing tag into the page chrome: %q", got)
+	}
+}
+
+func TestLocalNamesMakeDuplicatesUnique(t *testing.T) {
+	got := localNames([]string{
+		"https://x.edu/access/content/attachment/s/A/a1/brief.pdf",
+		"https://x.edu/access/content/attachment/s/A/a2/brief.pdf",
+		"https://x.edu/access/content/attachment/s/A/a3/BRIEF.PDF",
+	})
+
+	seen := map[string]bool{}
+	for u, name := range got {
+		lower := strings.ToLower(name)
+		if seen[lower] {
+			t.Errorf("%s reused the name %q; on Windows it would overwrite", u, name)
+		}
+		seen[lower] = true
+	}
+	if len(got) != 3 {
+		t.Errorf("got %d names, want 3", len(got))
 	}
 }

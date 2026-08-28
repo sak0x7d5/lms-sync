@@ -44,8 +44,9 @@ func DefaultConfig() *Config {
 		Delay:       200,
 		Retries:     3,
 		MaxDepth:    12,
-		Sections:    []string{"resources", "syllabus", "dropbox"},
-		KeepPages:   true,
+		Sections: []string{"resources", "syllabus", "announcements",
+			"assignments", "dropbox"},
+		KeepPages: true,
 		Extensions: []string{
 			".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx",
 			".txt", ".md", ".rtf", ".odt", ".odp", ".ods",
