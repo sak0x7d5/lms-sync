@@ -25,8 +25,7 @@ small window opens in your browser. Fill in four fields once and press Sync.
 Reopening skips straight to the sync screen — settings are remembered.
 
 Only course folders go to your destination; the program and its files stay
-where you put the binary. Point the destination at Google Drive or OneDrive
-and your material follows you to every device.
+where you put the binary.
 
 ## Command line
 
