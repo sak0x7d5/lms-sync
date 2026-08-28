@@ -212,7 +212,13 @@ func (s *server) handleDiscover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	// The budget has to cover the client's own retry policy. A flat three
+	// minutes was shorter than timeout x retries plus backoff, so a merely
+	// slow LMS blew the deadline mid-retry and surfaced as "context deadline
+	// exceeded" instead of the network error, with its hint, that the retries
+	// were about to produce.
+	budget := time.Duration(cfg.Timeout*cfg.Retries+60) * time.Second
+	ctx, cancel := context.WithTimeout(r.Context(), budget)
 	defer cancel()
 
 	client, err := NewClient(&cfg, s.insecure)

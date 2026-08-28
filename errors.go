@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -89,6 +90,19 @@ func Retryable(err error) bool {
 	return false
 }
 
+// ctxErr classifies a context that is no longer live.
+//
+// A deadline is not a cancellation. Nobody pressed stop; the server simply did
+// not answer in time. Reporting the two the same way produced "request
+// cancelled: context deadline exceeded" — a message that sends someone looking
+// for a button they never pressed, and buries the fact that the LMS was slow.
+func ctxErr(ctx context.Context, op string) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return failf(KindNetwork, op+" timed out", hintTimeout, ctx.Err())
+	}
+	return failf(KindCancelled, "stopped", "", ctx.Err())
+}
+
 // Explain renders an error as advice, not just a diagnosis.
 func Explain(err error) string {
 	if err == nil {
@@ -127,6 +141,13 @@ cannot log in at all — see the README.`
 Check the address in your settings, and that the site loads in a browser.
 If it loads there but not here, you may have been rate-limited by repeated
 failed logins — wait about fifteen minutes rather than retrying in a loop.`
+
+	hintTimeout = `The server accepted the connection but did not finish answering
+in time. That is usually the LMS being slow rather than anything wrong
+here, so the first thing to try is simply running it again.
+
+If it keeps happening, raise "timeout" in your settings — it is the
+number of seconds any one request is allowed to take.`
 
 	hintSession = `The session expired mid-run. Nothing was damaged; run it again.`
 

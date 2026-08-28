@@ -89,7 +89,7 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader,
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return nil, failf(KindCancelled, "request cancelled", "", ctx.Err())
+				return nil, ctxErr(ctx, method+" "+shortURL(rawURL))
 			}
 			if isTLSError(err) {
 				return nil, failf(KindTLS, method+" "+shortURL(rawURL), hintTLS, err)
@@ -141,7 +141,7 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	defer t.Stop()
 	select {
 	case <-ctx.Done():
-		return failf(KindCancelled, "stopped", "", ctx.Err())
+		return ctxErr(ctx, "the request")
 	case <-t.C:
 		return nil
 	}

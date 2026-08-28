@@ -265,7 +265,7 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 
 	for _, course := range cfg.Courses {
 		if ctx.Err() != nil {
-			return r.res, failf(KindCancelled, "stopped", "", ctx.Err())
+			return r.res, ctxErr(ctx, "the sync")
 		}
 		if err := r.course(ctx, course); err != nil {
 			return r.res, err
@@ -307,7 +307,7 @@ func (r *syncRun) course(ctx context.Context, course Course) error {
 
 	for _, sec := range sections {
 		if ctx.Err() != nil {
-			return failf(KindCancelled, "stopped", "", ctx.Err())
+			return ctxErr(ctx, "the sync")
 		}
 		r.report(Event{Type: "section", Course: course.Folder, Section: sec.Name()})
 
@@ -363,7 +363,7 @@ func (r *syncRun) save(ctx context.Context, a artifact, sec section,
 	course Course, courseDir string) error {
 
 	if ctx.Err() != nil {
-		return failf(KindCancelled, "stopped", "", ctx.Err())
+		return ctxErr(ctx, "the sync")
 	}
 
 	// The extension filter exists to skip the .exe an instructor left in
@@ -569,7 +569,7 @@ func (c *Client) download(ctx context.Context, rawURL, dest string) (int64, erro
 	if err != nil {
 		tmp.Close()
 		if ctx.Err() != nil {
-			return 0, failf(KindCancelled, "stopped", "", ctx.Err())
+			return 0, ctxErr(ctx, "download "+filepath.Base(dest))
 		}
 		return 0, failf(KindNetwork, "download "+filepath.Base(dest),
 			"The transfer was interrupted. Nothing partial was kept.", err)

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -1524,5 +1525,54 @@ func TestUIOffersSectionsAndKeepPages(t *testing.T) {
 	}
 	if got.KeepPages == nil || !*got.KeepPages {
 		t.Error("an unrelated save reset keep_pages")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Slow is not stopped
+// ---------------------------------------------------------------------------
+
+// A deadline is not a cancellation. Reporting one as "request cancelled:
+// context deadline exceeded" sends someone looking for a stop button they
+// never pressed, and throws away the hint that would have helped.
+func TestTimeoutIsNotReportedAsCancelled(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
+	t.Cleanup(slow.Close)
+
+	cfg := DefaultConfig()
+	cfg.BaseURL = slow.URL
+	cfg.Timeout, cfg.Retries, cfg.Delay = 5, 1, 0
+	client, _ := NewClient(cfg, false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	_, err := client.getText(ctx, slow.URL+"/portal")
+	if err == nil {
+		t.Fatal("a hanging server should have produced an error")
+	}
+	if KindOf(err) != KindNetwork {
+		t.Errorf("kind = %v, want network", KindOf(err))
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "cancel") {
+		t.Errorf("the message still blames cancellation: %q", err.Error())
+	}
+	if hintOf(err) == "" {
+		t.Error("a timeout must carry a hint — that is the point of classifying it")
+	}
+}
+
+// ...but pressing Stop must still read as stopped.
+func TestStopIsStillCancelled(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	client, _ := NewClient(cfg, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := client.getText(ctx, srv.URL+"/portal"); KindOf(err) != KindCancelled {
+		t.Errorf("kind = %v, want cancelled", KindOf(err))
 	}
 }
