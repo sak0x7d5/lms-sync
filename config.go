@@ -26,7 +26,7 @@ type Config struct {
 	MaxDepth    int
 	Extensions  []string
 	Sections    []string // which LMS tabs to mirror; see sections.go
-	KeepPages   bool     // write the captured page beside the files a tab links to
+	KeepPages   bool     // also save the captured page, not just the files a tab links to
 	Courses     []Course // ordered; a map would shuffle the folder list
 	path        string
 }
@@ -46,7 +46,7 @@ func DefaultConfig() *Config {
 		MaxDepth:    12,
 		Sections: []string{"resources", "syllabus", "announcements",
 			"assignments", "dropbox"},
-		KeepPages: true,
+		KeepPages: false,
 		Extensions: []string{
 			".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx",
 			".txt", ".md", ".rtf", ".odt", ".odp", ".ods",
@@ -370,9 +370,10 @@ func (c *Config) Save() error {
 		quoted = append(quoted, tomlQuote(id))
 	}
 	fmt.Fprintf(&b, "sections    = [%s]\n", strings.Join(quoted, ", "))
-	b.WriteString("\n# A Syllabus tab is often nothing but a link to a PDF. Set this to false\n")
-	b.WriteString("# to keep only the linked files and skip the captured page. The page is\n")
-	b.WriteString("# still written when a tab links to no files, so a tab never yields nothing.\n")
+	b.WriteString("\n# Tabs like Syllabus are usually just a wrapper around a PDF, so by default\n")
+	b.WriteString("# only the linked files are kept. Set this to true to also save the page\n")
+	b.WriteString("# itself, which is worth doing if your instructors type notes into the tab.\n")
+	b.WriteString("# A tab that links to no files always gets its page either way.\n")
 	fmt.Fprintf(&b, "keep_pages  = %t\n", c.KeepPages)
 	b.WriteString("\n# Your courses. Rename folders freely; only the ids matter.\n[courses]\n")
 	for _, course := range c.Courses {

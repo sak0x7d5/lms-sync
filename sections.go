@@ -329,12 +329,13 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 	local := localNames(files)
 
 	// The captured page is worth keeping when the instructor typed the
-	// content into the tool, and mostly noise when the tab is a wrapper
-	// around a PDF. Which of those it is cannot be judged reliably from the
-	// markup — the tool's own chrome ("Expand All", "Print View") reads as
-	// content — so this is a setting rather than a guess. It is still written
-	// when a tab links to no files at all, so turning it off can never leave
-	// a course with nothing.
+	// content into the tool, and noise when the tab is a wrapper around a
+	// PDF — which is what it nearly always is, so keeping it is off by
+	// default. Which of the two a given page is cannot be judged reliably
+	// from the markup (the tool's own chrome reads as content), so this is a
+	// setting rather than a guess. The page is still written when a tab links
+	// to no files at all, so the setting can never leave a course with
+	// nothing.
 	var out []artifact
 	if s.keepPage || len(files) == 0 {
 		out = append(out, artifact{

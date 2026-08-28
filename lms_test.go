@@ -823,6 +823,7 @@ func TestSyllabusFallsBackToRenderedPage(t *testing.T) {
 	srv := newFakeSakai(t, "correct-horse")
 	cfg := testConfig(t, srv)
 	cfg.Sections = []string{"syllabus"}
+	cfg.KeepPages = true // this test is about the page itself
 	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
 	client := loggedInClient(t, cfg)
 
@@ -1043,6 +1044,7 @@ func TestMissingFileIsFetchedAgainDespiteTheManifest(t *testing.T) {
 	srv := newFakeSakai(t, "correct-horse")
 	cfg := testConfig(t, srv)
 	cfg.Sections = []string{"resources", "syllabus"}
+	cfg.KeepPages = true // this test is about the page itself
 	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
 	client := loggedInClient(t, cfg)
 
@@ -1132,32 +1134,39 @@ func TestKeepPagesOffStillWritesAPageWhenNothingIsLinked(t *testing.T) {
 }
 
 func TestKeepPagesReadsAndWrites(t *testing.T) {
+	// Off by default: a Syllabus tab is nearly always a wrapper around a PDF,
+	// and a stub page beside that PDF is a file to open and discover says
+	// nothing.
+	if DefaultConfig().KeepPages {
+		t.Error("keep_pages should default to off")
+	}
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 
-	os.WriteFile(path, []byte("keep_pages = false\n"), 0o644)
+	os.WriteFile(path, []byte("keep_pages = true\n"), 0o644)
 	cfg, err := LoadConfig(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.KeepPages {
-		t.Error("keep_pages = false was not read")
+	if !cfg.KeepPages {
+		t.Error("keep_pages = true was not read")
 	}
 
 	// An unreadable value must not silently flip the setting.
 	os.WriteFile(path, []byte("keep_pages = maybe\n"), 0o644)
 	cfg, _ = LoadConfig(path)
-	if !cfg.KeepPages {
+	if cfg.KeepPages {
 		t.Error("junk flipped the setting; it should keep the default")
 	}
 
 	cfg.path = path
-	cfg.KeepPages = false
+	cfg.KeepPages = true
 	if err := cfg.Save(); err != nil {
 		t.Fatal(err)
 	}
 	back, _ := LoadConfig(path)
-	if back.KeepPages {
+	if !back.KeepPages {
 		t.Error("keep_pages did not survive a save/load round trip")
 	}
 }
@@ -1198,6 +1207,7 @@ func TestSavedPageLinksWorkOffline(t *testing.T) {
 	srv := newFakeSakai(t, "correct-horse")
 	cfg := testConfig(t, srv)
 	cfg.Sections = []string{"syllabus"}
+	cfg.KeepPages = true // this test is about the page itself
 	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
 	client := loggedInClient(t, cfg)
 
@@ -1270,8 +1280,8 @@ func TestAssignmentBriefsGetUniqueNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if res.New != 3 {
-		t.Errorf("new = %d, want 3 (the page and two briefs)", res.New)
+	if res.New != 2 {
+		t.Errorf("new = %d, want 2 (both briefs; the wrapper page is off by default)", res.New)
 	}
 
 	dir := filepath.Join(cfg.Destination, "Programming", "Assignments")
