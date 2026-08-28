@@ -125,6 +125,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `login_path` | auto | pin the login endpoint |
 | `extensions` | common types | which files to download |
 | `sections` | `resources`, `syllabus`, `dropbox` | which tabs to mirror |
+| `keep_pages` | `true` | also save the captured page, not just the files a tab links to |
 
 `LMS_USER` and `LMS_PASS` override the file, so a scheduled run need not
 store a password on disk.
@@ -152,7 +153,7 @@ instructor's folder — worth knowing, since Sakai's WebDAV interface *can*.
 | Tab | What you get |
 |---|---|
 | Resources | the files, in the course folder itself |
-| Syllabus | `Syllabus/Syllabus.html` plus its attachments |
+| Syllabus | the linked files, plus `Syllabus.html` when `keep_pages` is on |
 | Drop Box | your own Drop Box folder |
 
 Everything else is left alone. **Tests & Quizzes is never opened**: on some

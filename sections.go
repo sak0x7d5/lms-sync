@@ -286,6 +286,7 @@ func (s dropboxSection) Collect(ctx context.Context, c *Client, siteID string,
 type syllabusSection struct {
 	maxDepth int
 	tool     tool
+	keepPage bool
 }
 
 func (syllabusSection) ID() string   { return "syllabus" }
@@ -308,15 +309,26 @@ func (s syllabusSection) Collect(ctx context.Context, c *Client, siteID string,
 			"The Syllabus tab is there but published nothing readable.", nil)
 	}
 
-	page := renderSyllabus(items)
-	out := []artifact{{
-		body:  page,
-		key:   "syllabus:" + siteID,
-		parts: []string{"Syllabus", "Syllabus.html"},
-	}}
+	files := attachmentURLs(c, items)
+
+	// The captured page is worth keeping when the instructor typed a syllabus
+	// into the tool, and mostly noise when the tab is a wrapper around a PDF.
+	// Which of those it is cannot be judged reliably from the markup — the
+	// tool's own chrome ("Expand All", "Print View") reads as content — so
+	// this is a setting rather than a guess. It is still written when a tab
+	// links to no files at all, so turning it off can never leave a course
+	// with nothing.
+	var out []artifact
+	if s.keepPage || len(files) == 0 {
+		out = append(out, artifact{
+			body:  renderSyllabus(items),
+			key:   "syllabus:" + siteID,
+			parts: []string{"Syllabus", "Syllabus.html"},
+		})
+	}
 
 	// Attachments are ordinary files under /access/content/attachment.
-	for _, u := range attachmentURLs(c, items) {
+	for _, u := range files {
 		// Beside the page, not in an "attachments" subfolder: on most courses
 		// this PDF is the syllabus, and burying it would be perverse.
 		out = append(out, artifact{
@@ -598,7 +610,8 @@ func (c *Client) sectionsFor(ctx context.Context, siteID string, cfg *Config) ([
 
 	if enabled["syllabus"] {
 		if t, ok := find(tools, []string{"sakai.syllabus"}, []string{"syllabus"}); ok {
-			out = append(out, syllabusSection{maxDepth: cfg.MaxDepth, tool: t})
+			out = append(out, syllabusSection{maxDepth: cfg.MaxDepth, tool: t,
+				keepPage: cfg.KeepPages})
 		}
 	}
 	if enabled["dropbox"] {

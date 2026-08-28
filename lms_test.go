@@ -203,6 +203,12 @@ const toolMenuProg = `<html><ul>
 
 // Calculus has no Syllabus tab, which is the ordinary case a sync must
 // handle without calling it a failure.
+// A course whose syllabus is text the instructor typed, with nothing linked.
+// Turning the captured page off must not leave this one with nothing.
+const toolMenuText = `<html><ul>
+  <li><a href="/portal/site/site-text/tool/t-syllabus-text"><span class="icon-sakai--sakai-syllabus"></span><span>Syllabus</span></a></li>
+</ul></html>`
+
 // A course whose Syllabus tab is enabled but empty — the state of a great
 // many real courses, and not a failure.
 const toolMenuEmpty = `<html><ul>
@@ -290,6 +296,12 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			return
 		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/tool/t-syllabus-text"):
+			fmt.Fprint(w, `<html><div id="portletBody">
+			  <h3>Grading</h3><p>40% midterm, 60% final. Nothing is attached.</p>
+			  </div></html>`)
+		case r.URL.Path == "/portal/site/site-text":
+			fmt.Fprint(w, toolMenuText)
 		case strings.HasSuffix(r.URL.Path, "/tool/t-syllabus-empty"):
 			fmt.Fprint(w, `<html><div id="portletBody">   </div></html>`)
 		case r.URL.Path == "/portal/site/site-empty":
@@ -1039,5 +1051,92 @@ func TestMissingFileIsFetchedAgainDespiteTheManifest(t *testing.T) {
 		if _, err := os.Stat(p); err != nil {
 			t.Errorf("not restored: %v", err)
 		}
+	}
+}
+
+// With keep_pages off, a syllabus that is a wrapper around a PDF yields the
+// PDF alone — no stub page beside it.
+func TestKeepPagesOffDropsTheWrapperPage(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.KeepPages = false
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.New != 1 {
+		t.Errorf("new = %d, want 1 (the PDF only)", res.New)
+	}
+
+	dir := filepath.Join(cfg.Destination, "Programming", "Syllabus")
+	if _, err := os.Stat(filepath.Join(dir, "Course Outline ITS Fall 2026.pdf")); err != nil {
+		t.Errorf("the linked PDF is what matters and it is missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "Syllabus.html")); err == nil {
+		t.Error("the stub page was written despite keep_pages = false")
+	}
+}
+
+// ...but a tab that links to nothing still gets its page, or turning the
+// setting off would silently discard a syllabus the instructor typed out.
+func TestKeepPagesOffStillWritesAPageWhenNothingIsLinked(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.KeepPages = false
+	cfg.Courses = []Course{{ID: "site-text", Folder: "Text"}}
+	client := loggedInClient(t, cfg)
+
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.New != 1 {
+		t.Fatalf("new = %d, want 1 — the typed syllabus was thrown away", res.New)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cfg.Destination, "Text", "Syllabus", "Syllabus.html"))
+	if err != nil {
+		t.Fatalf("no page written: %v", err)
+	}
+	if !strings.Contains(string(body), "40% midterm") {
+		t.Error("the syllabus text was not captured")
+	}
+}
+
+func TestKeepPagesReadsAndWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	os.WriteFile(path, []byte("keep_pages = false\n"), 0o644)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.KeepPages {
+		t.Error("keep_pages = false was not read")
+	}
+
+	// An unreadable value must not silently flip the setting.
+	os.WriteFile(path, []byte("keep_pages = maybe\n"), 0o644)
+	cfg, _ = LoadConfig(path)
+	if !cfg.KeepPages {
+		t.Error("junk flipped the setting; it should keep the default")
+	}
+
+	cfg.path = path
+	cfg.KeepPages = false
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	back, _ := LoadConfig(path)
+	if back.KeepPages {
+		t.Error("keep_pages did not survive a save/load round trip")
 	}
 }

@@ -134,6 +134,13 @@ Bind loopback-only on a random port; a random hex token generated at startup is 
 unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
 never end up empty.
 
+`keep_pages` (default true) decides whether a rendered page is written beside
+the files its tab links to. Most syllabus tabs are a wrapper around a PDF, but
+whether a given page is a wrapper or a real syllabus cannot be judged from the
+markup — the tool's own chrome reads as content — so this is a setting, not a
+heuristic. Turning it off never leaves a course with nothing: a tab that links
+to no files still gets its page.
+
 The TOML reader is deliberately partial: top-level keys, one `[courses]` table, single/double-quoted strings, ints, string arrays. Unrecognised lines are skipped rather than treated as fatal. The writer emits single-quoted literal strings so Windows paths (`'D:\Uni\Courses'`) survive.
 
 `DefaultLMS` in config.go is the one line to change when forking for another university.

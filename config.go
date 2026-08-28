@@ -26,6 +26,7 @@ type Config struct {
 	MaxDepth    int
 	Extensions  []string
 	Sections    []string // which LMS tabs to mirror; see sections.go
+	KeepPages   bool     // write the captured page beside the files a tab links to
 	Courses     []Course // ordered; a map would shuffle the folder list
 	path        string
 }
@@ -44,6 +45,7 @@ func DefaultConfig() *Config {
 		Retries:     3,
 		MaxDepth:    12,
 		Sections:    []string{"resources", "syllabus", "dropbox"},
+		KeepPages:   true,
 		Extensions: []string{
 			".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx",
 			".txt", ".md", ".rtf", ".odt", ".odp", ".ods",
@@ -156,6 +158,8 @@ func LoadConfig(path string) (*Config, error) {
 			if list := parseArray(raw); len(list) > 0 {
 				cfg.Sections = list
 			}
+		case "keep_pages":
+			cfg.KeepPages = boolOr(unquote(raw), cfg.KeepPages)
 		}
 	}
 	if err := scan.Err(); err != nil {
@@ -273,6 +277,18 @@ func parseArray(raw string) []string {
 	return out
 }
 
+// boolOr keeps an unreadable value from silently flipping a setting: only a
+// recognised word changes it.
+func boolOr(s string, fallback bool) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "true", "yes", "1", "on":
+		return true
+	case "false", "no", "0", "off":
+		return false
+	}
+	return fallback
+}
+
 func atoiOr(s string, fallback int) int {
 	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
 		return n
@@ -353,6 +369,10 @@ func (c *Config) Save() error {
 		quoted = append(quoted, tomlQuote(id))
 	}
 	fmt.Fprintf(&b, "sections    = [%s]\n", strings.Join(quoted, ", "))
+	b.WriteString("\n# A Syllabus tab is often nothing but a link to a PDF. Set this to false\n")
+	b.WriteString("# to keep only the linked files and skip the captured page. The page is\n")
+	b.WriteString("# still written when a tab links to no files, so a tab never yields nothing.\n")
+	fmt.Fprintf(&b, "keep_pages  = %t\n", c.KeepPages)
 	b.WriteString("\n# Your courses. Rename folders freely; only the ids matter.\n[courses]\n")
 	for _, course := range c.Courses {
 		fmt.Fprintf(&b, "%s = %s\n", tomlQuote(course.ID), tomlQuote(course.Folder))
