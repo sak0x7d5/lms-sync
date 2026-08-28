@@ -165,15 +165,25 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 		return reportErr(err)
 	}
 
-	if len(cfg.Courses) == 0 {
-		fmt.Println("\nNo courses configured yet — discovering them now.")
-		courses, err := client.Discover(ctx)
-		if err != nil {
+	added, err := RefreshCourses(ctx, client, cfg)
+	if err != nil {
+		// A portal that cannot be read is only fatal when it leaves us with
+		// nothing to sync. Otherwise last run's list is still perfectly good.
+		if len(cfg.Courses) == 0 {
 			return reportErr(err)
 		}
-		cfg.Courses = courses
-		if err := cfg.Save(); err != nil {
-			fmt.Fprintln(os.Stderr, "Warning:", Explain(err))
+		fmt.Fprintln(os.Stderr, "Warning: could not check for new courses:", err.Error())
+	}
+	if len(added) > 0 {
+		fmt.Printf("\nFound %d new course(s):\n", len(added))
+		for _, course := range added {
+			fmt.Printf("    %s\n", course.Folder)
+		}
+		// A dry run writes nothing, config included.
+		if !dryRun {
+			if err := cfg.Save(); err != nil {
+				fmt.Fprintln(os.Stderr, "Warning:", Explain(err))
+			}
 		}
 	}
 
@@ -189,6 +199,8 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 			fmt.Printf("    + %s\n", e.Path)
 		case "skip":
 			fmt.Printf("    - %s: %s\n", e.Section, e.Message)
+		case "index":
+			fmt.Printf("\nOpen this to browse everything:\n    %s\n", e.Path)
 		case "warn":
 			fmt.Printf("    ! %s %s\n", e.Path, e.Message)
 		case "error":

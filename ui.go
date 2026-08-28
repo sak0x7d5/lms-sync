@@ -267,17 +267,24 @@ func (s *server) runSync(ctx context.Context, cfg *Config, dryRun bool) {
 		return
 	}
 
-	if len(cfg.Courses) == 0 {
-		courses, derr := client.Discover(ctx)
-		if derr != nil {
-			s.finishWithError(derr)
-			return
+	added, rerr := RefreshCourses(ctx, client, cfg)
+	if rerr != nil && len(cfg.Courses) == 0 {
+		s.finishWithError(rerr)
+		return
+	}
+	if rerr != nil {
+		s.broadcast(Event{Type: "warn", Message: "could not check for new courses: " + rerr.Error()})
+	}
+	if len(added) > 0 {
+		for _, course := range added {
+			s.broadcast(Event{Type: "warn", Message: "new course: " + course.Folder})
 		}
-		cfg.Courses = courses
-		s.mu.Lock()
-		s.cfg.Courses = courses
-		s.cfg.Save()
-		s.mu.Unlock()
+		if !dryRun {
+			s.mu.Lock()
+			s.cfg.Courses = cfg.Courses
+			s.cfg.Save()
+			s.mu.Unlock()
+		}
 	}
 
 	res, err := Sync(ctx, client, cfg, s.manifest, dryRun, s.broadcast)

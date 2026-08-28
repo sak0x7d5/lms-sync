@@ -57,7 +57,14 @@ each course; a section returns `artifact`s, which come in two shapes:
   (Syllabus). The content lives in the server's database, so it is rendered to
   a local page instead of downloaded.
 
-Adding a tab means implementing `section` and listing it in `knownSections`.
+Resources and Drop Box are directory indexes and share `walkTree`. Syllabus,
+Announcements and Assignments are all the same *rendered* shape, so they are
+one `pageSection` described by an entry in the `pageSections` table — adding
+another rendered tab is one entry there, nothing else.
+
+Adding a tab of a genuinely new shape means implementing `section`; ids are
+validated against `knownSections`, which is derived from `pageSections` so the
+two cannot drift.
 The `Sync` loop, the CLI and the web UI then handle it without changes —
 the same rule as before: **behaviour belongs in sync.go, not in a handler.**
 
@@ -107,6 +114,11 @@ These encode bugs that already cost someone real time — the comments in the so
 - **The manifest reads both of its shapes.** Entries written before sections existed are bare numbers; rendered pages need an object with a hash. `entry` unmarshals either, and still *writes* a bare number when there is no hash, so a downloads-only manifest stays readable by an older build. Rejecting the old shape would fail the decode, which the rule above turns into a full re-download. `TestLegacyManifestIsStillRead`.
 - **A rendered page must be byte-stable.** It has no server-side size, so freshness is decided by hashing what we would write. A timestamp in `renderSyllabus` would make every run rewrite the file and report it as new. `TestSyllabusFallsBackToRenderedPage` runs the sync twice to catch that.
 - **Links in captured tool pages are resolved, never regex-matched.** Instructors' attachment links are usually root-relative (`/access/content/attachment/...`); a regex anchored on `https://` misses them, and since most syllabus tabs are nothing but a link to a PDF, that silently produced a stub page and no file. `contentLinks` resolves every href against the page it came from, then filters through `allowedContent`. The fake serves root-relative hrefs on purpose — serving absolute ones is what hid the bug. `TestSyllabusFallsBackToRenderedPage`.
+- **A captured region stops at its own closing tag.** `extractRegion` counts nested `<div>`s. The greedy regex it replaced ran to the last `</div>` on the page, swallowed the portal navigation, and then downloaded every file linked in that chrome as an attachment of the tab. `TestPageRegionDoesNotSwallowSiteNavigation`.
+- **Links in a saved page are rewritten, or they are dead.** The LMS writes root-relative hrefs, which point at nothing once the page is a file on a laptop. `localiseLinks` repoints links to downloaded files at the local copy and makes everything else absolute; inline `on*` handlers are stripped because the page is opened from disk. `TestSavedPageLinksWorkOffline`.
+- **Attachment filenames are deduplicated case-insensitively.** Sakai files attachments under opaque per-item folders, so two assignments can both link a `brief.pdf`; Windows would also collide on names Linux keeps apart. `TestAssignmentBriefsGetUniqueNames`.
+- **The course list is refreshed every run, and never shrinks.** `RefreshCourses` adds what is new and keeps the folder names the student chose. Dropping a vanished course would be worse than a stale line they can delete. `TestRefreshAddsNewCoursesAndKeepsChosenNames`.
+- **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
 - **An enabled but empty tab is a `skip`, not a failure.** Plenty of courses leave a tool switched on and empty; counting those would train people to ignore the failure count. `TestEmptySectionIsSkippedNotFailed`.
 
 ### Freshness check
@@ -130,7 +142,8 @@ Bind loopback-only on a random port; a random hex token generated at startup is 
 
 `config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file.
 
-`sections` picks which tabs to mirror (`resources`, `syllabus`, `dropbox`);
+`sections` picks which tabs to mirror (`resources`, `syllabus`, `announcements`,
+`assignments`, `dropbox`);
 unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
 never end up empty.
 

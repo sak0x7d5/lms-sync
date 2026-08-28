@@ -136,6 +136,37 @@ func (c *Client) Discover(ctx context.Context) ([]Course, error) {
 	return courses, nil
 }
 
+// RefreshCourses adds any course the account can see that the config does not
+// already list, and reports what it added.
+//
+// Discovery used to run only when the config listed nothing at all, so a new
+// semester's courses never appeared until the student happened to remember
+// --discover — until then the tool quietly went on syncing last term's list.
+//
+// Courses that have disappeared are deliberately left in place. The config is
+// the student's own list, and silently dropping a course they still want
+// files from is worse than a stale line they can delete themselves.
+func RefreshCourses(ctx context.Context, c *Client, cfg *Config) ([]Course, error) {
+	found, err := c.Discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	have := make(map[string]bool, len(cfg.Courses))
+	for _, course := range cfg.Courses {
+		have[course.ID] = true
+	}
+
+	var added []Course
+	for _, course := range found {
+		if !have[course.ID] {
+			added = append(added, course)
+		}
+	}
+	cfg.Courses = append(cfg.Courses, added...)
+	return added, nil
+}
+
 // ---------------------------------------------------------------------------
 // Syncing
 // ---------------------------------------------------------------------------
@@ -143,7 +174,7 @@ func (c *Client) Discover(ctx context.Context) ([]Course, error) {
 // Event is one thing worth telling the user about. The CLI prints these; the
 // web UI streams them to the browser.
 type Event struct {
-	Type    string `json:"type"` // start | course | section | file | skip | warn | error | done
+	Type    string `json:"type"` // start | course | section | file | skip | warn | error | index | done
 	Course  string `json:"course,omitempty"`
 	Section string `json:"section,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -238,6 +269,16 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 		}
 		if err := r.course(ctx, course); err != nil {
 			return r.res, err
+		}
+	}
+
+	// Rebuilt from what is on disk, so courses that needed nothing this run
+	// still appear in it.
+	if !dryRun {
+		if path, err := writeIndex(dest); err != nil {
+			report(Event{Type: "warn", Message: "index not written: " + err.Error()})
+		} else {
+			report(Event{Type: "index", Path: path})
 		}
 	}
 

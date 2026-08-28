@@ -1318,3 +1318,119 @@ func TestLocalNamesMakeDuplicatesUnique(t *testing.T) {
 		t.Errorf("got %d names, want 3", len(got))
 	}
 }
+
+// A new semester's courses must turn up on their own. They used to appear
+// only if the student remembered to run --discover, so the tool would go on
+// syncing last term's list indefinitely.
+func TestRefreshAddsNewCoursesAndKeepsChosenNames(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "My Own Folder Name"}}
+	client := loggedInClient(t, cfg)
+
+	added, err := RefreshCourses(context.Background(), client, cfg)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if len(added) != 1 || added[0].ID != "site-calc" {
+		t.Fatalf("added = %v, want just site-calc", added)
+	}
+
+	// A folder the student renamed must survive; renaming it back would move
+	// their files and re-download everything.
+	var prog *Course
+	for i := range cfg.Courses {
+		if cfg.Courses[i].ID == "site-prog" {
+			prog = &cfg.Courses[i]
+		}
+	}
+	if prog == nil || prog.Folder != "My Own Folder Name" {
+		t.Errorf("the chosen folder name was overwritten: %+v", cfg.Courses)
+	}
+
+	// Running it again must not duplicate anything.
+	again, err := RefreshCourses(context.Background(), client, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 || len(cfg.Courses) != 2 {
+		t.Errorf("refresh is not idempotent: added=%v courses=%v", again, cfg.Courses)
+	}
+}
+
+// The index is the front door: one page a student opens instead of digging
+// through a folder tree.
+func TestIndexListsEverythingWithWorkingLinks(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"resources", "syllabus"}
+	cfg.Courses = []Course{
+		{ID: "site-prog", Folder: "Programming"},
+		{ID: "site-calc", Folder: "Calculus"},
+	}
+	client := loggedInClient(t, cfg)
+
+	var indexPath string
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false,
+		func(e Event) {
+			if e.Type == "index" {
+				indexPath = e.Path
+			}
+		}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if indexPath == "" {
+		t.Fatal("the run never reported an index")
+	}
+
+	body, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("no index written: %v", err)
+	}
+	page := string(body)
+
+	// Both courses, and a file from each.
+	for _, want := range []string{"Programming", "Calculus", "recursion.pdf", "limits.pdf"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("index does not mention %q", want)
+		}
+	}
+	// Links must be relative to the index and escaped a segment at a time,
+	// or a folder with a space in it is unreachable.
+	if !strings.Contains(page, `href="Programming/Week%2004/recursion.pdf"`) {
+		t.Error("the link to a file in a folder with a space is wrong")
+	}
+	// It must never link to itself or to a partial download.
+	if strings.Contains(page, `href="index.html"`) {
+		t.Error("the index lists itself")
+	}
+
+	// Rebuilt from disk, so a second run with nothing new still lists it all.
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")), false,
+		func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := os.ReadFile(indexPath)
+	if !strings.Contains(string(again), "recursion.pdf") {
+		t.Error("a file that needed no work vanished from the index")
+	}
+}
+
+// A dry run writes nothing, and that includes the index.
+func TestDryRunWritesNoIndex(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		true, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "index.html")); err == nil {
+		t.Error("a dry run wrote the index")
+	}
+}

@@ -124,7 +124,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `retries` | `3` | attempts on timeout / 429 / 5xx |
 | `login_path` | auto | pin the login endpoint |
 | `extensions` | common types | which files to download |
-| `sections` | `resources`, `syllabus`, `dropbox` | which tabs to mirror |
+| `sections` | all five below | which tabs to mirror |
 | `keep_pages` | `true` | also save the captured page, not just the files a tab links to |
 
 `LMS_USER` and `LMS_PASS` override the file, so a scheduled run need not
@@ -154,7 +154,17 @@ instructor's folder — worth knowing, since Sakai's WebDAV interface *can*.
 |---|---|
 | Resources | the files, in the course folder itself |
 | Syllabus | the linked files, plus `Syllabus.html` when `keep_pages` is on |
+| Announcements | the posts, as a page you can read offline |
+| Assignments | the briefs, which are usually the PDFs you actually need |
 | Drop Box | your own Drop Box folder |
+
+Every run also writes **`index.html`** at the top of your courses folder: one
+page listing every file you have, newest first, with a box that filters as you
+type. Open that rather than digging through folders.
+
+New courses are picked up on their own — you don't have to re-run
+`--discover` at the start of a semester. Folder names you've changed are kept,
+and a course is never removed from your config automatically.
 
 Everything else is left alone. **Tests & Quizzes is never opened**: on some
 Sakai versions the link into an assessment is an ordinary page load that
