@@ -1,0 +1,43 @@
+# Runs on every push and pull request, so a mistake is caught the day it is
+# made rather than months later when someone tags a release. The release
+# workflow has its own copy of these checks; this one exists to fail early.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.22' }
+
+      # gofmt has no exit code of its own: it lists what it would change, so
+      # any output at all is the failure.
+      - name: Formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+      - run: go test ./...
+
+      # The tool ships as a single binary for people who never install Go, so
+      # a break on one platform matters even when Linux is fine.
+      - name: Cross-compile
+        run: |
+          for target in windows/amd64 darwin/arm64 linux/amd64; do
+            GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null . \
+              && echo "ok $target"
+          done
