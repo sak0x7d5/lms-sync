@@ -39,6 +39,7 @@ lms-sync --discover      find courses, save them, exit
 lms-sync --dry-run       show what would download, write nothing
 lms-sync --probe         report which tabs your LMS offers, and how
 lms-sync --extract       make synced files searchable, without going online
+lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
 lms-sync --dest PATH     override the destination
 lms-sync --insecure      skip TLS verification (last resort)
 ```
@@ -50,6 +51,39 @@ configuration, `130` interrupted. Enough for a scheduler to act on.
 `--sync`, "Start in" set to its folder.
 
 **macOS / Linux** — `0 19 * * * cd ~/lms-sync && ./lms-sync --sync`
+
+## Use it with an AI assistant
+
+`--mcp` serves your synced library to any assistant that speaks MCP, so you can
+ask about a course instead of hunting through folders. It reads the mirror on
+disk — it never logs in and needs no password.
+
+Make the text searchable first (`grep` cannot see inside a PowerPoint):
+
+```
+lms-sync --sync
+lms-sync --extract
+```
+
+Then point your client at the binary. For Claude Code, in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "lms": {
+      "command": "/full/path/to/lms-sync",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+It offers four tools: `list_courses`, `find_material` (searches the text of
+every slide, document and saved page), `read_material` and `whats_new`.
+
+PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
+`pdftotext` on your PATH. Without it everything else still works and the tool
+tells you which files it could not read.
 
 ## Build from source
 

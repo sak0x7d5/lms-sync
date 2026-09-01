@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -2004,5 +2005,260 @@ func TestSummaryDoesNotChangeWhenThereIsNoWorkToDo(t *testing.T) {
 	if first.Unsupported != second.Unsupported || first.Unsupported != 1 {
 		t.Errorf("unsupported: first %d, second %d, want 1 and 1",
 			first.Unsupported, second.Unsupported)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The MCP server
+// ---------------------------------------------------------------------------
+
+// mcpExchange runs a whole session against a library and returns the replies,
+// keyed by request id. A notification produces no entry, which is how the
+// tests assert that one was not answered.
+func mcpExchange(t *testing.T, dest string, requests ...string) map[float64]map[string]any {
+	t.Helper()
+
+	cfg := &Config{Destination: dest}
+	var out bytes.Buffer
+	in := strings.NewReader(strings.Join(requests, "\n") + "\n")
+
+	if code := serveMCPOn(context.Background(), cfg, in, &out); code != 0 {
+		t.Fatalf("server exited with %d", code)
+	}
+
+	replies := map[float64]map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("reply is not JSON: %s", line)
+		}
+		if m["jsonrpc"] != "2.0" {
+			t.Errorf("reply missing jsonrpc 2.0: %s", line)
+		}
+		// A message that would not parse is answered with a null id, which
+		// the specification allows because no id could be recovered from it.
+		// Those carry no request to key on, so they are not collected here.
+		if id, ok := m["id"].(float64); ok {
+			replies[id] = m
+		} else if m["id"] != nil {
+			t.Fatalf("reply has an unusable id: %s", line)
+		}
+	}
+	return replies
+}
+
+// toolTextOf digs the text out of a tools/call reply.
+func toolTextOf(t *testing.T, reply map[string]any) (text string, isError bool) {
+	t.Helper()
+	result, ok := reply["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("reply carries no result: %v", reply)
+	}
+	isError, _ = result["isError"].(bool)
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("reply carries no content: %v", reply)
+	}
+	block := content[0].(map[string]any)
+	if block["type"] != "text" {
+		t.Fatalf("first content block is not text: %v", block)
+	}
+	return block["text"].(string), isError
+}
+
+// libraryForMCP builds a small mirror with its text already extracted.
+func libraryForMCP(t *testing.T) string {
+	t.Helper()
+	dest := t.TempDir()
+	writeOffice(t, filepath.Join(dest, "Physics", "Week01", "lecture.pptx"), map[string]string{
+		"ppt/slides/slide1.xml": slideXML("Newton's second law of motion"),
+	})
+	writeOffice(t, filepath.Join(dest, "Civics", "brief.docx"), map[string]string{
+		"word/document.xml": `<?xml version="1.0"?><w:document xmlns:w="w"><w:body>` +
+			`<w:p><w:r><w:t>Article 19 and the 1973 constitution</w:t></w:r></w:p>` +
+			`</w:body></w:document>`,
+	})
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	return dest
+}
+
+func TestMCPHandshakeAndToolList(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
+	)
+
+	init := replies[1]["result"].(map[string]any)
+	if init["protocolVersion"] != "2025-06-18" {
+		t.Errorf("protocolVersion = %v", init["protocolVersion"])
+	}
+	// serverInfo.version is the tool's version, not the protocol's. A local
+	// named "version" once shadowed the package constant and reported the
+	// protocol date here, which would tell a client the wrong thing forever.
+	info := init["serverInfo"].(map[string]any)
+	if info["version"] != version {
+		t.Errorf("serverInfo.version = %v, want %v", info["version"], version)
+	}
+	if _, ok := init["capabilities"].(map[string]any)["tools"]; !ok {
+		t.Error("tools capability not declared")
+	}
+
+	tools := replies[2]["result"].(map[string]any)["tools"].([]any)
+	seen := map[string]bool{}
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		name := tool["name"].(string)
+		seen[name] = true
+		// Every tool has to describe itself: this server is meant to work in
+		// clients that have no project instructions to lean on.
+		if len(tool["description"].(string)) < 40 {
+			t.Errorf("%s has no usable description", name)
+		}
+		schema := tool["inputSchema"].(map[string]any)
+		if schema["type"] != "object" {
+			t.Errorf("%s inputSchema is not an object schema", name)
+		}
+	}
+	for _, want := range []string{"list_courses", "find_material", "read_material", "whats_new"} {
+		if !seen[want] {
+			t.Errorf("tool %s missing", want)
+		}
+	}
+}
+
+func TestMCPUnknownProtocolVersionIsAnsweredNotRefused(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2099-01-01"}}`,
+	)
+	// A version this build has never heard of is not an error: the server
+	// answers with what it does speak and lets the client decide.
+	init, ok := replies[1]["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("an unknown protocol version was refused: %v", replies[1])
+	}
+	if init["protocolVersion"] != mcpLatestVersion {
+		t.Errorf("protocolVersion = %v, want %v", init["protocolVersion"], mcpLatestVersion)
+	}
+}
+
+func TestMCPNotificationIsNeverAnswered(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":7,"method":"ping"}`,
+	)
+	// Answering a notification is a protocol violation, so the only reply in
+	// this session must be the ping's.
+	if len(replies) != 1 {
+		t.Fatalf("got %d replies, want 1 — a notification was answered", len(replies))
+	}
+	if _, ok := replies[7]; !ok {
+		t.Error("the ping went unanswered")
+	}
+}
+
+func TestMCPFindsTextInsideADeck(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_material","arguments":{"query":"second law"}}}`,
+	)
+	text, isError := toolTextOf(t, replies[1])
+	if isError {
+		t.Fatalf("search failed: %s", text)
+	}
+	// The point of the whole text cache: this phrase exists only inside a
+	// PowerPoint, where grep cannot reach it.
+	if !strings.Contains(text, "Physics/Week01/lecture.pptx") {
+		t.Errorf("did not find the deck:\n%s", text)
+	}
+	if !strings.Contains(text, "second law") {
+		t.Errorf("no snippet quoting the match:\n%s", text)
+	}
+}
+
+func TestMCPRefusesPathsOutsideTheLibrary(t *testing.T) {
+	dest := libraryForMCP(t)
+	for _, bad := range []string{
+		"../../../../etc/passwd",
+		"Physics/../../outside.txt",
+		"/etc/passwd",
+	} {
+		req := fmt.Sprintf(
+			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_material","arguments":{"path":%q}}}`,
+			bad)
+		text, isError := toolTextOf(t, mcpExchange(t, dest, req)[1])
+		// Tool arguments are written by a model that may itself be acting on
+		// text somebody else uploaded to a course page, so this is a real
+		// boundary rather than a tidiness check.
+		if !isError {
+			t.Errorf("%q was not refused: %s", bad, text)
+		}
+	}
+}
+
+func TestMCPToolFailureIsAResultNotAProtocolError(t *testing.T) {
+	dest := libraryForMCP(t)
+	replies := mcpExchange(t, dest,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"no_such_tool","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"nonsense/method"}`,
+	)
+
+	// A tool that failed is reported inside the result, so the model can read
+	// what went wrong and try something else.
+	if _, ok := replies[1]["error"]; ok {
+		t.Error("a bad tool name was raised as a protocol error")
+	}
+	if _, isError := toolTextOf(t, replies[1]); !isError {
+		t.Error("a bad tool name was reported as success")
+	}
+
+	// An unknown *method*, by contrast, is a protocol error.
+	rpcErr, ok := replies[2]["error"].(map[string]any)
+	if !ok {
+		t.Fatal("an unknown method was not a protocol error")
+	}
+	if rpcErr["code"].(float64) != codeMethodNotFound {
+		t.Errorf("code = %v, want %d", rpcErr["code"], codeMethodNotFound)
+	}
+}
+
+func TestMCPSaysWhyAFileHasNoText(t *testing.T) {
+	dest := libraryForMCP(t)
+	scan := filepath.Join(dest, "Civics", "scan.pdf")
+	if err := os.WriteFile(scan, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := pdfTool
+	pdfTool = "lms-sync-no-such-pdf-tool"
+	defer func() { pdfTool = old }()
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	text, isError := toolTextOf(t, mcpExchange(t, dest,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_material","arguments":{"path":"Civics/scan.pdf"}}}`,
+	)[1])
+	if !isError {
+		t.Fatal("a file with no text was reported as readable")
+	}
+	// "No text" on its own is useless. Which of the three reasons it is
+	// decides whether the student installs poppler, runs OCR, or does nothing.
+	if !strings.Contains(text, "pdftotext") {
+		t.Errorf("the reason was not actionable: %s", text)
+	}
+}
+
+func TestMCPSurvivesAMalformedLine(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`this is not json at all`,
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}`,
+	)
+	// One bad line must not take the session down, or a single stray write
+	// from any client costs the whole conversation.
+	if _, ok := replies[2]; !ok {
+		t.Error("the session did not recover from a malformed line")
 	}
 }

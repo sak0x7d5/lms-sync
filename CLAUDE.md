@@ -18,7 +18,7 @@ go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style 
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -35,7 +35,7 @@ It only speaks native Sakai form login — not Canvas, Moodle or Blackboard, and
 
 ## Architecture
 
-Two front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local web UI) each do the same thing: `NewClient` → `Login` → `Discover` → `Sync`, differing only in how they render the `Event` stream. `Sync` takes a `Reporter func(Event)` callback — the CLI prints it, the UI broadcasts it over SSE. **Sync behaviour belongs in [sync.go](sync.go); both surfaces then get it for free.** Duplicating logic into a handler is the mistake to avoid.
+Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local web UI) each do the same thing: `NewClient` → `Login` → `Discover` → `Sync`, differing only in how they render the `Event` stream. `Sync` takes a `Reporter func(Event)` callback — the CLI prints it, the UI broadcasts it over SSE. [mcp.go](mcp.go) is the third: it answers an assistant's tool calls against the mirror that a sync produced, and never goes online itself. **Sync behaviour belongs in [sync.go](sync.go); every surface then gets it for free.** Duplicating logic into a handler is the mistake to avoid.
 
 - [client.go](client.go) — HTTP session: cookie jar, retry policy, login, session verification.
 - [sync.go](sync.go) — link parsing, `Discover`, `walk`, `download`, and the `Sync` loop. Defines `Event`/`Reporter`/`Result`.
@@ -46,6 +46,7 @@ Two front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
+- [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 ### One core, many tabs
@@ -121,6 +122,11 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Attachment filenames are deduplicated case-insensitively.** Sakai files attachments under opaque per-item folders, so two assignments can both link a `brief.pdf`; Windows would also collide on names Linux keeps apart. `TestAssignmentBriefsGetUniqueNames`.
 - **The course list is refreshed every run, and never shrinks.** `RefreshCourses` adds what is new and keeps the folder names the student chose. Dropping a vanished course would be worse than a stale line they can delete. `TestRefreshAddsNewCoursesAndKeepsChosenNames`.
 - **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
+- **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
+- **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`.
+- **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
+- **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
+- **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`.
 - **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
 - **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
 - **The extraction summary means the same thing on every run.** A fresh file still counts towards what the library can answer, by its recorded status — counting all of them as searchable would claim a scan was readable and make the number jump between an extracting run and a no-op one. `TestSummaryDoesNotChangeWhenThereIsNoWorkToDo`.
@@ -163,6 +169,29 @@ A browser is never told the real path of a folder the user picks — the File Sy
 - Cancelling is not a failure. Each tool signals it differently, which is why `interpretPicker` is a pure function tested without a display (`TestInterpretPicker`). A red banner on a plain cancel is the bug to avoid.
 
 `canBrowse` is resolved once at startup and sent to the page, which hides the button entirely when no chooser exists — better than a button that does nothing.
+
+### The MCP server
+
+`--mcp` speaks JSON-RPC 2.0 over stdio so an assistant can search and read the
+library. It is a *reader*: it never logs in, never fetches, and needs no
+password, which is also why it can answer in milliseconds — a crawl is minutes
+and far too slow to sit inside a tool call. Keeping the mirror current stays
+`--sync`'s job, on a schedule.
+
+**stdout carries the protocol and nothing else.** A stray `fmt.Println`
+anywhere on that path corrupts the stream and the client disconnects with no
+usable diagnosis. Everything for a human goes to stderr via `mcpLog`.
+
+The four tools (`list_courses`, `find_material`, `read_material`, `whats_new`)
+read `scanLibrary` plus the text index, re-read per call rather than cached: a
+sync may well run while the server is up, and a stale answer about coursework
+is worse than a few milliseconds of walking a folder. Tool descriptions carry
+their own context because the server is meant to work in any MCP client, and
+most have no project instructions to lean on.
+
+Only `tools` is declared in capabilities. Resources and prompts would both
+suit this server, but declaring a capability that is not implemented is worse
+than not having it.
 
 ### The web UI's security model
 

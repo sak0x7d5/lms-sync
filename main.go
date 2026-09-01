@@ -28,6 +28,7 @@ func run() int {
 		doDiscover = flag.Bool("discover", false, "find courses, save them, exit")
 		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
+		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
 		dryRun     = flag.Bool("dry-run", false, "list what would download, write nothing")
 		insecure   = flag.Bool("insecure", false, "skip TLS verification (last resort)")
 		showVer    = flag.Bool("version", false, "print version and exit")
@@ -81,6 +82,8 @@ func run() int {
 		return cliProbe(ctx, cfg, *insecure)
 	case *doExtract:
 		return cliExtract(ctx, cfg)
+	case *doMCP:
+		return serveMCP(ctx, cfg)
 	case *doSync || *dryRun:
 		return cliSync(ctx, cfg, manifest, *dryRun, *insecure)
 	default:
@@ -97,6 +100,7 @@ func usage() {
   lms-sync --dry-run       show what would download, write nothing
   lms-sync --probe         report which tabs your LMS offers, and how
   lms-sync --extract       make synced files searchable, without going online
+  lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
 
 Options:
 `, version)
