@@ -27,6 +27,7 @@ func run() int {
 		doSync     = flag.Bool("sync", false, "sync and exit, no interface")
 		doDiscover = flag.Bool("discover", false, "find courses, save them, exit")
 		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
+		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		dryRun     = flag.Bool("dry-run", false, "list what would download, write nothing")
 		insecure   = flag.Bool("insecure", false, "skip TLS verification (last resort)")
 		showVer    = flag.Bool("version", false, "print version and exit")
@@ -78,6 +79,8 @@ func run() int {
 		return cliDiscover(ctx, cfg, *insecure)
 	case *doProbe:
 		return cliProbe(ctx, cfg, *insecure)
+	case *doExtract:
+		return cliExtract(ctx, cfg)
 	case *doSync || *dryRun:
 		return cliSync(ctx, cfg, manifest, *dryRun, *insecure)
 	default:
@@ -93,6 +96,7 @@ func usage() {
   lms-sync --discover      find your courses and save them
   lms-sync --dry-run       show what would download, write nothing
   lms-sync --probe         report which tabs your LMS offers, and how
+  lms-sync --extract       make synced files searchable, without going online
 
 Options:
 `, version)
@@ -307,4 +311,42 @@ func hintOf(err error) string {
 		return full[i+2:]
 	}
 	return ""
+}
+
+// cliExtract makes the already-synced library searchable.
+//
+// It never goes online: everything it needs is on disk, so it costs nothing
+// to run repeatedly and works on a train. That also makes it the one part of
+// the tool a student can try without handing over a password.
+func cliExtract(ctx context.Context, cfg *Config) int {
+	dest := cfg.Destination
+	if _, err := os.Stat(dest); err != nil {
+		return reportErr(failf(KindFS, "read "+dest,
+			"Nothing has been synced to that folder yet. Run a sync first.", err))
+	}
+
+	fmt.Println("Reading text from", dest)
+	stats, err := RefreshText(ctx, dest, func(e Event) {
+		switch e.Type {
+		case "file":
+			fmt.Println("  read    ", e.Path)
+		case "skip":
+			fmt.Println("  no text ", e.Message)
+		case "warn":
+			fmt.Fprintln(os.Stderr, "  warning ", e.Message)
+		}
+	})
+	if err != nil {
+		return reportErr(err)
+	}
+
+	fmt.Println()
+	fmt.Println(stats.Summary())
+	if stats.Unavailable > 0 {
+		fmt.Println("\nInstall poppler-utils to make those PDFs searchable:")
+		fmt.Println("  Debian/Ubuntu  sudo apt install poppler-utils")
+		fmt.Println("  macOS          brew install poppler")
+		fmt.Println("  Windows        winget install oschwartz10612.Poppler")
+	}
+	return 0
 }

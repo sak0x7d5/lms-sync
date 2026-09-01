@@ -38,6 +38,7 @@ lms-sync --sync          sync and exit
 lms-sync --discover      find courses, save them, exit
 lms-sync --dry-run       show what would download, write nothing
 lms-sync --probe         report which tabs your LMS offers, and how
+lms-sync --extract       make synced files searchable, without going online
 lms-sync --dest PATH     override the destination
 lms-sync --insecure      skip TLS verification (last resort)
 ```

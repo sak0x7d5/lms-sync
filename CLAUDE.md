@@ -18,7 +18,7 @@ go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style 
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -44,6 +44,8 @@ Two front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local
 - [names.go](names.go) — filename/folder/URL normalisation.
 - [manifest.go](manifest.go) — the "already downloaded" record.
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
+- [extract.go](extract.go) — reducing one mirrored file to plain text.
+- [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 ### One core, many tabs
@@ -119,7 +121,35 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Attachment filenames are deduplicated case-insensitively.** Sakai files attachments under opaque per-item folders, so two assignments can both link a `brief.pdf`; Windows would also collide on names Linux keeps apart. `TestAssignmentBriefsGetUniqueNames`.
 - **The course list is refreshed every run, and never shrinks.** `RefreshCourses` adds what is new and keeps the folder names the student chose. Dropping a vanished course would be worse than a stale line they can delete. `TestRefreshAddsNewCoursesAndKeepsChosenNames`.
 - **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
+- **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
+- **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
+- **The extraction summary means the same thing on every run.** A fresh file still counts towards what the library can answer, by its recorded status — counting all of them as searchable would claim a scan was readable and make the number jump between an extracting run and a no-op one. `TestSummaryDoesNotChangeWhenThereIsNoWorkToDo`.
+- **`scanLibrary` steps over dot-directories.** The text cache lives inside the destination, so walking into it would list thousands of `.txt` files on the front page and feed the indexer its own output. `TestTextCacheIsNotItselfCoursework`.
+- **An unreadable file is a status, not an error.** A corrupt or password-protected deck is counted and skipped, exactly as one bad download is. Only cancellation stops a pass. `TestUnreadableOfficeFileIsNotFatal`, `TestExtractionStopsWhenCancelled`.
 - **An enabled but empty tab is a `skip`, not a failure.** Plenty of courses leave a tool switched on and empty; counting those would train people to ignore the failure count. `TestEmptySectionIsSkippedNotFailed`.
+
+### The searchable copy
+
+`grep` cannot see inside a PowerPoint, and lectures are overwhelmingly
+PowerPoints and PDFs — so a mirrored library is not actually searchable.
+Every file is reduced once to plain text under `<dest>/.lms-index/`, mirroring
+the library's own folder shape, with `index.json` recording size, modification
+time and an `extractStatus` per file.
+
+Office formats are a ZIP of XML, so `archive/zip` + `encoding/xml` handle
+docx, pptx and xlsx with no dependency — the stdlib-only rule is not bent.
+**PDF is the exception**: real extraction means xref tables, object streams and
+font encodings, and a scanned lecture needs OCR on top, so it shells out to
+`pdftotext` when the machine has one. That is an external program, not a Go
+module; `go.mod` still has no require block.
+
+The status is why, not just whether: `empty` (a scan — nothing will fix it),
+`unavailable` (install poppler and it works), `unsupported` (no extractor
+wanted). Collapsing those into "no text" leaves a student with a silently
+unsearchable library and nothing to act on.
+
+Extraction happens when a file is first seen, never inside a request:
+unpacking a 200-slide deck is far too slow to sit in one.
 
 ### Freshness check
 

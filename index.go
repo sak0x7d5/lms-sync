@@ -56,6 +56,13 @@ func scanLibrary(dest string) ([]indexEntry, error) {
 			return nil //nolint:nilerr
 		}
 		if d.IsDir() {
+			// A dot-directory is this tool's own bookkeeping — the text
+			// index lives in one. Descending into it would list thousands of
+			// extracted .txt files on the front page as though they were
+			// coursework, and hand them back to the indexer as new material.
+			if p != dest && strings.HasPrefix(d.Name(), ".") {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		name := d.Name()
