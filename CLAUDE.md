@@ -131,6 +131,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
 - **The extraction summary means the same thing on every run.** A fresh file still counts towards what the library can answer, by its recorded status — counting all of them as searchable would claim a scan was readable and make the number jump between an extracting run and a no-op one. `TestSummaryDoesNotChangeWhenThereIsNoWorkToDo`.
 - **`scanLibrary` steps over dot-directories.** The text cache lives inside the destination, so walking into it would list thousands of `.txt` files on the front page and feed the indexer its own output. `TestTextCacheIsNotItselfCoursework`.
+- **A status about the machine is never cached; a status about the file is.** `unavailable` (no `pdftotext`) and `unsupported` (no extractor in this build) can both stop being true without the file being touched, so they are re-attempted every run — cheaply, since both give up before opening the file. `empty` and `ok` are properties of the bytes and stay cached. The index also carries `extractorVersion`, so a build with new extractors re-reads what an older one skipped. `TestInstallingThePDFToolMakesPDFsReadable`, `TestNewExtractorsReReadTheLibrary`.
 - **An unreadable file is a status, not an error.** A corrupt or password-protected deck is counted and skipped, exactly as one bad download is. Only cancellation stops a pass. `TestUnreadableOfficeFileIsNotFatal`, `TestExtractionStopsWhenCancelled`.
 - **An enabled but empty tab is a `skip`, not a failure.** Plenty of courses leave a tool switched on and empty; counting those would train people to ignore the failure count. `TestEmptySectionIsSkippedNotFailed`.
 
@@ -153,6 +154,11 @@ The status is why, not just whether: `empty` (a scan — nothing will fix it),
 `unavailable` (install poppler and it works), `unsupported` (no extractor
 wanted). Collapsing those into "no text" leaves a student with a silently
 unsearchable library and nothing to act on.
+
+That split is also what decides caching. `unavailable` and `unsupported` are
+facts about the machine and the build rather than the file, so they are never
+trusted between runs — install poppler and the next `--extract` picks the PDFs
+up, with nothing about them having changed.
 
 Extraction happens when a file is first seen, never inside a request:
 unpacking a 200-slide deck is far too slow to sit in one.

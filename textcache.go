@@ -74,6 +74,21 @@ func textPathFor(dest, rel string) string {
 //
 // A corrupt index costs one slow rebuild rather than a crash, exactly as a
 // corrupt manifest costs one slow re-download.
+// textIndexFile is the shape of index.json.
+type textIndexContents struct {
+	// Extractors is the version of the extraction code that wrote these
+	// records. Bumping it re-reads a library that would otherwise keep
+	// serving whatever an older build made of it — including the files that
+	// build skipped because it had no extractor for them.
+	Extractors int                   `json:"extractors"`
+	Files      map[string]textRecord `json:"files"`
+}
+
+// extractorVersion is bumped whenever extraction changes in a way that would
+// give a different answer for the same bytes. A var rather than a const so a
+// test can move it.
+var extractorVersion = 1
+
 func LoadTextIndex(dest string) *TextIndex {
 	ti := &TextIndex{dest: dest, records: map[string]textRecord{}}
 
@@ -81,9 +96,18 @@ func LoadTextIndex(dest string) *TextIndex {
 	if err != nil {
 		return ti
 	}
-	if err := json.Unmarshal(data, &ti.records); err != nil {
-		ti.records = map[string]textRecord{}
+
+	var contents textIndexContents
+	// A corrupt index costs one slow rebuild rather than a crash, exactly as
+	// a corrupt manifest costs one slow re-download. An index written by a
+	// different build of the extractors is treated the same way: its answers
+	// are not this build's answers. The oldest shape — a bare map, with no
+	// version — decodes to version zero and so rebuilds too.
+	if err := json.Unmarshal(data, &contents); err != nil ||
+		contents.Extractors != extractorVersion || contents.Files == nil {
+		return ti
 	}
+	ti.records = contents.Files
 	return ti
 }
 
@@ -96,7 +120,9 @@ func (ti *TextIndex) Save() error {
 		return nil
 	}
 
-	data, err := json.MarshalIndent(ti.records, "", "  ")
+	data, err := json.MarshalIndent(textIndexContents{
+		Extractors: extractorVersion, Files: ti.records,
+	}, "", "  ")
 	if err != nil {
 		return failf(KindFS, "encode text index", "", err)
 	}
@@ -115,9 +141,16 @@ func (ti *TextIndex) Record(rel string) (textRecord, bool) {
 	return r, ok
 }
 
+// set records what was found, marking the index dirty only when something
+// actually changed. On a machine with no pdftotext every run re-attempts
+// every PDF and reaches the same answer; rewriting the index each time would
+// be pure churn.
 func (ti *TextIndex) set(rel string, r textRecord) {
 	ti.mu.Lock()
 	defer ti.mu.Unlock()
+	if old, ok := ti.records[rel]; ok && old == r {
+		return
+	}
 	ti.records[rel] = r
 	ti.dirty = true
 }
@@ -136,19 +169,41 @@ func (ti *TextIndex) Text(rel string) (string, bool) {
 }
 
 // fresh reports whether the text on disk still describes this file.
+//
+// "Has the file changed?" is only half the question. Two of the four statuses
+// are facts about this machine rather than about the file, and both can stop
+// being true without the file being touched:
+//
+//   - unavailable means pdftotext was missing *at the time*. Install poppler
+//     and every PDF in the library is suddenly readable — but nothing about
+//     those files changed, so a size-and-time check would go on reporting
+//     them as unreadable forever. That is a real bug someone hit.
+//   - unsupported means this build had no extractor for the type. A later
+//     build that adds one must not keep skipping the files the old one
+//     refused.
+//
+// So neither is cached. Retrying both is close to free: extractText decides
+// unsupported from the extension alone, and extractPDF gives up on a missing
+// tool after one PATH lookup — neither opens the file. What must stay cached
+// is empty, which is only reached by actually reading the thing.
 func (ti *TextIndex) fresh(rel string, e indexEntry) bool {
 	r, ok := ti.Record(rel)
 	if !ok || r.Size != e.size || r.Mod != e.mod.Unix() {
 		return false
 	}
-	// A record claiming text must have the text to go with it; a half-deleted
-	// cache folder should heal itself rather than return nothing forever.
-	if r.Status == string(extractOK) {
+	switch extractStatus(r.Status) {
+	case extractOK:
+		// A record claiming text must have the text to go with it; a
+		// half-deleted cache folder should heal itself rather than return
+		// nothing forever.
 		if _, err := os.Stat(textPathFor(ti.dest, rel)); err != nil {
 			return false
 		}
+		return true
+	case extractEmpty:
+		return true
 	}
-	return true
+	return false
 }
 
 // TextStats is what one extraction pass did, in the terms a student can act

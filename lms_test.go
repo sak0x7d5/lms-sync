@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2260,5 +2261,127 @@ func TestMCPSurvivesAMalformedLine(t *testing.T) {
 	// from any client costs the whole conversation.
 	if _, ok := replies[2]; !ok {
 		t.Error("the session did not recover from a malformed line")
+	}
+}
+
+// fakePDFTool writes a stub standing in for pdftotext, so a test can make the
+// tool appear on a machine partway through — which is the whole point.
+func fakePDFTool(t *testing.T, output string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a shell script")
+	}
+	path := filepath.Join(t.TempDir(), "fake-pdftotext")
+	script := "#!/bin/sh\ncat <<'TEXT'\n" + output + "\nTEXT\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestInstallingThePDFToolMakesPDFsReadable(t *testing.T) {
+	dest := t.TempDir()
+	pdf := filepath.Join(dest, "Physics", "lecture.pdf")
+	if err := os.MkdirAll(filepath.Dir(pdf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pdf, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	old := pdfTool
+	defer func() { pdfTool = old }()
+
+	// First pass on a machine with no poppler.
+	pdfTool = "lms-sync-no-such-pdf-tool"
+	first, err := RefreshText(ctx, dest, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Unavailable != 1 {
+		t.Fatalf("unavailable = %d, want 1", first.Unavailable)
+	}
+
+	// The student installs poppler. Nothing about the file changed — not its
+	// size, not its modification time — so a freshness check that only asks
+	// "has the file changed?" would go on reporting it as unreadable forever.
+	pdfTool = fakePDFTool(t, "Kinematics and projectile motion")
+
+	second, err := RefreshText(ctx, dest, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Extracted != 1 {
+		t.Fatalf("extracted = %d, want 1 — the stale 'unavailable' was trusted",
+			second.Extracted)
+	}
+	if second.Unavailable != 0 {
+		t.Errorf("unavailable = %d, want 0", second.Unavailable)
+	}
+
+	text, ok := LoadTextIndex(dest).Text("Physics/lecture.pdf")
+	if !ok || !strings.Contains(text, "projectile motion") {
+		t.Errorf("text not readable back: ok=%v text=%q", ok, text)
+	}
+}
+
+func TestRetryingAMissingToolDoesNotRewriteTheIndex(t *testing.T) {
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "scan.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := pdfTool
+	pdfTool = "lms-sync-no-such-pdf-tool"
+	defer func() { pdfTool = old }()
+
+	ctx := context.Background()
+	if _, err := RefreshText(ctx, dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	idx := filepath.Join(textDir(dest), textIndexFile)
+	before, err := os.Stat(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The PDF is re-attempted every run now, but the answer is the same one,
+	// so nothing should be written. Churning the index on every no-op run
+	// would be the obvious way to make the retry expensive.
+	if _, err := RefreshText(ctx, dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.Stat(idx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("the index was rewritten despite nothing changing")
+	}
+}
+
+func TestNewExtractorsReReadTheLibrary(t *testing.T) {
+	dest, _ := libraryWithOneDeck(t)
+	ctx := context.Background()
+	if _, err := RefreshText(ctx, dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A build whose extractors changed must not keep serving what the old one
+	// made of the library — including the files it skipped for want of an
+	// extractor.
+	old := extractorVersion
+	extractorVersion = old + 1
+	defer func() { extractorVersion = old }()
+
+	again, err := RefreshText(ctx, dest, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Extracted != 1 {
+		t.Errorf("extracted = %d, want 1 — the older build's records were trusted",
+			again.Extracted)
 	}
 }
