@@ -351,6 +351,7 @@ es.onmessage = ev => {
   switch (e.type) {
     case "start":   line("Saving to " + e.path, "l-done"); break;
     case "index":   line("Index: " + e.path, "l-done"); break;
+    case "extract": line(e.message, "l-done"); break;
     case "course":  line(e.course, "l-course"); break;
     case "section": line("  [" + e.section + "]", "l-section"); break;
     case "file":    line("  + " + e.path, "l-file"); break;

@@ -2385,3 +2385,84 @@ func TestNewExtractorsReReadTheLibrary(t *testing.T) {
 			again.Extracted)
 	}
 }
+
+func TestSyncLeavesTheLibrarySearchable(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	var extractSummary string
+	doneAt, extractAt, n := -1, -1, 0
+	report := func(e Event) {
+		switch e.Type {
+		case "extract":
+			extractSummary, extractAt = e.Message, n
+		case "done":
+			doneAt = n
+		}
+		n++
+	}
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, report); err != nil {
+		t.Fatal(err)
+	}
+
+	// Extraction is part of syncing, not a second command to remember: a
+	// scheduled --sync that never extracted would leave an assistant reading
+	// this library a week behind the files sitting next to it.
+	if _, err := os.Stat(filepath.Join(textDir(cfg.Destination), textIndexFile)); err != nil {
+		t.Fatalf("a sync left no text index: %v", err)
+	}
+	if extractSummary == "" {
+		t.Error("no extract event was reported")
+	}
+
+	// "done" ends the run, and the web UI closes its log on it — so nothing
+	// may be reported after it.
+	if extractAt >= 0 && doneAt >= 0 && extractAt > doneAt {
+		t.Errorf("extract was reported after done (%d > %d)", extractAt, doneAt)
+	}
+}
+
+func TestDryRunWritesNoTextIndex(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		true, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	// A dry run writes nothing, and the text cache is no exception.
+	if _, err := os.Stat(textDir(cfg.Destination)); err == nil {
+		t.Error("a dry run wrote the text cache")
+	}
+}
+
+func TestSyncReportsExactlyOneDone(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	dones := 0
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(e Event) {
+			if e.Type == "done" {
+				dones++
+			}
+		}); err != nil {
+		t.Fatal(err)
+	}
+	// Extraction used to report its own "done", which the web UI reads as the
+	// end of the run — it would have closed the log part-way through a sync.
+	if dones != 1 {
+		t.Errorf("got %d done events, want exactly 1", dones)
+	}
+}

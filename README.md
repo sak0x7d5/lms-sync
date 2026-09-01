@@ -58,12 +58,15 @@ configuration, `130` interrupted. Enough for a scheduler to act on.
 ask about a course instead of hunting through folders. It reads the mirror on
 disk — it never logs in and needs no password.
 
-Make the text searchable first (`grep` cannot see inside a PowerPoint):
+A sync makes the text searchable as it goes (`grep` cannot see inside a
+PowerPoint), so there is nothing extra to run:
 
 ```
 lms-sync --sync
-lms-sync --extract
 ```
+
+`lms-sync --extract` does that pass on its own, which is what you want after
+installing `pdftotext` — it picks up the PDFs it previously had to skip.
 
 Then point your client at the binary. For Claude Code, in `.mcp.json`:
 

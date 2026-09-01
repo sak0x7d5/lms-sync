@@ -209,6 +209,8 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 			fmt.Printf("    - %s: %s\n", e.Section, e.Message)
 		case "index":
 			fmt.Printf("\nOpen this to browse everything:\n    %s\n", e.Path)
+		case "extract":
+			fmt.Printf("\n%s\n", e.Message)
 		case "warn":
 			fmt.Printf("    ! %s %s\n", e.Path, e.Message)
 		case "error":

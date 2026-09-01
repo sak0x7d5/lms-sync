@@ -121,6 +121,8 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Links in a saved page are rewritten, or they are dead.** The LMS writes root-relative hrefs, which point at nothing once the page is a file on a laptop. `localiseLinks` repoints links to downloaded files at the local copy and makes everything else absolute; inline `on*` handlers are stripped because the page is opened from disk. `TestSavedPageLinksWorkOffline`.
 - **Attachment filenames are deduplicated case-insensitively.** Sakai files attachments under opaque per-item folders, so two assignments can both link a `brief.pdf`; Windows would also collide on names Linux keeps apart. `TestAssignmentBriefsGetUniqueNames`.
 - **The course list is refreshed every run, and never shrinks.** `RefreshCourses` adds what is new and keeps the folder names the student chose. Dropping a vanished course would be worse than a stale line they can delete. `TestRefreshAddsNewCoursesAndKeepsChosenNames`.
+- **A run reports exactly one `done`, and it is last.** The web UI closes its log on `done`, so extraction returns its summary for `Sync` to report as `extract` rather than emitting a second one. `TestSyncReportsExactlyOneDone`.
+- **A dry run writes nothing, the text cache included.** `TestDryRunWritesNoTextIndex`.
 - **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
 - **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
 - **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`.
@@ -161,7 +163,10 @@ trusted between runs — install poppler and the next `--extract` picks the PDFs
 up, with nothing about them having changed.
 
 Extraction happens when a file is first seen, never inside a request:
-unpacking a 200-slide deck is far too slow to sit in one.
+unpacking a 200-slide deck is far too slow to sit in one. `Sync` runs it once
+the courses are done, so a scheduled `--sync` leaves the library searchable
+without anyone remembering a second command; `--extract` is the same pass on
+its own, for when a tool was installed or the cache was deleted.
 
 ### Freshness check
 

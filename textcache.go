@@ -272,7 +272,7 @@ func RefreshText(ctx context.Context, dest string, report Reporter) (TextStats, 
 				return stats, err
 			}
 			stats.Failed++
-			report(Event{Type: "warn", Course: e.course, Path: e.rel,
+			report(Event{Type: "warn", Section: "text", Course: e.course, Path: e.rel,
 				Message: "could not read " + e.name + ": " + err.Error()})
 			continue
 		}
@@ -280,12 +280,12 @@ func RefreshText(ctx context.Context, dest string, report Reporter) (TextStats, 
 		if ex.Status == extractOK {
 			if _, err := writeRendered(textPathFor(dest, e.rel), []byte(ex.Text)); err != nil {
 				stats.Failed++
-				report(Event{Type: "warn", Course: e.course, Path: e.rel,
+				report(Event{Type: "warn", Section: "text", Course: e.course, Path: e.rel,
 					Message: "could not save text for " + e.name})
 				continue
 			}
 			stats.Extracted++
-			report(Event{Type: "file", Course: e.course, Path: e.rel,
+			report(Event{Type: "file", Section: "text", Course: e.course, Path: e.rel,
 				Message: e.name})
 		} else {
 			// Text that was there and no longer is would otherwise be served
@@ -300,7 +300,7 @@ func RefreshText(ctx context.Context, dest string, report Reporter) (TextStats, 
 				stats.Unsupported++
 			}
 			if ex.Note != "" {
-				report(Event{Type: "skip", Course: e.course, Path: e.rel,
+				report(Event{Type: "skip", Section: "text", Course: e.course, Path: e.rel,
 					Message: e.name + " — " + ex.Note})
 			}
 		}
@@ -322,7 +322,9 @@ func RefreshText(ctx context.Context, dest string, report Reporter) (TextStats, 
 	if err := ti.Save(); err != nil {
 		return stats, err
 	}
-	report(Event{Type: "done", Message: stats.Summary()})
+	// The summary is returned, not reported. "done" means the whole run has
+	// finished — the web UI closes its log on it — and extraction is only
+	// ever part of one.
 	return stats, nil
 }
 

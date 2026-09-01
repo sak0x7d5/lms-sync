@@ -174,7 +174,7 @@ func RefreshCourses(ctx context.Context, c *Client, cfg *Config) ([]Course, erro
 // Event is one thing worth telling the user about. The CLI prints these; the
 // web UI streams them to the browser.
 type Event struct {
-	Type    string `json:"type"` // start | course | section | file | skip | warn | error | index | done
+	Type    string `json:"type"` // start | course | section | file | skip | warn | error | index | extract | done
 	Course  string `json:"course,omitempty"`
 	Section string `json:"section,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -279,6 +279,25 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 			report(Event{Type: "warn", Message: "index not written: " + err.Error()})
 		} else {
 			report(Event{Type: "index", Path: path})
+		}
+	}
+
+	// Making the new files searchable is part of syncing, not a second
+	// command to remember: a scheduled --sync that never extracted would
+	// leave every assistant reading this library a week behind the files
+	// sitting next to it. A dry run still writes nothing.
+	if !dryRun {
+		stats, err := RefreshText(ctx, dest, report)
+		switch {
+		case KindOf(err) == KindCancelled:
+			return r.res, err
+		case err != nil:
+			// The downloads are the point; an index that could not be built
+			// is worth saying out loud but not worth failing a whole sync
+			// over, and --extract can always rebuild it.
+			report(Event{Type: "warn", Message: "text index not updated: " + err.Error()})
+		default:
+			report(Event{Type: "extract", Message: stats.Summary()})
 		}
 	}
 
