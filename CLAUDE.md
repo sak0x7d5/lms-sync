@@ -48,6 +48,8 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [search.go](search.go) — turning a question into matches over the text cache.
+- [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
+- [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 ### One core, many tabs
@@ -126,6 +128,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A run reports exactly one `done`, and it is last.** The web UI closes its log on `done`, so extraction returns its summary for `Sync` to report as `extract` rather than emitting a second one. `TestSyncReportsExactlyOneDone`.
 - **A dry run writes nothing, the text cache included.** `TestDryRunWritesNoTextIndex`.
 - **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
+- **One sync at a time per library, across processes.** A scheduled `--sync`, the web UI and a tool call can all reach for one destination; two crawls duplicate every request and hammering a login endpoint is how an account gets locked. `takeLock` is inside `Sync`, so every surface inherits it; a dry run is exempt because a lock file is a write. A lock older than `lockStaleAfter` is treated as a corpse — refusing to sync ever again would be worse than the collision it guards. `TestOnlyOneSyncRunsAtATime`, `TestAStaleLockDoesNotBlockForever`, `TestDryRunTakesNoLock`.
 - **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
 - **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`.
 - **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
@@ -196,10 +199,18 @@ and far too slow to sit inside a tool call. Keeping the mirror current stays
 anywhere on that path corrupts the stream and the client disconnects with no
 usable diagnosis. Everything for a human goes to stderr via `mcpLog`.
 
-The four tools (`list_courses`, `find_material`, `read_material`, `whats_new`)
-read `scanLibrary` plus the text index, re-read per call rather than cached: a
-sync may well run while the server is up, and a stale answer about coursework
-is worse than a few milliseconds of walking a folder. Tool descriptions carry
+Four of the five tools (`list_courses`, `find_material`, `read_material`,
+`whats_new`) read `scanLibrary` plus the text index, re-read per call rather
+than cached: a sync may well run while the server is up, and a stale answer
+about coursework is worse than a few milliseconds of walking a folder.
+
+`sync_courses` is the exception and the only thing here that goes online. It
+**starts** a sync and returns — a crawl is minutes and a tool call has seconds
+— so progress comes from calling it again. It logs in through the same
+`Client` every other surface uses, which is the point: Samigo stays refused,
+`allowedContent` still holds, and auth failures are still never retried. A
+second HTTP path here is how those protections would quietly stop applying.
+`connectQuiet` exists because `connect` prints to stdout. Tool descriptions carry
 their own context because the server is meant to work in any MCP client, and
 most have no project instructions to lean on.
 

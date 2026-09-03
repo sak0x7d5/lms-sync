@@ -81,8 +81,10 @@ Then point your client at the binary. For Claude Code, in `.mcp.json`:
 }
 ```
 
-It offers four tools: `list_courses`, `find_material` (searches the text of
-every slide, document and saved page), `read_material` and `whats_new`.
+It offers five tools: `list_courses`, `find_material` (searches the text of
+every slide, document and saved page), `read_material`, `whats_new`, and
+`sync_courses` — the only one that goes online, so the assistant can fetch new
+material when you ask instead of you dropping to a terminal.
 
 PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
 `pdftotext` on your PATH. Without it everything else still works and the tool

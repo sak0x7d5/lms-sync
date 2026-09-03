@@ -2687,3 +2687,192 @@ func TestSearchFindsAPluralThroughTheServer(t *testing.T) {
 		t.Errorf("a real question about eigenvalues found nothing:\n%s", text)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Syncing from a tool call
+// ---------------------------------------------------------------------------
+
+func TestOnlyOneSyncRunsAtATime(t *testing.T) {
+	dest := t.TempDir()
+
+	release, err := takeLock(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two crawls into one library do not corrupt it, but they double every
+	// request to the LMS, and hammering a login endpoint is how an account
+	// gets locked.
+	if _, err := takeLock(dest); err == nil {
+		t.Fatal("a second sync claimed the lock")
+	} else if !strings.Contains(Explain(err), "Another sync") {
+		t.Errorf("unhelpful message: %s", Explain(err))
+	}
+
+	release()
+	again, err := takeLock(dest)
+	if err != nil {
+		t.Fatalf("the lock was not released: %v", err)
+	}
+	again()
+}
+
+func TestAStaleLockDoesNotBlockForever(t *testing.T) {
+	dest := t.TempDir()
+	stale := time.Now().Add(-lockStaleAfter - time.Hour).UTC().Format(time.RFC3339)
+	if err := os.WriteFile(filepath.Join(dest, lockName),
+		[]byte("pid 1\nstarted "+stale+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A run killed part-way leaves its lock behind. Refusing to sync ever
+	// again would be a worse failure than the one it is guarding against.
+	release, err := takeLock(dest)
+	if err != nil {
+		t.Fatalf("a stale lock blocked a new sync: %v", err)
+	}
+	release()
+}
+
+func TestDryRunTakesNoLock(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		true, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	// A dry run writes nothing, and a lock file is a write.
+	if _, err := os.Stat(filepath.Join(cfg.Destination, lockName)); err == nil {
+		t.Error("a dry run left a lock file behind")
+	}
+}
+
+func TestSyncToolRefusesWithoutCredentials(t *testing.T) {
+	dest := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(dest, "config.toml")
+	cfg.Destination = dest
+	cfg.Username, cfg.Password = "", ""
+
+	var out bytes.Buffer
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sync_courses","arguments":{}}}` + "\n")
+	serveMCPOn(context.Background(), cfg, in, &out)
+
+	var reply map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &reply); err != nil {
+		t.Fatal(err)
+	}
+	text, isError := toolTextOf(t, reply)
+	if !isError {
+		t.Fatal("a sync was attempted with no credentials")
+	}
+	// Attempting a login with an empty password is how an account gets
+	// locked out, so this has to fail before reaching the network.
+	if !strings.Contains(text, "credentials") {
+		t.Errorf("unhelpful message: %s", text)
+	}
+}
+
+func TestSyncToolIsOfferedAndDescribesItsCost(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+	tools := replies[1]["result"].(map[string]any)["tools"].([]any)
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		if tool["name"] != "sync_courses" {
+			continue
+		}
+		desc := strings.ToLower(tool["description"].(string))
+		// A model that waits on this tool, or calls it in a loop expecting it
+		// to block, will look broken. The description is the only place that
+		// can say so.
+		for _, want := range []string{"minutes", "immediately", "again"} {
+			if !strings.Contains(desc, want) {
+				t.Errorf("description does not mention %q: %s", want, desc)
+			}
+		}
+		return
+	}
+	t.Fatal("sync_courses is not offered")
+}
+
+func TestSyncToolFetchesAndLeavesTheLibrarySearchable(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+
+	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
+	if _, err := s.syncCourses(); err != nil {
+		t.Fatalf("starting the sync: %v", err)
+	}
+
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		s.sync.mu.Lock()
+		running, err := s.sync.running, s.sync.err
+		s.sync.mu.Unlock()
+		if !running {
+			if err != nil {
+				t.Fatalf("sync failed: %v", Explain(err))
+			}
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	status := s.sync.status()
+	if strings.Contains(status, "running") {
+		t.Fatalf("the sync did not finish in time:\n%s", status)
+	}
+	if !strings.Contains(status, "finished") {
+		t.Errorf("status does not report the outcome:\n%s", status)
+	}
+
+	// The whole point: material fetched by a tool call is immediately
+	// answerable by the other tools, with no second command in between.
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Calculus", "limits.pdf")); err != nil {
+		t.Errorf("the sync downloaded nothing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(textDir(cfg.Destination), textIndexFile)); err != nil {
+		t.Errorf("a tool-driven sync left no text index: %v", err)
+	}
+	// And the lock must not survive the run that took it.
+	if _, err := os.Stat(filepath.Join(cfg.Destination, lockName)); err == nil {
+		t.Error("the sync left its lock file behind")
+	}
+}
+
+func TestASyncThroughTheServerNeverWritesToStdout(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+
+	var out bytes.Buffer
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sync_courses","arguments":{}}}` + "\n" +
+			`{"jsonrpc":"2.0","id":2,"method":"ping"}` + "\n")
+	serveMCPOn(context.Background(), cfg, in, &out)
+
+	// stdout carries the protocol and nothing else. The sync path logs in and
+	// crawls, and connect() used to print "Logging in as ..." — one such line
+	// on this stream is a corrupt message, and the client disconnects with
+	// nothing to diagnose.
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("non-protocol line on stdout: %q", line)
+		}
+		if m["jsonrpc"] != "2.0" {
+			t.Errorf("not a JSON-RPC message: %q", line)
+		}
+	}
+}

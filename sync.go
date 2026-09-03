@@ -259,6 +259,16 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 	// hard question to answer from the log alone.
 	report(Event{Type: "start", Path: dest})
 
+	// One crawl at a time into a given library. A dry run is exempt: it
+	// writes nothing, and a lock file is still a write.
+	if !dryRun {
+		release, err := takeLock(dest)
+		if err != nil {
+			return zero, err
+		}
+		defer release()
+	}
+
 	r := &syncRun{c: c, cfg: cfg, manifest: manifest, dest: dest,
 		dryRun: dryRun, report: report}
 

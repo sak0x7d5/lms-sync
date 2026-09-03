@@ -85,6 +85,11 @@ type mcpServer struct {
 	cfg  *Config
 	dest string
 	out  *json.Encoder
+
+	// ctx is the server's lifetime, not one request's. A sync outlives the
+	// call that starts it, so it cannot borrow a per-request context.
+	ctx  context.Context
+	sync syncJob
 }
 
 // mcpLog writes a line for whoever is watching the server, on stderr, where
@@ -125,7 +130,17 @@ func serveMCPOn(ctx context.Context, cfg *Config, stdin io.Reader, stdout io.Wri
 		mcpLog("%s", Explain(err))
 		return 1
 	}
-	s := &mcpServer{cfg: cfg, dest: dest, out: json.NewEncoder(stdout)}
+	// A sync outlives the call that starts it but must not outlive the
+	// server: cancelling here is what lets Sync run its deferred release of
+	// the lock file rather than leaving the library locked for hours.
+	jobCtx, stopJobs := context.WithCancel(ctx)
+	defer stopJobs()
+
+	s := &mcpServer{cfg: cfg, dest: dest, out: json.NewEncoder(stdout), ctx: jobCtx}
+	defer func() {
+		stopJobs()
+		s.sync.wait(10 * time.Second)
+	}()
 
 	in := bufio.NewReader(stdin)
 	for {
@@ -299,6 +314,18 @@ var mcpTools = []mcpTool{
 		}`),
 	},
 	{
+		Name:  "sync_courses",
+		Title: "Fetch new material from the LMS",
+		Description: "Download anything new from the university's LMS into the local " +
+			"mirror, then make it searchable. This is the only tool here that goes " +
+			"online. It returns immediately rather than waiting: a full sync takes " +
+			"minutes, so call it again after a minute to see progress and again until " +
+			"it reports finished. Use it when the student says material is missing or " +
+			"that something was uploaded recently, or when whats_new shows nothing for " +
+			"a period they expected material in.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+	},
+	{
 		Name:  "whats_new",
 		Title: "Recently added material",
 		Description: "List files that appeared or changed in the mirror recently, newest " +
@@ -355,6 +382,8 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		return s.readMaterial(args)
 	case "whats_new":
 		return s.whatsNew(args)
+	case "sync_courses":
+		return s.syncCourses()
 	}
 	return "", fmt.Errorf("no tool called %q", name)
 }
@@ -671,6 +700,21 @@ func (s *mcpServer) whatsNew(args json.RawMessage) (string, error) {
 			e.rel, courseLabel(e.course), e.mod.Format("Mon 2 Jan"))
 	}
 	return b.String(), nil
+}
+
+// syncCourses starts a sync, or reports the one already under way.
+func (s *mcpServer) syncCourses() (string, error) {
+	if strings.TrimSpace(s.cfg.Username) == "" || strings.TrimSpace(s.cfg.Password) == "" {
+		return "", fmt.Errorf("no LMS credentials are configured, so a sync cannot log in. "+
+			"Set them in %s, or in the LMS_USER and LMS_PASS environment variables",
+			s.cfg.path)
+	}
+
+	if !s.sync.start(s.ctx, s.cfg) {
+		return "A sync is already running.\n\n" + s.sync.status(), nil
+	}
+	return "Sync started. It runs in the background and takes minutes on a first " +
+		"run; call sync_courses again to see how far it has got.", nil
 }
 
 // resolveInside turns a library-relative path into an absolute one, refusing

@@ -73,7 +73,7 @@ func run() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	manifest := LoadManifest(filepath.Join(base, "manifest.json"))
+	manifest := LoadManifest(manifestPath())
 
 	switch {
 	case *doDiscover:
@@ -107,6 +107,14 @@ Options:
 	flag.PrintDefaults()
 }
 
+// manifestPath is where the "already downloaded" record lives: beside the
+// executable, as it always has.
+//
+// Deliberately NOT beside the config file, unlike the destination. Moving an
+// existing manifest orphans it, and a manifest the sync cannot find means
+// every file in the library looks new and is fetched again.
+func manifestPath() string { return filepath.Join(exeDir(), "manifest.json") }
+
 func exeDir() string {
 	exe, err := os.Executable()
 	if err != nil {
@@ -129,15 +137,31 @@ func connect(ctx context.Context, cfg *Config, insecure bool) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	fmt.Printf("Logging in as %s ...\n", cfg.Username)
+	client, err := connectQuiet(ctx, cfg, insecure)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("  authenticated")
+	return client, nil
+}
+
+// connectQuiet logs in without printing anything.
+//
+// It exists because stdout belongs to the MCP protocol: a "Logging in as ..."
+// line on that stream is a corrupt message, not a stray log line, and the
+// client disconnects with nothing useful to go on.
+func connectQuiet(ctx context.Context, cfg *Config, insecure bool) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	client, err := NewClient(cfg, insecure)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Logging in as %s ...\n", cfg.Username)
 	if err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
 		return nil, err
 	}
-	fmt.Println("  authenticated")
 	return client, nil
 }
 
