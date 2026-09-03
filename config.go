@@ -323,6 +323,42 @@ func tomlQuote(v string) string {
 	return `"` + r.Replace(v) + `"`
 }
 
+// DestinationPath resolves the destination to an absolute folder.
+//
+// A relative destination is resolved against the config file's own folder —
+// beside the executable in normal use — and deliberately NOT against the
+// current working directory.
+//
+// That distinction is the whole point of this function. `destination =
+// 'Courses'` has to mean the same folder whoever starts the process.
+// Resolving it against the working directory made it mean whatever folder the
+// launcher happened to be in: an MCP client spawns this binary from its own
+// project directory and found an empty Courses sitting there, and a scheduled
+// run would have quietly filled $HOME/Courses instead of the real library.
+func (c *Config) DestinationPath() (string, error) {
+	dest := os.ExpandEnv(c.Destination)
+	if strings.TrimSpace(dest) == "" {
+		dest = "Courses"
+	}
+	if filepath.IsAbs(dest) {
+		return filepath.Clean(dest), nil
+	}
+
+	base := exeDir()
+	if c.path != "" {
+		if abs, err := filepath.Abs(c.path); err == nil {
+			base = filepath.Dir(abs)
+		}
+	}
+
+	full, err := filepath.Abs(filepath.Join(base, dest))
+	if err != nil {
+		return "", failf(KindFS, "resolve destination",
+			"That destination path could not be understood.", err)
+	}
+	return full, nil
+}
+
 // Save writes the config atomically: a temp file then a rename, so an
 // interrupted write can never leave a truncated config behind.
 func (c *Config) Save() error {

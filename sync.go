@@ -243,10 +243,9 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 
 	var zero Result
 
-	dest, err := filepath.Abs(os.ExpandEnv(cfg.Destination))
+	dest, err := cfg.DestinationPath()
 	if err != nil {
-		return zero, failf(KindFS, "resolve destination",
-			"That destination path could not be understood.", err)
+		return zero, err
 	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return zero, failf(KindFS, "create "+dest,

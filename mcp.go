@@ -99,19 +99,31 @@ func mcpLog(format string, args ...any) {
 // concurrency, and serial handling means two replies can never interleave on
 // stdout — which would be an unreadable stream rather than a slow one.
 func serveMCP(ctx context.Context, cfg *Config) int {
-	if _, err := os.Stat(cfg.Destination); err != nil {
+	dest, err := cfg.DestinationPath()
+	if err != nil {
+		mcpLog("%s", Explain(err))
+		return 1
+	}
+	if _, err := os.Stat(dest); err != nil {
 		// Worth saying once, on stderr: the server still starts and still
 		// answers, it just has nothing to talk about yet.
-		mcpLog("destination %s is not readable yet — run a sync first", cfg.Destination)
+		mcpLog("destination %s is not readable yet — run a sync first", dest)
 	}
-	mcpLog("ready, serving %s", cfg.Destination)
+	// Always the resolved path. Printing the raw setting here is what made a
+	// destination pointing somewhere unexpected look correct.
+	mcpLog("ready, serving %s", dest)
 	return serveMCPOn(ctx, cfg, os.Stdin, os.Stdout)
 }
 
 // serveMCPOn is serveMCP with the streams named, so a test can drive a whole
 // session without a subprocess.
 func serveMCPOn(ctx context.Context, cfg *Config, stdin io.Reader, stdout io.Writer) int {
-	s := &mcpServer{cfg: cfg, dest: cfg.Destination, out: json.NewEncoder(stdout)}
+	dest, err := cfg.DestinationPath()
+	if err != nil {
+		mcpLog("%s", Explain(err))
+		return 1
+	}
+	s := &mcpServer{cfg: cfg, dest: dest, out: json.NewEncoder(stdout)}
 
 	in := bufio.NewReader(stdin)
 	for {

@@ -325,7 +325,10 @@ func hintOf(err error) string {
 // to run repeatedly and works on a train. That also makes it the one part of
 // the tool a student can try without handing over a password.
 func cliExtract(ctx context.Context, cfg *Config) int {
-	dest := cfg.Destination
+	dest, err := cfg.DestinationPath()
+	if err != nil {
+		return reportErr(err)
+	}
 	if _, err := os.Stat(dest); err != nil {
 		return reportErr(failf(KindFS, "read "+dest,
 			"Nothing has been synced to that folder yet. Run a sync first.", err))

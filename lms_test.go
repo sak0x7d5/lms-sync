@@ -2466,3 +2466,76 @@ func TestSyncReportsExactlyOneDone(t *testing.T) {
 		t.Errorf("got %d done events, want exactly 1", dones)
 	}
 }
+
+func TestRelativeDestinationDoesNotDependOnTheWorkingDirectory(t *testing.T) {
+	home := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(home, "config.toml")
+	cfg.Destination = "Courses"
+
+	got, err := cfg.DestinationPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The test runs from the package directory, so a working-directory
+	// resolution would land somewhere else entirely. An MCP client starts
+	// this process from its own project folder and a scheduled run starts it
+	// from $HOME — "Courses" has to mean one folder regardless.
+	want := filepath.Join(home, "Courses")
+	if got != want {
+		t.Errorf("DestinationPath() = %s, want %s", got, want)
+	}
+}
+
+func TestAbsoluteDestinationIsLeftAlone(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+	cfg.Destination = dir
+
+	got, err := cfg.DestinationPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Clean(dir) {
+		t.Errorf("DestinationPath() = %s, want %s", got, dir)
+	}
+}
+
+func TestMCPServesTheSameFolderTheSyncWroteTo(t *testing.T) {
+	home := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(home, "config.toml")
+	cfg.Destination = "Courses"
+
+	// A library that a sync would have written, in the folder beside the
+	// config — then read back by a server started from anywhere at all.
+	writeOffice(t, filepath.Join(home, "Courses", "Physics", "lecture.pptx"),
+		map[string]string{"ppt/slides/slide1.xml": slideXML("Newton's second law")})
+	dest, err := cfg.DestinationPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_courses","arguments":{}}}` + "\n")
+	if code := serveMCPOn(context.Background(), cfg, in, &out); code != 0 {
+		t.Fatalf("server exited with %d", code)
+	}
+
+	var reply map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &reply); err != nil {
+		t.Fatal(err)
+	}
+	text, isError := toolTextOf(t, reply)
+	if isError {
+		t.Fatalf("list_courses failed: %s", text)
+	}
+	if !strings.Contains(text, "Physics") {
+		t.Errorf("the server did not see the library the sync wrote:\n%s", text)
+	}
+}
