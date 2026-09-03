@@ -458,13 +458,15 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 		limit = 50
 	}
 
+	terms := searchTerms(query)
+	phrase := strings.ToLower(strings.Join(strings.Fields(query), " "))
+
 	entries, ti, err := s.library()
 	if err != nil {
 		return "", err
 	}
 
-	needle := strings.ToLower(query)
-	var hits []searchHit
+	var hits []hit
 	var unsearchable int
 
 	for _, e := range entries {
@@ -472,34 +474,31 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 			continue
 		}
 
-		hit := searchHit{entry: e}
-		// A filename match counts even when the file has no text at all: a
-		// scanned "Week 5 Kinematics.pdf" is still exactly what was asked
-		// for, and returning nothing would be a worse answer than its name.
-		if strings.Contains(strings.ToLower(e.rel), needle) {
-			hit.score += 5
-		}
-
-		if text, ok := ti.Text(e.rel); ok {
-			if n := strings.Count(strings.ToLower(text), needle); n > 0 {
-				hit.score += n
-				hit.snippet = snippetAround(text, needle)
+		text, hasText := ti.Text(e.rel)
+		if !hasText {
+			if r, ok := ti.Record(e.rel); !ok || r.Status != string(extractOK) {
+				unsearchable++
 			}
-		} else if r, ok := ti.Record(e.rel); !ok || r.Status != string(extractOK) {
-			unsearchable++
 		}
-
-		if hit.score > 0 {
-			hits = append(hits, hit)
+		if h, ok := searchText(text, e.rel, terms, phrase); ok {
+			h.course = e.course
+			if hasText {
+				h.quote = quoteAround(text, h.at)
+			}
+			hits = append(hits, h)
 		}
 	}
 
 	if len(hits) == 0 {
-		msg := fmt.Sprintf("Nothing in the library matches %q.", query)
+		msg := fmt.Sprintf("Nothing in the library matches %q", query)
+		if len(terms) > 0 {
+			msg += " (searched for: " + strings.Join(terms, ", ") + ")"
+		}
+		msg += "."
 		if unsearchable > 0 {
-			// Silence here is ambiguous — the material may exist in a file
-			// whose text was never extracted. Saying so is the difference
-			// between "you were not taught this" and "I cannot see it".
+			// Silence here is ambiguous — the material may sit in a file whose
+			// text was never extracted. Saying so is the difference between
+			// "you were not taught this" and "I cannot see it".
 			msg += fmt.Sprintf("\n\nNote: %d file%s in scope %s no extracted text "+
 				"(scans, or formats with no extractor), so this search could not see inside %s.",
 				unsearchable, plural(unsearchable, "", "s"),
@@ -509,10 +508,10 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 	}
 
 	sort.Slice(hits, func(i, j int) bool {
-		if hits[i].score != hits[j].score {
-			return hits[i].score > hits[j].score
+		if a, b := hits[i].score(), hits[j].score(); a != b {
+			return a > b
 		}
-		return hits[i].entry.rel < hits[j].entry.rel
+		return hits[i].rel < hits[j].rel
 	})
 	shown := hits
 	if len(shown) > limit {
@@ -522,15 +521,24 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d match%s for %q", len(hits), plural(len(hits), "", "es"), query)
 	if len(shown) < len(hits) {
-		fmt.Fprintf(&b, ", showing %d", len(shown))
+		fmt.Fprintf(&b, ", best %d shown", len(shown))
 	}
 	b.WriteString("\n\n")
 	for _, h := range shown {
-		fmt.Fprintf(&b, "- %s\n  course: %s\n", h.entry.rel, courseLabel(h.entry.course))
-		if h.snippet != "" {
-			fmt.Fprintf(&b, "  …%s…\n", h.snippet)
-		} else {
-			b.WriteString("  (filename match; no extracted text to quote)\n")
+		fmt.Fprintf(&b, "- %s\n  course: %s\n", h.rel, courseLabel(h.course))
+		// Saying which words were found, and how many were asked for, lets a
+		// reader tell a direct hit from a file that happened to share one
+		// word — without opening either.
+		if h.total > 1 {
+			fmt.Fprintf(&b, "  matched %d of %d terms (%s)%s\n",
+				h.covered, h.total, strings.Join(h.matched, ", "),
+				map[bool]string{true: ", exact phrase"}[h.phrase])
+		}
+		switch {
+		case h.quote != "":
+			fmt.Fprintf(&b, "  …%s…\n", h.quote)
+		case h.inName:
+			b.WriteString("  (filename match; this file has no extracted text to quote)\n")
 		}
 	}
 	b.WriteString("\nRead any of these in full with read_material, passing the path exactly as shown.")
@@ -542,26 +550,6 @@ func courseLabel(c string) string {
 		return "(top level)"
 	}
 	return c
-}
-
-// snippetAround quotes the text surrounding the first match, so a result can
-// be judged without opening the file.
-func snippetAround(text, needle string) string {
-	const wing = 120
-
-	i := strings.Index(strings.ToLower(text), needle)
-	if i < 0 {
-		return ""
-	}
-	start := i - wing
-	if start < 0 {
-		start = 0
-	}
-	end := i + len(needle) + wing
-	if end > len(text) {
-		end = len(text)
-	}
-	return strings.Join(strings.Fields(text[start:end]), " ")
 }
 
 func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {

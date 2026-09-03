@@ -47,6 +47,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
+- [search.go](search.go) — turning a question into matches over the text cache.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 ### One core, many tabs
@@ -130,6 +131,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
 - **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
 - **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`.
+- **Search matches word prefixes, never substrings.** "eigenvalue" has to find "eigenvalues" or a real question returns nothing, but anchoring only the start is what stops "law" matching "flaw". Ranking is by how many of the query's words a file contains, not by frequency, so a file repeating one word cannot outrank the file answering the whole question. Stop words are dropped so pasting an actual question works. `TestSearchMatchesWordPrefixesNotSubstrings`, `TestSearchRanksByHowMuchOfTheQuestionAFileAnswers`.
 - **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
 - **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
 - **The extraction summary means the same thing on every run.** A fresh file still counts towards what the library can answer, by its recorded status — counting all of them as searchable would claim a scan was readable and make the number jump between an extracting run and a no-op one. `TestSummaryDoesNotChangeWhenThereIsNoWorkToDo`.

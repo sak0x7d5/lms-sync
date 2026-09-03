@@ -2596,3 +2596,94 @@ func TestConfigRecordsWhetherItWasFound(t *testing.T) {
 		t.Error("a config that exists was reported as missing")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Search
+// ---------------------------------------------------------------------------
+
+func TestQueryDropsTheWordsThatCarryNoMeaning(t *testing.T) {
+	// Pasting the real question is how people actually search. If every word
+	// counted, "what did we cover" would drown the one word that matters.
+	got := searchTerms("what did we cover about kinematics in class")
+	want := []string{"cover", "about", "kinematics", "class"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("searchTerms = %v, want %v", got, want)
+	}
+
+	// A query made only of common words is still a query.
+	if len(searchTerms("what is it")) == 0 {
+		t.Error("an all-stopword query was reduced to nothing")
+	}
+}
+
+func TestSearchMatchesWordPrefixesNotSubstrings(t *testing.T) {
+	terms := searchTerms("eigenvalue")
+
+	// The failure that motivated all this: a deck saying "eigenvalues"
+	// throughout, invisible to a search for the singular.
+	if _, ok := searchText("the eigenvalues of a matrix", "a.pptx", terms, "eigenvalue"); !ok {
+		t.Error("eigenvalue did not match eigenvalues")
+	}
+	// But the prefix has to be anchored to a word start, or "law" finds
+	// "flaw" and every result becomes noise.
+	if _, ok := searchText("a serious flaw", "a.pptx", searchTerms("law"), "law"); ok {
+		t.Error("law matched inside flaw")
+	}
+}
+
+func TestSearchRanksByHowMuchOfTheQuestionAFileAnswers(t *testing.T) {
+	terms := searchTerms("newton second law")
+
+	both, ok := searchText("Newton's second law of motion", "both.pptx", terms, "newton second law")
+	if !ok {
+		t.Fatal("the matching file did not match")
+	}
+	// A file repeating one word many times must not outrank the file that
+	// actually contains the whole question.
+	one, ok := searchText(strings.Repeat("law and order. ", 60), "one.pptx", terms, "newton second law")
+	if !ok {
+		t.Fatal("the partial match did not match")
+	}
+	if both.score() <= one.score() {
+		t.Errorf("coverage %d scored %d, coverage %d scored %d — frequency won",
+			both.covered, both.score(), one.covered, one.score())
+	}
+}
+
+func TestSearchQuotesWhereTheWordsAppearTogether(t *testing.T) {
+	terms := searchTerms("kinematics projectile")
+	text := "kinematics is mentioned here. " +
+		strings.Repeat("filler sentence that is not relevant at all. ", 40) +
+		"kinematics of projectile motion is the real topic."
+
+	h, ok := searchText(text, "lec.pptx", terms, "kinematics projectile")
+	if !ok {
+		t.Fatal("no match")
+	}
+	quote := quoteAround(text, h.at)
+	// Quoting the first hit shows one word in isolation and tells a reader
+	// nothing about whether this is the file they wanted.
+	if !strings.Contains(quote, "projectile") {
+		t.Errorf("snippet came from the wrong place:\n%s", quote)
+	}
+}
+
+func TestSearchFindsAPluralThroughTheServer(t *testing.T) {
+	dest := t.TempDir()
+	writeOffice(t, filepath.Join(dest, "Maths", "week3.pptx"), map[string]string{
+		"ppt/slides/slide1.xml": slideXML("Computing the eigenvalues of a matrix"),
+	})
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	text, isError := toolTextOf(t, mcpExchange(t, dest,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_material","arguments":{"query":"what did we cover about eigenvalue"}}}`,
+	)[1])
+	if isError {
+		t.Fatalf("search failed: %s", text)
+	}
+	if !strings.Contains(text, "Maths/week3.pptx") {
+		t.Errorf("a real question about eigenvalues found nothing:\n%s", text)
+	}
+}
