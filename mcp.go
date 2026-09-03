@@ -195,6 +195,10 @@ func (s *mcpServer) dispatch(msg rpcMessage) {
 		s.reply(msg.ID, map[string]any{"tools": mcpTools})
 	case "tools/call":
 		s.callTool(msg)
+	case "prompts/list":
+		s.reply(msg.ID, map[string]any{"prompts": mcpPrompts})
+	case "prompts/get":
+		s.getPrompt(msg)
 	default:
 		s.fail(msg.ID, codeMethodNotFound, "unknown method "+msg.Method)
 	}
@@ -231,11 +235,12 @@ func (s *mcpServer) initialize(params json.RawMessage) map[string]any {
 
 	return map[string]any{
 		"protocolVersion": negotiated,
-		// Only tools are declared. Resources and prompts would both suit this
-		// server well, but declaring a capability that is not implemented is
-		// worse than not having it.
+		// Tools and prompts are declared because both are implemented.
+		// Resources would suit this server too, but declaring a capability
+		// that is not implemented is worse than not having it.
 		"capabilities": map[string]any{
-			"tools": map[string]any{},
+			"tools":   map[string]any{},
+			"prompts": map[string]any{},
 		},
 		"serverInfo": map[string]any{
 			"name":    "lms-sync",
@@ -247,7 +252,9 @@ func (s *mcpServer) initialize(params json.RawMessage) map[string]any {
 			"PDFs. Search it with find_material before answering questions " +
 			"about a course, and read a specific file with read_material. " +
 			"The mirror is only as current as the last sync; whats_new says " +
-			"when each course last changed.",
+			"when each course last changed, and sync_courses fetches new material. " +
+			"The prompts offer ready-made study workflows: prep_for_class, quiz_me, " +
+			"explain_from_my_material and catch_up.",
 	}
 }
 
@@ -363,6 +370,28 @@ func (s *mcpServer) callTool(msg rpcMessage) {
 		return
 	}
 	s.reply(msg.ID, toolText(text, false))
+}
+
+// getPrompt renders one study workflow.
+func (s *mcpServer) getPrompt(msg rpcMessage) {
+	var req struct {
+		Name      string            `json:"name"`
+		Arguments map[string]string `json:"arguments"`
+	}
+	if err := json.Unmarshal(msg.Params, &req); err != nil {
+		s.fail(msg.ID, codeInvalidParams, "could not read the prompt arguments")
+		return
+	}
+
+	prompt, ok := findPrompt(req.Name)
+	if !ok {
+		// Unlike a failed tool, an unknown prompt is a protocol-level
+		// mistake: there is no result for a prompt that does not exist, and
+		// nothing for a model to read and retry.
+		s.fail(msg.ID, codeInvalidParams, "no prompt called "+req.Name)
+		return
+	}
+	s.reply(msg.ID, renderPrompt(prompt, req.Arguments))
 }
 
 func toolText(text string, isError bool) map[string]any {

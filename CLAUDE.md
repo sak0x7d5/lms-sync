@@ -48,6 +48,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [search.go](search.go) — turning a question into matches over the text cache.
+- [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.
 - [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
 - [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
@@ -133,6 +134,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`.
 - **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
 - **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
+- **Every prompt carries the ground rules.** A client with no project instructions is the normal case, so "search before answering", "cite the path", and above all "an empty folder means the material was not uploaded, not that it was never taught" have to travel with the prompt. `TestEveryPromptCarriesTheGroundRules`.
 - **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`.
 - **Search matches word prefixes, never substrings.** "eigenvalue" has to find "eigenvalues" or a real question returns nothing, but anchoring only the start is what stops "law" matching "flaw". Ranking is by how many of the query's words a file contains, not by frequency, so a file repeating one word cannot outrank the file answering the whole question. Stop words are dropped so pasting an actual question works. `TestSearchMatchesWordPrefixesNotSubstrings`, `TestSearchRanksByHowMuchOfTheQuestionAFileAnswers`.
 - **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
@@ -214,9 +216,19 @@ second HTTP path here is how those protections would quietly stop applying.
 their own context because the server is meant to work in any MCP client, and
 most have no project instructions to lean on.
 
-Only `tools` is declared in capabilities. Resources and prompts would both
-suit this server, but declaring a capability that is not implemented is worse
-than not having it.
+`prompts` are the study workflows — `prep_for_class`, `quiz_me`,
+`explain_from_my_material`, `catch_up` — offered as things to pick rather than
+sentences to compose. They also carry `groundRules`, which is the less obvious
+half of why they exist: this server is meant to work in any MCP client, and
+most have no project instructions anywhere, so anything a model must not do
+has to travel with the prompt or it is never said. The load-bearing rule is
+that **the mirror holds what was uploaded, which is not a record of what was
+taught** — without it an assistant reports an empty folder as "you were never
+taught this".
+
+`tools` and `prompts` are declared because both are implemented. Resources
+would suit this server too, but declaring a capability that is not implemented
+is worse than not having it.
 
 ### The web UI's security model
 

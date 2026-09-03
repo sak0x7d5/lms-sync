@@ -86,6 +86,10 @@ every slide, document and saved page), `read_material`, `whats_new`, and
 `sync_courses` — the only one that goes online, so the assistant can fetch new
 material when you ask instead of you dropping to a terminal.
 
+It also offers four study workflows as prompts, which most clients show as a
+menu: **prep_for_class**, **quiz_me** (questions built from your own slides,
+in your lecturer's notation), **explain_from_my_material** and **catch_up**.
+
 PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
 `pdftotext` on your PATH. Without it everything else still works and the tool
 tells you which files it could not read.

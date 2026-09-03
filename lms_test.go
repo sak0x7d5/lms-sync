@@ -2876,3 +2876,104 @@ func TestASyncThroughTheServerNeverWritesToStdout(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Study prompts
+// ---------------------------------------------------------------------------
+
+func TestPromptsAreOfferedAndDeclared(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"prompts/list"}`)
+
+	caps := replies[1]["result"].(map[string]any)["capabilities"].(map[string]any)
+	// Declaring a capability that is not implemented is worse than not having
+	// it — and implementing one without declaring it means no client ever
+	// asks.
+	if _, ok := caps["prompts"]; !ok {
+		t.Error("prompts are implemented but not declared")
+	}
+
+	prompts := replies[2]["result"].(map[string]any)["prompts"].([]any)
+	seen := map[string]bool{}
+	for _, raw := range prompts {
+		p := raw.(map[string]any)
+		name := p["name"].(string)
+		seen[name] = true
+		if len(p["description"].(string)) < 30 {
+			t.Errorf("%s has no usable description", name)
+		}
+		// The builder must never reach the wire.
+		if _, leaked := p["build"]; leaked {
+			t.Errorf("%s serialised its builder", name)
+		}
+	}
+	for _, want := range []string{"prep_for_class", "quiz_me", "explain_from_my_material", "catch_up"} {
+		if !seen[want] {
+			t.Errorf("prompt %s missing", want)
+		}
+	}
+}
+
+func TestEveryPromptCarriesTheGroundRules(t *testing.T) {
+	for _, p := range mcpPrompts {
+		text := renderPrompt(p, map[string]string{
+			"course": "Physics", "topic": "kinematics",
+		})["messages"].([]map[string]any)[0]["content"].(map[string]any)["text"].(string)
+
+		// This server has to work in clients with no project instructions
+		// anywhere, so anything the model must not do has to travel with the
+		// prompt. The uploaded-versus-taught distinction is the one that
+		// matters: without it an assistant reports an empty folder as
+		// "you were never taught this".
+		for _, want := range []string{
+			"find_material", // search before answering
+			"not a record of what was taught",
+			"general knowledge", // and mark it when used
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s does not carry %q", p.Name, want)
+			}
+		}
+	}
+}
+
+func TestPromptArgumentsAreSubstituted(t *testing.T) {
+	p, ok := findPrompt("quiz_me")
+	if !ok {
+		t.Fatal("quiz_me missing")
+	}
+
+	text := renderPrompt(p, map[string]string{
+		"course": "Civics", "topic": "the 1973 constitution", "count": "3",
+	})["messages"].([]map[string]any)[0]["content"].(map[string]any)["text"].(string)
+	for _, want := range []string{"Civics", "1973 constitution", "3 questions"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("rendered prompt is missing %q:\n%s", want, text)
+		}
+	}
+
+	// Omitted optional arguments must fall back rather than leave a hole.
+	bare := renderPrompt(p, map[string]string{"course": "Civics"})["messages"].([]map[string]any)[0]["content"].(map[string]any)["text"].(string)
+	if !strings.Contains(bare, "10 questions") {
+		t.Errorf("count did not default:\n%s", bare)
+	}
+	if strings.Contains(bare, "on: ") {
+		t.Errorf("an omitted topic left a dangling scope:\n%s", bare)
+	}
+}
+
+func TestUnknownPromptIsAProtocolError(t *testing.T) {
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"prompts/get","params":{"name":"nope"}}`)
+
+	// Unlike a failed tool, there is no result for a prompt that does not
+	// exist and nothing for a model to read and retry.
+	rpcErr, ok := replies[1]["error"].(map[string]any)
+	if !ok {
+		t.Fatal("an unknown prompt was not a protocol error")
+	}
+	if rpcErr["code"].(float64) != codeInvalidParams {
+		t.Errorf("code = %v, want %d", rpcErr["code"], codeInvalidParams)
+	}
+}
