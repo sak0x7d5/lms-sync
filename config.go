@@ -29,6 +29,7 @@ type Config struct {
 	KeepPages   bool     // also save the captured page, not just the files a tab links to
 	Courses     []Course // ordered; a map would shuffle the folder list
 	path        string
+	found       bool // whether path existed when this was loaded
 }
 
 type Course struct {
@@ -97,12 +98,13 @@ func LoadConfig(path string) (*Config, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil // first run: defaults are fine
+			return cfg, nil // first run: defaults are fine, and found stays false
 		}
 		return cfg, failf(KindConfig, "read "+filepath.Base(path),
 			"Check that the file exists and is readable.", err)
 	}
 	defer f.Close()
+	cfg.found = true
 
 	section := ""
 	scan := bufio.NewScanner(f)
@@ -321,6 +323,33 @@ func tomlQuote(v string) string {
 	}
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`)
 	return `"` + r.Replace(v) + `"`
+}
+
+// WhereItLooked names the paths a run is working from.
+//
+// Three unrelated failures all end in an empty library: no config file, so
+// the built-in default destination is used; a destination that does not
+// exist; and a folder that is genuinely empty. Reporting "the mirror is
+// empty" for all three leaves nothing to act on, which cost a real
+// afternoon — so every message about an empty library carries this.
+func (c *Config) WhereItLooked(dest string) string {
+	var b strings.Builder
+
+	b.WriteString("Looked in: " + dest)
+	if _, err := os.Stat(dest); err != nil {
+		b.WriteString("  (that folder does not exist)")
+	}
+
+	path := c.path
+	if path == "" {
+		path = "(none given)"
+	}
+	b.WriteString("\nConfig:    " + path)
+	if !c.found {
+		b.WriteString("  (NOT FOUND — using built-in defaults, so the destination " +
+			"above is a guess rather than your setting)")
+	}
+	return b.String()
 }
 
 // DestinationPath resolves the destination to an absolute folder.

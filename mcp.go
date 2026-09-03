@@ -104,14 +104,16 @@ func serveMCP(ctx context.Context, cfg *Config) int {
 		mcpLog("%s", Explain(err))
 		return 1
 	}
-	if _, err := os.Stat(dest); err != nil {
-		// Worth saying once, on stderr: the server still starts and still
-		// answers, it just has nothing to talk about yet.
-		mcpLog("destination %s is not readable yet — run a sync first", dest)
+	// Always the resolved paths, and always the config that chose them.
+	// Printing the raw setting here is what made a destination pointing
+	// somewhere unexpected look correct.
+	for _, line := range strings.Split(cfg.WhereItLooked(dest), "\n") {
+		mcpLog("%s", line)
 	}
-	// Always the resolved path. Printing the raw setting here is what made a
-	// destination pointing somewhere unexpected look correct.
-	mcpLog("ready, serving %s", dest)
+	if _, err := os.Stat(dest); err != nil {
+		mcpLog("nothing to serve yet — run a sync first")
+	}
+	mcpLog("ready")
 	return serveMCPOn(ctx, cfg, os.Stdin, os.Stdout)
 }
 
@@ -376,7 +378,15 @@ func (s *mcpServer) listCourses() (string, error) {
 		return "", err
 	}
 	if len(entries) == 0 {
-		return "The mirror at " + s.dest + " is empty. Nothing has been synced yet.", nil
+		// Say where, and say which config decided that. "Empty" on its own is
+		// indistinguishable from "pointed at the wrong folder entirely",
+		// which is the far more likely cause when a client starts this
+		// process from somewhere unexpected.
+		return "No course material found.\n\n" + s.cfg.WhereItLooked(s.dest) +
+			"\n\nIf that path is not where your courses are, the destination in " +
+			"that config file is wrong, or the config file is not the one you " +
+			"edited. A relative destination is resolved against the config " +
+			"file's own folder.", nil
 	}
 
 	type courseStat struct {

@@ -2539,3 +2539,60 @@ func TestMCPServesTheSameFolderTheSyncWroteTo(t *testing.T) {
 		t.Errorf("the server did not see the library the sync wrote:\n%s", text)
 	}
 }
+
+func TestAnEmptyLibrarySaysWhereItLooked(t *testing.T) {
+	home := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(home, "config.toml")
+	cfg.Destination = "Courses" // never created
+
+	var out bytes.Buffer
+	in := strings.NewReader(
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_courses","arguments":{}}}` + "\n")
+	if code := serveMCPOn(context.Background(), cfg, in, &out); code != 0 {
+		t.Fatalf("server exited with %d", code)
+	}
+	var reply map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &reply); err != nil {
+		t.Fatal(err)
+	}
+	text, _ := toolTextOf(t, reply)
+
+	// "The mirror is empty" is the same sentence for three unrelated
+	// problems — no config file, a destination pointing somewhere else, and a
+	// folder that really is empty. Naming the paths is what makes it possible
+	// to tell which one you have.
+	for _, want := range []string{
+		filepath.Join(home, "Courses"), // where it looked
+		cfg.path,                       // which config said so
+		"does not exist",               // and that the folder is not there
+		"NOT FOUND",                    // and that this config was never read
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("empty-library message does not mention %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestConfigRecordsWhetherItWasFound(t *testing.T) {
+	dir := t.TempDir()
+	missing, err := LoadConfig(filepath.Join(dir, "nope.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missing.found {
+		t.Error("a config that does not exist was reported as found")
+	}
+
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("destination = 'Courses'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	real, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !real.found {
+		t.Error("a config that exists was reported as missing")
+	}
+}

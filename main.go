@@ -329,12 +329,12 @@ func cliExtract(ctx context.Context, cfg *Config) int {
 	if err != nil {
 		return reportErr(err)
 	}
+	fmt.Println(cfg.WhereItLooked(dest))
+	fmt.Println()
 	if _, err := os.Stat(dest); err != nil {
 		return reportErr(failf(KindFS, "read "+dest,
 			"Nothing has been synced to that folder yet. Run a sync first.", err))
 	}
-
-	fmt.Println("Reading text from", dest)
 	stats, err := RefreshText(ctx, dest, func(e Event) {
 		switch e.Type {
 		case "file":
