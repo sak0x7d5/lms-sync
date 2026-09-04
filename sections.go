@@ -504,38 +504,82 @@ func (c *Client) capturePage(ctx context.Context, t tool) ([]capturedItem, error
 		return nil, failf(KindSession, "open "+t.Title, hintSession, nil)
 	}
 
-	// The portal frames the real tool; one hop is enough to reach it. The URL
-	// has to be carried along, because the links inside are resolved against
-	// the page they were written on, not the one we started from.
-	pageURL := t.URL
-	if m := iframeRe.FindStringSubmatch(body); m != nil {
-		if ref, err := url.Parse(unescapeEntities(m[1])); err == nil {
-			if base, err := url.Parse(pageURL); err == nil {
-				inner := base.ResolveReference(ref).String()
-				if strings.HasPrefix(inner, c.base) {
-					if framed, err := c.getText(ctx, inner); err == nil {
-						body, pageURL = framed, inner
-					}
-				}
-			}
+	// The portal frames the real tool — but a tab can hold several frames,
+	// and taking the first one is how Overview went missing. A real Overview
+	// page is a dashboard: the synoptic "Recent Announcements" widget comes
+	// first in the markup, so following a single iframe captured that little
+	// list of headlines and never reached the Site Information Display below
+	// it, which is where an instructor actually types.
+	//
+	// So every frame on the LMS's own host is captured, each carrying the URL
+	// it came from, because the links inside resolve against the page they
+	// were written on.
+	var items []capturedItem
+	for _, frame := range c.framesOf(body, t.URL) {
+		framed, err := c.getText(ctx, frame)
+		if err != nil {
+			continue // one unreadable widget is not the whole tab
 		}
+		items = append(items, captureOne(c, framed, frame))
+	}
+	if len(items) == 0 {
+		items = append(items, captureOne(c, body, t.URL))
 	}
 
+	var out []capturedItem
+	for _, item := range items {
+		if strings.TrimSpace(tagRe.ReplaceAllString(item.Body, "")) == "" &&
+			len(item.Attachments) == 0 {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil // empty means nothing readable; the caller reports it
+}
+
+// maxFrames bounds how many widgets one tab can be. A real Overview has a
+// handful; anything past this is a page doing something else entirely.
+const maxFrames = 8
+
+// framesOf lists the frame documents of a tool page that live on the LMS.
+func (c *Client) framesOf(body, pageURL string) []string {
+	base, err := url.Parse(pageURL)
+	if err != nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range iframeRe.FindAllStringSubmatch(body, -1) {
+		ref, err := url.Parse(unescapeEntities(m[1]))
+		if err != nil {
+			continue
+		}
+		inner := base.ResolveReference(ref).String()
+		// Same rule as before: a frame pointing off the LMS is somebody
+		// else's page, and is not fetched.
+		if !strings.HasPrefix(inner, c.base) || seen[inner] {
+			continue
+		}
+		seen[inner] = true
+		if out = append(out, inner); len(out) >= maxFrames {
+			break
+		}
+	}
+	return out
+}
+
+// captureOne reduces one document to the region a tool rendered into.
+func captureOne(c *Client, body, pageURL string) capturedItem {
 	body = scriptRe.ReplaceAllString(body, "")
 	if region, ok := extractRegion(body); ok {
 		body = region
 	}
-
-	item := capturedItem{
+	return capturedItem{
 		Body:        body,
 		pageURL:     pageURL,
 		Attachments: contentLinks(c, body, pageURL),
 	}
-	if strings.TrimSpace(tagRe.ReplaceAllString(body, "")) == "" &&
-		len(item.Attachments) == 0 {
-		return nil, nil // nothing readable; the caller reports it
-	}
-	return []capturedItem{item}, nil
 }
 
 // extractRegion returns the contents of the element a tool renders into,

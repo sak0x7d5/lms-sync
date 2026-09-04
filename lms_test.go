@@ -222,6 +222,13 @@ const toolMenuEmpty = `<html><ul>
   <li><a href="/portal/site/site-empty/tool/t-syllabus-empty"><span class="icon-sakai--sakai-syllabus"></span><span>Syllabus</span></a></li>
 </ul></html>`
 
+// toolMenuCivics is the shape that broke Overview on a real install: the tab
+// is a dashboard, and the frame that comes FIRST in the markup is the synoptic
+// announcements widget, not the box an instructor types into.
+const toolMenuCivics = `<html><ul>
+  <li><a href="/portal/site/site-civics/tool/t-civ-overview"><span class="icon-sakai--sakai-iframe-site"></span><span>Overview</span></a></li>
+</ul></html>`
+
 const toolMenuCalc = `<html><ul>
   <li><a href="/portal/site/site-calc/tool/t-calc-overview"><span class="icon-sakai--sakai-iframe-site"></span><span>Overview</span></a></li>
   <li><a href="/portal/site/site-calc/tool/t-res"><span class="icon-sakai--sakai-resources"></span><span>Resources</span></a></li>
@@ -354,6 +361,14 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			  <iframe src="/portal/tool/t-syllabus"></iframe></div></html>`)
 		case r.URL.Path == "/portal/site/site-prog":
 			fmt.Fprint(w, toolMenuProg)
+		case r.URL.Path == "/portal/site/site-civics":
+			fmt.Fprint(w, toolMenuCivics)
+		case strings.HasSuffix(r.URL.Path, "/tool/t-civ-overview"):
+			// Two frames, in the order a real Sakai Overview emits them.
+			fmt.Fprint(w, `<html><body>
+			  <iframe src="/portal/tool/civ-synoptic" title="Recent Announcements"></iframe>
+			  <iframe src="/portal/tool/civ-siteinfo" title="Site Information Display"></iframe>
+			  </body></html>`)
 		case r.URL.Path == "/portal/site/site-calc":
 			fmt.Fprint(w, toolMenuCalc)
 		default:
@@ -362,7 +377,31 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 	})
 
 	mux.HandleFunc("/portal/tool/", func(w http.ResponseWriter, r *http.Request) {
-		if !f.authed.Load() || r.URL.Path != "/portal/tool/t-syllabus" {
+		if !f.authed.Load() {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/portal/tool/civ-synoptic":
+			// Headlines only — the body of an announcement is behind the
+			// link, which is why capturing this frame alone finds the title
+			// of a notice and never its contents.
+			io.WriteString(w, `<html><title>Recent Announcements</title>
+			  <div class="portletBody container-fluid">
+			    <ul class="synopticList"><li><div class="textPanelHeader">
+			      <a href="/portal/tool/civ-annc?itemReference=/announcement/msg/x&amp;sakai_action=doShowmetadata">Google Classroom Code | Civics</a>
+			    </div></li></ul>
+			  </div></html>`)
+			return
+		case "/portal/tool/civ-siteinfo":
+			// The box the instructor types into, second in the markup.
+			io.WriteString(w, `<html><div class="portletBody">
+			  <h3>Civics and Community Engagement</h3>
+			  <p>Join the Google Classroom with code 7hq4wke before Friday.</p>
+			  </div></html>`)
+			return
+		}
+		if r.URL.Path != "/portal/tool/t-syllabus" {
 			http.NotFound(w, r)
 			return
 		}
@@ -3313,5 +3352,78 @@ func TestProbeSavesNothingUnlessAsked(t *testing.T) {
 	// course pages to disk by default would change that quietly.
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Error("probe wrote pages without being asked")
+	}
+}
+
+func TestPageRegionIsTakenFromEveryFrameNotJustTheFirst(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.Courses = []Course{{ID: "site-civics", Folder: "Civics"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cfg.Destination, "Civics", "Overview", "Overview.html"))
+	if err != nil {
+		t.Fatalf("the Overview tab produced no page: %v", err)
+	}
+
+	// A real Overview is a dashboard. The synoptic announcements widget comes
+	// first in the markup, so following one iframe captured a list of
+	// headlines and never reached the Site Information Display below it —
+	// which is where the instructor had typed the thing being looked for.
+	if !strings.Contains(string(body), "7hq4wke") {
+		t.Errorf("the Site Information frame was not captured:\n%s", body)
+	}
+	// The first frame is still worth having: its headline says an
+	// announcement on this subject exists.
+	if !strings.Contains(string(body), "Google Classroom Code") {
+		t.Errorf("the synoptic frame was lost:\n%s", body)
+	}
+}
+
+func TestFramesOffTheLMSAreNotFetched(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	client := loggedInClient(t, cfg)
+
+	frames := client.framesOf(
+		`<iframe src="https://evil.example/track"></iframe>`+
+			`<iframe src="/portal/tool/civ-siteinfo"></iframe>`,
+		srv.URL+"/portal/site/site-civics/tool/t-civ-overview")
+
+	// Following every frame must not become a way off the LMS.
+	if len(frames) != 1 || !strings.HasSuffix(frames[0], "/portal/tool/civ-siteinfo") {
+		t.Errorf("frames = %v, want only the same-host one", frames)
+	}
+}
+
+func TestAnnouncedCodeInTheOverviewIsSearchable(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.Courses = []Course{{ID: "site-civics", Folder: "Civics"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The question as it was actually asked.
+	text, isError := toolTextOf(t, mcpExchange(t, cfg.Destination,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_material","arguments":{"query":"what is the google classroom code for civics"}}}`,
+	)[1])
+	if isError {
+		t.Fatalf("search failed: %s", text)
+	}
+	if !strings.Contains(text, "Civics/Overview") {
+		t.Errorf("the code was not findable:\n%s", text)
 	}
 }
