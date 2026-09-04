@@ -49,7 +49,6 @@ var deniedTools = map[string]bool{
 	"sakai.singleuser":             true,
 	"sakai.sitesetup":              true,
 	"sakai.siteinfo":               true,
-	"sakai.iframe.site":            true,
 	"sakai.synoptic.messagecenter": true,
 }
 
@@ -345,6 +344,17 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 		})
 	}
 
+	// Outside references are recorded whatever keep_pages says. They are not
+	// a second copy of something already on disk — they are the only record
+	// that this material exists at all.
+	if refs := externalRefs(c, items); len(refs) > 0 {
+		out = append(out, artifact{
+			body:  renderLinks(s.name, refs),
+			key:   s.id + ":links:" + siteID,
+			parts: []string{s.name, "Links.md"},
+		})
+	}
+
 	// Beside the page, not in an "attachments" subfolder: on most courses one
 	// of these files IS the syllabus or the brief, and burying it would be
 	// perverse.
@@ -606,6 +616,82 @@ func contentLinks(c *Client, body, pageURL string) []string {
 	return out
 }
 
+// externalRefs collects what a tab points at that is NOT on the LMS.
+//
+// attachmentURLs and contentLinks drop these, and are right to: the allowlist
+// is what stops a crawler wandering off the LMS, and following a YouTube link
+// would be the first step towards mirroring the internet. But dropping them
+// *silently* loses the only content some courses have. A Calculus tab whose
+// Overview is a textbook link and a playlist reads as an empty course
+// otherwise, which is exactly backwards — the instructor did post the
+// material, just not as files.
+//
+// So they are written down and never fetched. Following one stays the
+// student's decision, with the URL in front of them.
+func externalRefs(c *Client, items []capturedItem) []link {
+	base, err := url.Parse(c.base)
+	if err != nil {
+		return nil
+	}
+
+	seen := map[string]bool{}
+	var out []link
+	for _, item := range items {
+		page, err := url.Parse(item.pageURL)
+		if err != nil {
+			continue
+		}
+		for _, l := range parseLinks(item.Body) {
+			href := strings.TrimSpace(unescapeEntities(l.href))
+			if href == "" || strings.HasPrefix(href, "#") ||
+				strings.HasPrefix(href, "mailto:") ||
+				strings.HasPrefix(href, "javascript:") {
+				continue
+			}
+			ref, err := url.Parse(href)
+			if err != nil {
+				continue
+			}
+			abs := page.ResolveReference(ref)
+			abs.Fragment = ""
+			if abs.Scheme != "http" && abs.Scheme != "https" {
+				continue
+			}
+			// Anything on the LMS is either a file that gets fetched or a
+			// tool that gets refused; neither belongs in a list of outside
+			// references.
+			if strings.EqualFold(abs.Host, base.Host) || seen[abs.String()] {
+				continue
+			}
+			seen[abs.String()] = true
+			out = append(out, link{href: abs.String(), text: strings.TrimSpace(l.text)})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].href < out[j].href })
+	return out
+}
+
+// renderLinks writes the outside references as a small Markdown page.
+//
+// Markdown rather than HTML because .md is one of the types the text index
+// reads, so a textbook link posted on an Overview tab turns up in a search
+// for the textbook. Nothing here varies between runs: a timestamp would make
+// every sync rewrite the file and report it as new.
+func renderLinks(name string, refs []link) []byte {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Links from %s\n\n", name)
+	b.WriteString("Referenced by this tab but hosted outside the LMS, so they are " +
+		"not downloaded. Open them in a browser.\n\n")
+	for _, l := range refs {
+		text := strings.Join(strings.Fields(l.text), " ")
+		if text == "" {
+			text = l.href
+		}
+		fmt.Fprintf(&b, "- [%s](%s)\n", text, l.href)
+	}
+	return []byte(b.String())
+}
+
 // attachmentURLs collects the files a tab points at, dropping anything
 // outside the allowlist.
 func attachmentURLs(c *Client, items []capturedItem) []string {
@@ -727,6 +813,18 @@ var pageSections = []struct {
 		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
 			return c.syllabusFromAPI(ctx, siteID)
 		},
+	},
+	{
+		// Sakai calls the Overview tool "Site Information Display", and its
+		// registration is sakai.iframe.site — which is why it read as portal
+		// chrome and was refused outright. It is not chrome: on a course
+		// whose instructor never touched Resources, it is the only place
+		// anything was ever posted.
+		id: "overview", name: "Overview", file: "Overview.html",
+		// The dashed form is what a portal icon class yields, exactly as for
+		// Assignments; the dotted one is what the Entity Broker reports.
+		regs:   []string{"sakai.iframe.site", "sakai.iframe-site", "sakai.siteinfo.iframe"},
+		titles: []string{"overview", "home", "course information"},
 	},
 	{
 		id: "announcements", name: "Announcements", file: "Announcements.html",

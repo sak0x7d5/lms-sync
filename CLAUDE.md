@@ -64,10 +64,16 @@ each course; a section returns `artifact`s, which come in two shapes:
   (Syllabus). The content lives in the server's database, so it is rendered to
   a local page instead of downloaded.
 
-Resources and Drop Box are directory indexes and share `walkTree`. Syllabus,
-Announcements and Assignments are all the same *rendered* shape, so they are
-one `pageSection` described by an entry in the `pageSections` table — adding
-another rendered tab is one entry there, nothing else.
+Resources and Drop Box are directory indexes and share `walkTree`. Overview,
+Syllabus, Announcements and Assignments are all the same *rendered* shape, so
+they are one `pageSection` described by an entry in the `pageSections` table —
+adding another rendered tab is one entry there, nothing else.
+
+**Overview is the tab that matters most on the courses that look empty.** Its
+registration is `sakai.iframe.site`, which reads like portal chrome and was
+refused outright for exactly that reason; on a course whose instructor never
+touched Resources, it is the only place anything was ever posted. Site Info,
+Samigo and the synoptic widgets stay in `deniedTools`.
 
 Adding a tab of a genuinely new shape means implementing `section`; ids are
 validated against `knownSections`, which is derived from `pageSections` so the
@@ -95,6 +101,14 @@ tabs gives that up, so the rule is now written down: `allowedContent` is an
 allowlist of content paths on the LMS's own host, and `deniedTools` refuses
 whole tools before their URLs are ever known.
 
+What the allowlist refuses is still *recorded*. `externalRefs` collects the
+links a tab points at that live off the LMS and writes them to `Links.md`
+beside the tab, never fetching one. Dropping them silently was worse than it
+sounds: a Calculus course whose Overview is a textbook link and a playlist
+mirrored as an empty folder, which reads as "this was never taught" rather
+than "the material is not files". Markdown because `.md` is indexed, so asking
+which textbook a course follows finds the answer.
+
 **This is not cosmetic. On several Sakai versions the link into a Samigo
 assessment is an ordinary GET that opens an attempt** — a crawler that follows
 it can start a student's timed quiz. Tests & Quizzes has nothing to mirror
@@ -121,6 +135,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Resources stays at the course root**, never in a `Resources/` subfolder. Freshness needs the file to still be where the manifest last saw it, so moving the tree would silently re-download every existing user's whole library. `TestResourcesStayAtTheCourseRoot`.
 - **The manifest reads both of its shapes.** Entries written before sections existed are bare numbers; rendered pages need an object with a hash. `entry` unmarshals either, and still *writes* a bare number when there is no hash, so a downloads-only manifest stays readable by an older build. Rejecting the old shape would fail the decode, which the rule above turns into a full re-download. `TestLegacyManifestIsStillRead`.
 - **A rendered page must be byte-stable.** It has no server-side size, so freshness is decided by hashing what we would write. A timestamp in `renderSyllabus` would make every run rewrite the file and report it as new. `TestSyllabusFallsBackToRenderedPage` runs the sync twice to catch that.
+- **Material that is not a file is still material.** A tab's off-LMS links are written to `Links.md` and never fetched: recording a URL must never become a reason to follow it, and a course whose content is a textbook link is not an empty course. `TestExternalLinksAreRecordedButNeverFetched`, `TestACourseWithOnlyExternalLinksIsNotEmpty`.
 - **Links in captured tool pages are resolved, never regex-matched.** Instructors' attachment links are usually root-relative (`/access/content/attachment/...`); a regex anchored on `https://` misses them, and since most syllabus tabs are nothing but a link to a PDF, that silently produced a stub page and no file. `contentLinks` resolves every href against the page it came from, then filters through `allowedContent`. The fake serves root-relative hrefs on purpose — serving absolute ones is what hid the bug. `TestSyllabusFallsBackToRenderedPage`.
 - **A captured region stops at its own closing tag.** `extractRegion` counts nested `<div>`s. The greedy regex it replaced ran to the last `</div>` on the page, swallowed the portal navigation, and then downloaded every file linked in that chrome as an attachment of the tab. `TestPageRegionDoesNotSwallowSiteNavigation`.
 - **Links in a saved page are rewritten, or they are dead.** The LMS writes root-relative hrefs, which point at nothing once the page is a file on a laptop. `localiseLinks` repoints links to downloaded files at the local copy and makes everything else absolute; inline `on*` handlers are stripped because the page is opened from disk. `TestSavedPageLinksWorkOffline`.
@@ -243,8 +258,8 @@ config-file path does. The password is never sent back to the browser. `handleSy
 
 `config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file.
 
-`sections` picks which tabs to mirror (`resources`, `syllabus`, `announcements`,
-`assignments`, `dropbox`);
+`sections` picks which tabs to mirror (`resources`, `overview`, `syllabus`,
+`announcements`, `assignments`, `dropbox`);
 unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
 never end up empty.
 

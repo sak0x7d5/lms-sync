@@ -223,6 +223,7 @@ const toolMenuEmpty = `<html><ul>
 </ul></html>`
 
 const toolMenuCalc = `<html><ul>
+  <li><a href="/portal/site/site-calc/tool/t-calc-overview"><span class="icon-sakai--sakai-iframe-site"></span><span>Overview</span></a></li>
   <li><a href="/portal/site/site-calc/tool/t-res"><span class="icon-sakai--sakai-resources"></span><span>Resources</span></a></li>
 </ul></html>`
 
@@ -303,6 +304,19 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			return
 		}
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/tool/t-calc-overview"):
+			// The Calculus case, and the reason the Overview tab exists: an
+			// instructor who posted no files at all, only a textbook and a
+			// playlist living somewhere else entirely. Mirroring this course
+			// without recording those links leaves an empty folder and the
+			// false impression that nothing was ever taught.
+			io.WriteString(w, `<html><div id="portletBody">
+			  <h3>Calculus I</h3>
+			  <p>We follow Stewart, 8th edition. Watch the playlist before each class.</p>
+			  <a href="https://www.youtube.com/playlist?list=PLcalculus">Lecture playlist</a>
+			  <a href="https://textbooks.example.org/stewart-8e.pdf">Stewart 8e (PDF)</a>
+			  <a href="mailto:lecturer@example.edu">email me</a>
+			  </div></html>`)
 		case strings.HasSuffix(r.URL.Path, "/tool/t-annc"):
 			io.WriteString(w, `<html><div id="portletBody">
 			  <h3>Midterm moved to Friday</h3>
@@ -837,9 +851,10 @@ func TestSyllabusFallsBackToRenderedPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	// The rendered page, plus the one attachment it links to.
-	if res.New != 2 {
-		t.Errorf("new = %d, want 2 (the page and its attachment)", res.New)
+	// The rendered page, the one attachment it links to, and the record of
+	// the link that points off the LMS.
+	if res.New != 3 {
+		t.Errorf("new = %d, want 3 (the page, its attachment, and Links.md)", res.New)
 	}
 
 	page := filepath.Join(cfg.Destination, "Programming", "Syllabus", "Syllabus.html")
@@ -874,8 +889,8 @@ func TestSyllabusFallsBackToRenderedPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res2.New != 0 || res2.Current != 2 {
-		t.Errorf("second run: new=%d current=%d, want 0/2 — the rendered page "+
+	if res2.New != 0 || res2.Current != 3 {
+		t.Errorf("second run: new=%d current=%d, want 0/3 — a rendered page "+
 			"is not stable between runs", res2.New, res2.Current)
 	}
 }
@@ -1097,8 +1112,10 @@ func TestKeepPagesOffDropsTheWrapperPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if res.New != 1 {
-		t.Errorf("new = %d, want 1 (the PDF only)", res.New)
+	// The PDF, plus Links.md — outside references are recorded whatever
+	// keep_pages says, because they are not a duplicate of anything on disk.
+	if res.New != 2 {
+		t.Errorf("new = %d, want 2 (the PDF and Links.md)", res.New)
 	}
 
 	dir := filepath.Join(cfg.Destination, "Programming", "Syllabus")
@@ -3009,5 +3026,145 @@ func TestStartupListingCannotDriftFromWhatIsServed(t *testing.T) {
 	}
 	for name := range served {
 		t.Errorf("%s is served but not in either table", name)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Overview, and the material that lives off the LMS
+// ---------------------------------------------------------------------------
+
+func TestOverviewTabIsMirrored(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// Overview's registration is sakai.iframe.site, which reads like portal
+	// chrome and was refused outright for that reason. On a course whose
+	// instructor never touched Resources it is the only place anything was
+	// ever posted.
+	dir := filepath.Join(cfg.Destination, "Calculus", "Overview")
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the Overview tab produced nothing: %v", err)
+	}
+}
+
+func TestExternalLinksAreRecordedButNeverFetched(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cfg.Destination, "Calculus", "Overview", "Links.md"))
+	if err != nil {
+		t.Fatalf("no record of the outside material: %v", err)
+	}
+	for _, want := range []string{
+		"https://www.youtube.com/playlist?list=PLcalculus",
+		"https://textbooks.example.org/stewart-8e.pdf",
+		"Stewart 8e (PDF)", // the link text, which is what makes it findable
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("Links.md is missing %q:\n%s", want, body)
+		}
+	}
+	// A mailto: is not material.
+	if strings.Contains(string(body), "mailto:") {
+		t.Errorf("an email address was recorded as course material:\n%s", body)
+	}
+
+	// Recording is not fetching. The allowlist is what stops this tool
+	// wandering off the LMS, and writing a URL down must never become a
+	// reason to follow it.
+	for _, host := range []string{"youtube", "stewart", "textbooks.example.org"} {
+		if srv.requested(host) {
+			t.Errorf("an off-LMS link was requested: %s", host)
+		}
+	}
+}
+
+func TestACourseWithOnlyExternalLinksIsNotEmpty(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.KeepPages = false // the shipped default
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	// This is the whole point. An instructor who posts a textbook link and a
+	// playlist has taught the course; a mirror that shows an empty folder
+	// says the opposite, and an assistant reading it will say the material
+	// was never covered.
+	if res.New == 0 {
+		t.Error("a course whose material is all off-LMS mirrored as empty")
+	}
+
+	dir := filepath.Join(cfg.Destination, "Calculus", "Overview")
+	if _, err := os.Stat(filepath.Join(dir, "Links.md")); err != nil {
+		t.Errorf("Links.md is missing: %v", err)
+	}
+	// The page itself is still written when a tab links to no local files,
+	// so keep_pages = false can never leave a course with nothing.
+	if _, err := os.Stat(filepath.Join(dir, "Overview.html")); err != nil {
+		t.Errorf("the page was dropped even though there were no files: %v", err)
+	}
+}
+
+func TestExternalLinksAreSearchable(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Markdown rather than HTML precisely so the text index reads it: asking
+	// which textbook a course follows should find the answer.
+	text, isError := toolTextOf(t, mcpExchange(t, cfg.Destination,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_material","arguments":{"query":"which textbook does this course follow"}}}`,
+	)[1])
+	if isError {
+		t.Fatalf("search failed: %s", text)
+	}
+	if !strings.Contains(text, "Links.md") {
+		t.Errorf("the textbook reference is not searchable:\n%s", text)
+	}
+}
+
+func TestSiteInfoIsStillRefused(t *testing.T) {
+	// Un-denying the Overview tool must not have un-denied its neighbours:
+	// Site Info is an administration page, and Samigo can open a quiz attempt.
+	for _, reg := range []string{"sakai.siteinfo", "sakai.samigo", "sakai.gradebook"} {
+		if !deniedTools[reg] {
+			t.Errorf("%s is no longer refused", reg)
+		}
+	}
+	if deniedTools["sakai.iframe.site"] {
+		t.Error("the Overview tool is still refused")
 	}
 }

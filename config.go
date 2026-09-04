@@ -45,7 +45,7 @@ func DefaultConfig() *Config {
 		Delay:       200,
 		Retries:     3,
 		MaxDepth:    12,
-		Sections: []string{"resources", "syllabus", "announcements",
+		Sections: []string{"resources", "overview", "syllabus", "announcements",
 			"assignments", "dropbox"},
 		KeepPages: false,
 		Extensions: []string{
