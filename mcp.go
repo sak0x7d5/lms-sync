@@ -118,6 +118,22 @@ func serveMCP(ctx context.Context, cfg *Config) int {
 	if _, err := os.Stat(dest); err != nil {
 		mcpLog("nothing to serve yet — run a sync first")
 	}
+
+	// What this build actually offers, derived from the tables that serve it
+	// so the two can never disagree. A client discovers this over the
+	// protocol; a person running the binary by hand has no other way to see
+	// it — and it is the quickest way to notice you are running an older
+	// binary than you think, which has cost real time.
+	var tools, prompts []string
+	for _, t := range mcpTools {
+		tools = append(tools, t.Name)
+	}
+	for _, p := range mcpPrompts {
+		prompts = append(prompts, p.Name)
+	}
+	mcpLog("Tools:     %s", strings.Join(tools, ", "))
+	mcpLog("Prompts:   %s", strings.Join(prompts, ", "))
+	mcpLog("Version:   %s (MCP %s)", version, mcpLatestVersion)
 	mcpLog("ready")
 	return serveMCPOn(ctx, cfg, os.Stdin, os.Stdout)
 }

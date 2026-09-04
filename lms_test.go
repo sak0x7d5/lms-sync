@@ -2977,3 +2977,37 @@ func TestUnknownPromptIsAProtocolError(t *testing.T) {
 		t.Errorf("code = %v, want %d", rpcErr["code"], codeInvalidParams)
 	}
 }
+
+func TestStartupListingCannotDriftFromWhatIsServed(t *testing.T) {
+	// The startup banner is built from the same tables that answer
+	// tools/list and prompts/list. A hand-maintained list would be wrong the
+	// first time anyone added a tool, and its whole job is telling you at a
+	// glance which build you are running.
+	replies := mcpExchange(t, libraryForMCP(t),
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"prompts/list"}`)
+
+	served := map[string]bool{}
+	for _, raw := range replies[1]["result"].(map[string]any)["tools"].([]any) {
+		served[raw.(map[string]any)["name"].(string)] = true
+	}
+	for _, raw := range replies[2]["result"].(map[string]any)["prompts"].([]any) {
+		served[raw.(map[string]any)["name"].(string)] = true
+	}
+
+	for _, tool := range mcpTools {
+		if !served[tool.Name] {
+			t.Errorf("tool %s is in the table but not served", tool.Name)
+		}
+		delete(served, tool.Name)
+	}
+	for _, p := range mcpPrompts {
+		if !served[p.Name] {
+			t.Errorf("prompt %s is in the table but not served", p.Name)
+		}
+		delete(served, p.Name)
+	}
+	for name := range served {
+		t.Errorf("%s is served but not in either table", name)
+	}
+}
