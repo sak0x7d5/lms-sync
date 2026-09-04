@@ -92,6 +92,10 @@ matches raw anchors rather than using `parseLinks`.
 Because installs vary, **`--probe` is how you find out what a server does**
 rather than guessing: it reports each course's tabs and which candidate
 endpoints answered, and downloads nothing.
+`--probe --save-pages DIR` additionally writes the raw tool pages, following
+the same iframe hop `capturePage` does — because when a tab is reached but
+nothing useful comes out, the markup this tool fetched is the only thing that
+settles why, and a browser's View Source shows the portal frame instead.
 
 ### The allowlist replaced an invariant that used to be structural
 

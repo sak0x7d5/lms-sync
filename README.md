@@ -38,6 +38,8 @@ lms-sync --sync          sync and exit
 lms-sync --discover      find courses, save them, exit
 lms-sync --dry-run       show what would download, write nothing
 lms-sync --probe         report which tabs your LMS offers, and how
+lms-sync --probe --save-pages ./pages
+                         also write the raw tool pages, for diagnosing a tab
 lms-sync --extract       make synced files searchable, without going online
 lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
 lms-sync --dest PATH     override the destination

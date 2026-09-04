@@ -29,6 +29,7 @@ func run() int {
 		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
+		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
 		dryRun     = flag.Bool("dry-run", false, "list what would download, write nothing")
 		insecure   = flag.Bool("insecure", false, "skip TLS verification (last resort)")
 		showVer    = flag.Bool("version", false, "print version and exit")
@@ -79,6 +80,10 @@ func run() int {
 	case *doDiscover:
 		return cliDiscover(ctx, cfg, *insecure)
 	case *doProbe:
+		// Diagnostic only, and worth saying plainly: these files are the
+		// course pages as the server sent them, so they can hold anything an
+		// instructor put on a tab.
+		savePagesTo = *savePages
 		return cliProbe(ctx, cfg, *insecure)
 	case *doExtract:
 		return cliExtract(ctx, cfg)

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -108,6 +110,9 @@ func (c *Client) Probe(ctx context.Context, course Course, eid string) probeRepo
 		}
 		check := probeCheck{Label: ps.name + " (tool page)", URL: t.URL,
 			Result: c.probeURL(ctx, t.URL)}
+		for _, line := range c.savePage(ctx, course.Folder+" "+ps.name, t.URL) {
+			check.Result += "\n      " + line
+		}
 		if items, err := c.capturePage(ctx, t); err == nil && len(items) > 0 {
 			// The attachment count is the number that matters: on most
 			// courses the content is a linked PDF, not text on the page.
@@ -128,4 +133,55 @@ func plural(n int, one, many string) string {
 		return one
 	}
 	return many
+}
+
+// savePagesTo is the folder --probe writes raw tool pages into, or empty.
+//
+// It exists for one reason: when a tab is reached but nothing useful comes
+// out of it, the only way to know why is to see the markup this tool actually
+// fetched. A browser's "View Source" shows the portal frame, not the tool
+// inside it, so asking a user for that is asking for the wrong file.
+var savePagesTo string
+
+// savePage writes what a tool page really returned, following the one iframe
+// hop that capturePage follows so the saved markup is what parsing sees.
+func (c *Client) savePage(ctx context.Context, label, rawURL string) []string {
+	if savePagesTo == "" || rawURL == "" {
+		return nil
+	}
+	if err := os.MkdirAll(savePagesTo, 0o755); err != nil {
+		return []string{"could not create " + savePagesTo + ": " + err.Error()}
+	}
+
+	var written []string
+	write := func(name, body string) {
+		path := filepath.Join(savePagesTo, SafeName(name)+".html")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			written = append(written, "could not write "+path+": "+err.Error())
+			return
+		}
+		written = append(written, fmt.Sprintf("saved %s (%d bytes)", path, len(body)))
+	}
+
+	body, err := c.getText(ctx, rawURL)
+	if err != nil {
+		return []string{"could not fetch " + rawURL + ": " + err.Error()}
+	}
+	write(label, body)
+
+	// The portal frames the real tool, and the framed document is the one
+	// that matters — saving only the outer page would show none of it.
+	if m := iframeRe.FindStringSubmatch(body); m != nil {
+		if ref, err := url.Parse(unescapeEntities(m[1])); err == nil {
+			if base, err := url.Parse(rawURL); err == nil {
+				inner := base.ResolveReference(ref).String()
+				if strings.HasPrefix(inner, c.base) {
+					if framed, err := c.getText(ctx, inner); err == nil {
+						write(label+" (framed)", framed)
+					}
+				}
+			}
+		}
+	}
+	return written
 }

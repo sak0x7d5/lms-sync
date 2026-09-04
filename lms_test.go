@@ -3256,3 +3256,62 @@ func TestWrapperTabsStillDropTheirStubPage(t *testing.T) {
 		t.Error("the syllabus stub was kept despite keep_pages = false")
 	}
 }
+
+func TestProbeCanSaveTheMarkupItSaw(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	dir := t.TempDir()
+	savePagesTo = dir
+	defer func() { savePagesTo = "" }()
+
+	rep := client.Probe(context.Background(), cfg.Courses[0], cfg.Username)
+	if rep.Err != nil {
+		t.Fatalf("probe: %v", rep.Err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no pages were saved: %v", err)
+	}
+
+	// The point is the markup parsing actually sees. A browser's View Source
+	// gives the portal frame, not the tool inside it, so a saved outer page
+	// alone would send someone chasing the wrong file.
+	var sawFramed bool
+	for _, e := range entries {
+		body, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(e.Name(), "framed") && strings.Contains(string(body), "portletBody") {
+			sawFramed = true
+		}
+	}
+	if !sawFramed {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("the framed tool document was not saved; got %v", names)
+	}
+}
+
+func TestProbeSavesNothingUnlessAsked(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	dir := t.TempDir()
+	savePagesTo = "" // the default
+	client.Probe(context.Background(), cfg.Courses[0], cfg.Username)
+
+	// --probe has always been the safe, read-only thing to run. Writing
+	// course pages to disk by default would change that quietly.
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Error("probe wrote pages without being asked")
+	}
+}
