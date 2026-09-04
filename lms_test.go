@@ -318,9 +318,15 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			  <a href="mailto:lecturer@example.edu">email me</a>
 			  </div></html>`)
 		case strings.HasSuffix(r.URL.Path, "/tool/t-annc"):
+			// With an attachment, because that is the case that used to lose
+			// the announcement text: keep_pages defaulted off, so the page
+			// was dropped and only the file kept — and the words are the
+			// announcement.
 			io.WriteString(w, `<html><div id="portletBody">
 			  <h3>Midterm moved to Friday</h3>
 			  <p>The midterm is now on Friday. Bring a calculator.</p>
+			  <p>Google Classroom code for this section: 4kx9m2p</p>
+			  <a href="/access/content/attachment/site-prog/Announcements/seating.pdf">seating.pdf</a>
 			  </div></html>`)
 		case strings.HasSuffix(r.URL.Path, "/tool/t-asn"):
 			// Two briefs sharing a basename, filed under different opaque
@@ -3166,5 +3172,87 @@ func TestSiteInfoIsStillRefused(t *testing.T) {
 	}
 	if deniedTools["sakai.iframe.site"] {
 		t.Error("the Overview tool is still refused")
+	}
+}
+
+func TestAnnouncementTextSurvivesKeepPagesOff(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"announcements"}
+	cfg.KeepPages = false // the shipped default
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	// keep_pages is off because a Syllabus tab is a stub around a PDF. An
+	// announcement is not: the words are the material, and there is no file
+	// that carries them. Applying one setting to both shapes threw away
+	// exactly the thing a student asks for — a room change, a deadline, an
+	// enrolment code — whenever the tab also happened to carry an attachment.
+	page := filepath.Join(cfg.Destination, "Programming", "Announcements", "Announcements.html")
+	body, err := os.ReadFile(page)
+	if err != nil {
+		t.Fatalf("the announcement text was dropped: %v", err)
+	}
+	if !strings.Contains(string(body), "4kx9m2p") {
+		t.Errorf("the announcement body is missing:\n%s", body)
+	}
+
+	// The attachment is still fetched; this is not either/or.
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Programming",
+		"Announcements", "seating.pdf")); err != nil {
+		t.Errorf("the attachment is missing: %v", err)
+	}
+}
+
+func TestAnAnnouncedCodeIsSearchable(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"announcements"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The end-to-end question this was reported as: something announced in
+	// class, asked for later in plain words.
+	text, isError := toolTextOf(t, mcpExchange(t, cfg.Destination,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_material","arguments":{"query":"what is the google classroom code"}}}`,
+	)[1])
+	if isError {
+		t.Fatalf("search failed: %s", text)
+	}
+	if !strings.Contains(text, "Announcements") {
+		t.Errorf("an announced code was not findable:\n%s", text)
+	}
+}
+
+func TestWrapperTabsStillDropTheirStubPage(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.KeepPages = false
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	// The per-tab default must not have quietly turned keep_pages on for
+	// everything: a syllabus wrapper is still a page that says nothing.
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Programming",
+		"Syllabus", "Syllabus.html")); err == nil {
+		t.Error("the syllabus stub was kept despite keep_pages = false")
 	}
 }

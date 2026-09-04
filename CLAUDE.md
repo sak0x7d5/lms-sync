@@ -135,6 +135,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Resources stays at the course root**, never in a `Resources/` subfolder. Freshness needs the file to still be where the manifest last saw it, so moving the tree would silently re-download every existing user's whole library. `TestResourcesStayAtTheCourseRoot`.
 - **The manifest reads both of its shapes.** Entries written before sections existed are bare numbers; rendered pages need an object with a hash. `entry` unmarshals either, and still *writes* a bare number when there is no hash, so a downloads-only manifest stays readable by an older build. Rejecting the old shape would fail the decode, which the rule above turns into a full re-download. `TestLegacyManifestIsStillRead`.
 - **A rendered page must be byte-stable.** It has no server-side size, so freshness is decided by hashing what we would write. A timestamp in `renderSyllabus` would make every run rewrite the file and report it as new. `TestSyllabusFallsBackToRenderedPage` runs the sync twice to catch that.
+- **A tab whose text is the material always keeps its page.** `keep_pages` is off because a Syllabus tab wraps a PDF, but an announcement *is* text; applying one setting to both shapes dropped announcement bodies whenever the tab also had an attachment. `TestAnnouncementTextSurvivesKeepPagesOff`, `TestWrapperTabsStillDropTheirStubPage`.
 - **Material that is not a file is still material.** A tab's off-LMS links are written to `Links.md` and never fetched: recording a URL must never become a reason to follow it, and a course whose content is a textbook link is not an empty course. `TestExternalLinksAreRecordedButNeverFetched`, `TestACourseWithOnlyExternalLinksIsNotEmpty`.
 - **Links in captured tool pages are resolved, never regex-matched.** Instructors' attachment links are usually root-relative (`/access/content/attachment/...`); a regex anchored on `https://` misses them, and since most syllabus tabs are nothing but a link to a PDF, that silently produced a stub page and no file. `contentLinks` resolves every href against the page it came from, then filters through `allowedContent`. The fake serves root-relative hrefs on purpose — serving absolute ones is what hid the bug. `TestSyllabusFallsBackToRenderedPage`.
 - **A captured region stops at its own closing tag.** `extractRegion` counts nested `<div>`s. The greedy regex it replaced ran to the last `</div>` on the page, swallowed the portal navigation, and then downloaded every file linked in that chrome as an attachment of the tab. `TestPageRegionDoesNotSwallowSiteNavigation`.
@@ -266,10 +267,20 @@ never end up empty.
 `keep_pages` (default **false**) decides whether a rendered page is written
 beside the files its tab links to. Most syllabus tabs are a wrapper around a
 PDF, so the page is a stub the student opens only to find it says nothing —
-which is why the default is off. Whether a given page is a wrapper or a real
+which is why the default is off. Whether a given *page* is a wrapper or a real
 syllabus cannot be judged from the markup (the tool's own chrome reads as
-content), so this is a setting, not a heuristic. It never leaves a course with
-nothing: a tab that links to no files still gets its page.
+content), so this is a setting, not a heuristic.
+
+What can be judged is the *tab*. `pageSections` marks Overview and
+Announcements `textIsContent`, and their pages are always written: an
+announcement is text, there is no PDF that "is" the announcement, and a room
+change or an enrolment code typed into an Overview box has no file behind it
+either. One global setting applied to both shapes silently discarded exactly
+what a student asks for whenever such a tab also carried an attachment.
+`keep_pages` can still turn the wrapper pages on; it cannot turn these off.
+
+It never leaves a course with nothing: a tab that links to no files still gets
+its page.
 
 The TOML reader is deliberately partial: top-level keys, one `[courses]` table, single/double-quoted strings, ints, string arrays. Unrecognised lines are skipped rather than treated as fatal. The writer emits single-quoted literal strings so Windows paths (`'D:\Uni\Courses'`) survive.
 

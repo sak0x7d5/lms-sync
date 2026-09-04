@@ -804,7 +804,20 @@ func renderCaptured(title string, items []capturedItem, local map[string]string)
 var pageSections = []struct {
 	id, name, file string
 	regs, titles   []string
-	fromAPI        func(context.Context, *Client, string) ([]capturedItem, error)
+
+	// textIsContent marks a tab whose words ARE the material, rather than a
+	// wrapper around a file.
+	//
+	// keep_pages defaults to off because a Syllabus tab is nearly always a
+	// stub around a PDF, and saving that stub gives a student a page that
+	// says nothing. That reasoning does not carry to every tab. An
+	// announcement is text; there is no PDF that "is" the announcement, and a
+	// room change or an enrolment code typed into an Overview box has no file
+	// behind it either. Applying one global setting to both shapes silently
+	// threw those away whenever the tab happened to also carry an attachment.
+	textIsContent bool
+
+	fromAPI func(context.Context, *Client, string) ([]capturedItem, error)
 }{
 	{
 		id: "syllabus", name: "Syllabus", file: "Syllabus.html",
@@ -820,7 +833,7 @@ var pageSections = []struct {
 		// chrome and was refused outright. It is not chrome: on a course
 		// whose instructor never touched Resources, it is the only place
 		// anything was ever posted.
-		id: "overview", name: "Overview", file: "Overview.html",
+		id: "overview", name: "Overview", file: "Overview.html", textIsContent: true,
 		// The dashed form is what a portal icon class yields, exactly as for
 		// Assignments; the dotted one is what the Entity Broker reports.
 		regs:   []string{"sakai.iframe.site", "sakai.iframe-site", "sakai.siteinfo.iframe"},
@@ -828,8 +841,9 @@ var pageSections = []struct {
 	},
 	{
 		id: "announcements", name: "Announcements", file: "Announcements.html",
-		regs:   []string{"sakai.announcements", "sakai.announcement"},
-		titles: []string{"announcements"},
+		textIsContent: true,
+		regs:          []string{"sakai.announcements", "sakai.announcement"},
+		titles:        []string{"announcements"},
 	},
 	{
 		// The registration is sakai.assignment.grades, but a portal icon
@@ -899,7 +913,8 @@ func (c *Client) sectionsFor(ctx context.Context, siteID string, cfg *Config) ([
 		}
 		if t, ok := find(tools, ps.regs, ps.titles); ok {
 			out = append(out, pageSection{id: ps.id, name: ps.name, file: ps.file,
-				tool: t, keepPage: cfg.KeepPages, fromAPI: ps.fromAPI})
+				tool: t, keepPage: cfg.KeepPages || ps.textIsContent,
+				fromAPI: ps.fromAPI})
 		}
 	}
 	if enabled["dropbox"] {
