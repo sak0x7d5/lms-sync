@@ -88,9 +88,16 @@ every slide, document and saved page), `read_material`, `whats_new`, and
 `sync_courses` — the only one that goes online, so the assistant can fetch new
 material when you ask instead of you dropping to a terminal.
 
-It also offers four study workflows as prompts, which most clients show as a
-menu: **prep_for_class**, **quiz_me** (questions built from your own slides,
-in your lecturer's notation), **explain_from_my_material** and **catch_up**.
+It also offers study workflows as prompts, which most clients show as a menu:
+**prep_for_class**, **quiz_me**, **explain_from_my_material**, **catch_up**
+and **study_plan**.
+
+`quiz_me` builds questions from your own slides, in your lecturer's notation —
+and records how each answer went. Those answers come back on a spacing
+schedule, and `study_plan` uses them to say where an hour should actually go,
+rather than towards whatever is most comfortable to re-read. That history
+lives in `<destination>/.lms-study/` and is the one folder here that cannot be
+rebuilt from the LMS.
 
 PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
 `pdftotext` on your PATH. Without it everything else still works and the tool

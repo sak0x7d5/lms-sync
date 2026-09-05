@@ -112,18 +112,27 @@ that course covers, and give me a briefing I can read in five minutes:
 			if t := strings.TrimSpace(args["topic"]); t != "" {
 				scope = "on: " + t
 			}
-			return fmt.Sprintf(`Quiz me on %s, %s.
+			return fmt.Sprintf(`Quiz me on %s, %s. %s questions.
 
-Read the material first, then write %s questions drawn from it. Mix recall
-with questions that need the ideas applied — an exam rarely asks for
-definitions alone.
+Start with due_reviews. Anything due comes first, asked in its exact recorded
+wording — re-testing what I already know is the waste this is meant to avoid,
+and re-wording a question files it as a new one and throws away its history.
+Then read the material and write fresh questions to make up the number, mixing
+recall with questions that need the ideas applied, because an exam rarely asks
+for definitions alone.
 
-Ask them one at a time and wait for my answer before giving the next. When I
-answer, say whether I am right, and point me at the file and slide the answer
-came from so I can go and read it.
+Ask one at a time and wait. After each, show me the answer, point me at the
+file and slide it came from — then ask me how I did: got it, close, or missed.
+That verdict is mine, not yours; do not decide it for me, and do not skip
+asking. Then call record_answer with the question exactly as asked, my
+verdict, the answer and the source path.
 
-If some of what you would ask sits in files with no extracted text, say so —
-I would rather know a gap exists than be quizzed on a fraction of the course
+Recording every answer is not bookkeeping — it is the only part of this
+library that cannot be rebuilt from the LMS, and it is what makes the next
+quiz smarter than this one.
+
+If some of what you would ask sits in files with no extracted text, say so — I
+would rather know a gap exists than be quizzed on a fraction of the course
 without realising.
 %s`, forCourse(args), scope, arg(args, "count", "10"), groundRules)
 		},
@@ -147,6 +156,32 @@ that difference is usually what an exam is testing.
 
 End with the file and slide to read next if I want more depth.
 %s`, arg(args, "topic", "the topic I name next"), forCourse(args), groundRules)
+		},
+	},
+	{
+		Name:  "study_plan",
+		Title: "What should I work on now",
+		Description: "Decide where the next study session should go, weighted by what " +
+			"is actually shaky and what is due, rather than by whatever is most " +
+			"comfortable to re-read.",
+		Arguments: []promptArgument{
+			{Name: "minutes", Description: "How long you have (default 60)."},
+			{Name: "course", Description: "Restrict to one course. Omit for all of them."},
+		},
+		build: func(args map[string]string) string {
+			return fmt.Sprintf(`I have %s minutes. Tell me what to do with them, for %s.
+
+Look at due_reviews and weak_spots first — those say what I have actually
+forgotten and what I keep getting wrong, which is not the same as what feels
+unfinished. Then check whats_new for anything with a deadline attached.
+
+Give me a plan in order, with rough minutes against each item and one line on
+why it is there. Put what I keep missing before what is merely due, and put
+anything with a deadline before both.
+
+Say plainly if there is not enough history to judge — a guess dressed as a
+plan is worse than "record a few answers first and ask me again".
+%s`, arg(args, "minutes", "60"), forCourse(args), groundRules)
 		},
 	},
 	{

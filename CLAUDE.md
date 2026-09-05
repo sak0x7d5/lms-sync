@@ -49,6 +49,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [search.go](search.go) — turning a question into matches over the text cache.
 - [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.
+- [review.go](review.go) — what the student has been asked, how it went, and when it comes back.
 - [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
 - [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
@@ -157,6 +158,10 @@ These encode bugs that already cost someone real time — the comments in the so
 - **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
 - **Every prompt carries the ground rules.** A client with no project instructions is the normal case, so "search before answering", "cite the path", and above all "an empty folder means the material was not uploaded, not that it was never taught" have to travel with the prompt. `TestEveryPromptCarriesTheGroundRules`.
 - **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`.
+- **A review log that will not parse is left alone, never overwritten.** Every other cache here rebuilds itself from a corrupt file; this one holds the only copy of a year's answers. `TestHistorySurvivesACorruptFileRatherThanBeingOverwritten`.
+- **The same question keeps its history.** `questionID` normalises case and whitespace, so a rephrasing does not split one item into two that each get half the practice. `TestRewordedWhitespaceIsTheSameQuestion`.
+- **A miss resets the ladder; a verdict is the student's.** Half-remembering something for a month is the state that needs frequent practice, not a longer gap — and a model deciding the verdict itself can drag a known item back for weeks. `TestAMissedQuestionComesBackTomorrow`, `TestGettingItRightPushesItFurtherOut`, `TestQuizPromptRequiresRecordingAndDefersTheVerdict`.
+- **Weak spots rank by rate, not count.** A question missed every time it was asked matters more than one missed more often but usually right. `TestWeakSpotsRankByHowOftenNotHowMany`.
 - **Search matches word prefixes, never substrings.** "eigenvalue" has to find "eigenvalues" or a real question returns nothing, but anchoring only the start is what stops "law" matching "flaw". Ranking is by how many of the query's words a file contains, not by frequency, so a file repeating one word cannot outrank the file answering the whole question. Stop words are dropped so pasting an actual question works. `TestSearchMatchesWordPrefixesNotSubstrings`, `TestSearchRanksByHowMuchOfTheQuestionAFileAnswers`.
 - **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
 - **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
@@ -165,6 +170,31 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A status about the machine is never cached; a status about the file is.** `unavailable` (no `pdftotext`) and `unsupported` (no extractor in this build) can both stop being true without the file being touched, so they are re-attempted every run — cheaply, since both give up before opening the file. `empty` and `ok` are properties of the bytes and stay cached. The index also carries `extractorVersion`, so a build with new extractors re-reads what an older one skipped. `TestInstallingThePDFToolMakesPDFsReadable`, `TestNewExtractorsReReadTheLibrary`.
 - **An unreadable file is a status, not an error.** A corrupt or password-protected deck is counted and skipped, exactly as one bad download is. Only cancellation stops a pass. `TestUnreadableOfficeFileIsNotFatal`, `TestExtractionStopsWhenCancelled`.
 - **An enabled but empty tab is a `skip`, not a failure.** Plenty of courses leave a tool switched on and empty; counting those would train people to ignore the failure count. `TestEmptySectionIsSkippedNotFailed`.
+
+### The study history
+
+Everything else in this tool is about the material. `.lms-study/` is the only
+part about the *student*, and the only part that cannot be reconstructed:
+slides can be re-downloaded, a wrong answer from three weeks ago cannot. It
+carries a README saying exactly that, because a disposable `.lms-index` sitting
+next to it is an invitation to delete the wrong one — and unlike that one, a
+review log that will not parse is **left on disk untouched** rather than
+started fresh.
+
+Retrieval practice and spaced repetition are the two best-evidenced study
+methods and both fail in practice for one reason: authoring questions is too
+much work to keep up across six courses. A tool that already holds the
+material removes that cost, and this is what makes it compound — without a
+record of what was asked and missed, every quiz starts from zero and re-tests
+what is already known.
+
+Spacing is a Leitner ladder, not SM-2: SM-2 wants a 0-5 self-rating per card,
+which is more per question than most people sustain, and at one student's
+scale the retention difference decides nothing. Verdicts are **self-assessed**
+— a model marking its own question wrong does not stay local, it resets the
+interval and drags the item back for weeks. `questionID` normalises case and
+whitespace so a rephrased question keeps its history rather than splitting
+into two half-practised items.
 
 ### The searchable copy
 

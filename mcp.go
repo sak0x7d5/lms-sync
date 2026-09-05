@@ -337,6 +337,62 @@ var mcpTools = []mcpTool{
 		}`),
 	},
 	{
+		Name:  "record_answer",
+		Title: "Record how a quiz answer went",
+		Description: "Log one question the student was asked and how they did, so it " +
+			"comes back on a spacing schedule and their weak spots accumulate. Call this " +
+			"after every single question in a quiz, once the student has said how they " +
+			"did — this record is the only thing in the library that cannot be rebuilt " +
+			"from the LMS. The verdict is the student's own judgement, never yours: ask " +
+			"them, do not decide for them.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"Course folder name, as list_courses reports it."},
+				"question":{"type":"string","description":"The question, worded exactly as it was asked. Reuse the exact wording when re-asking a due item, or it is recorded as a new question and loses its history."},
+				"verdict":{"type":"string","enum":["got","close","missed"],"description":"How the student said they did."},
+				"answer":{"type":"string","description":"The correct answer, so the question can be re-asked later without re-reading the source."},
+				"source":{"type":"string","description":"Library path the question came from."},
+				"topic":{"type":"string","description":"A short topic label, for grouping weak spots."}
+			},
+			"required":["course","question","verdict"],
+			"additionalProperties":false
+		}`),
+	},
+	{
+		Name:  "due_reviews",
+		Title: "Questions due to come back",
+		Description: "List questions the student has answered before and is due to see " +
+			"again, longest-overdue first. Call this at the START of any quiz or revision " +
+			"session and ask these before writing new questions — re-testing something " +
+			"already known is the waste this exists to prevent. Ask each one using its " +
+			"exact recorded wording.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"One course. Omit for every course with history."},
+				"limit":{"type":"integer","description":"Maximum questions (default 20)."}
+			},
+			"additionalProperties":false
+		}`),
+	},
+	{
+		Name:  "weak_spots",
+		Title: "What keeps being missed",
+		Description: "What the student gets wrong most often, worst first, with how many " +
+			"times each has been asked and missed. Use it to decide where an hour should " +
+			"go, or to weight a revision plan towards what is actually shaky rather than " +
+			"what is comfortable to re-read.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"One course. Omit for every course with history."},
+				"limit":{"type":"integer","description":"Maximum entries (default 15)."}
+			},
+			"additionalProperties":false
+		}`),
+	},
+	{
 		Name:  "sync_courses",
 		Title: "Fetch new material from the LMS",
 		Description: "Download anything new from the university's LMS into the local " +
@@ -429,6 +485,12 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 		return s.whatsNew(args)
 	case "sync_courses":
 		return s.syncCourses()
+	case "record_answer":
+		return s.recordAnswer(args)
+	case "due_reviews":
+		return s.dueReviews(args)
+	case "weak_spots":
+		return s.weakSpots(args)
 	}
 	return "", fmt.Errorf("no tool called %q", name)
 }
@@ -760,6 +822,146 @@ func (s *mcpServer) syncCourses() (string, error) {
 	}
 	return "Sync started. It runs in the background and takes minutes on a first " +
 		"run; call sync_courses again to see how far it has got.", nil
+}
+
+// ---------------------------------------------------------------------------
+// Study history
+// ---------------------------------------------------------------------------
+
+// coursesInScope is the courses a study tool should look at.
+func (s *mcpServer) coursesInScope(course string) []string {
+	if c := strings.TrimSpace(course); c != "" {
+		return []string{c}
+	}
+	return reviewedCourses(s.dest)
+}
+
+func (s *mcpServer) recordAnswer(args json.RawMessage) (string, error) {
+	var a struct {
+		Course   string `json:"course"`
+		Question string `json:"question"`
+		Verdict  string `json:"verdict"`
+		Answer   string `json:"answer"`
+		Source   string `json:"source"`
+		Topic    string `json:"topic"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", errors.New("could not read the arguments")
+	}
+	if strings.TrimSpace(a.Course) == "" || strings.TrimSpace(a.Question) == "" {
+		return "", errors.New("course and question are both required")
+	}
+	v, ok := validVerdict(a.Verdict)
+	if !ok {
+		return "", fmt.Errorf("verdict must be got, close or missed, not %q", a.Verdict)
+	}
+	// A source path is written into a file the student keeps; it has no
+	// business pointing anywhere but their own library.
+	if a.Source != "" {
+		if _, err := resolveInside(s.dest, filepath.ToSlash(a.Source)); err != nil {
+			return "", err
+		}
+	}
+
+	log := LoadReviews(s.dest, a.Course)
+	it := log.Record(a.Question, a.Answer, a.Source, a.Topic, v, time.Now())
+	if err := log.Save(); err != nil {
+		return "", err
+	}
+
+	due, _ := time.Parse(time.RFC3339, it.Due)
+	return fmt.Sprintf("Recorded (%s). Asked %d time%s, missed %d. Next due %s.",
+		v, it.Asked, plural(it.Asked, "", "s"), it.Missed,
+		due.Format("Mon 2 Jan")), nil
+}
+
+func (s *mcpServer) dueReviews(args json.RawMessage) (string, error) {
+	var a struct {
+		Course string `json:"course"`
+		Limit  int    `json:"limit"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", errors.New("could not read the arguments")
+		}
+	}
+	limit := a.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	now := time.Now()
+	var b strings.Builder
+	shown := 0
+	for _, course := range s.coursesInScope(a.Course) {
+		log := LoadReviews(s.dest, course)
+		items := log.Due(now, limit-shown)
+		if len(items) == 0 {
+			continue
+		}
+		total, due, _ := log.Counts(now)
+		fmt.Fprintf(&b, "\n%s — %d due of %d recorded\n", course, due, total)
+		for _, it := range items {
+			b.WriteString(describeItem(it, now))
+			shown++
+		}
+		if shown >= limit {
+			break
+		}
+	}
+
+	if shown == 0 {
+		return "Nothing is due for review.\n\n" +
+			"Either nothing has been recorded yet, or everything answered so far is " +
+			"still scheduled for later. Write fresh questions from the material, and " +
+			"record each answer with record_answer so they come back on a schedule.", nil
+	}
+	return strings.TrimSpace(b.String()) +
+		"\n\nAsk these using their exact wording above, then record each with " +
+		"record_answer. Re-wording a question files it as a new one and loses its history.", nil
+}
+
+func (s *mcpServer) weakSpots(args json.RawMessage) (string, error) {
+	var a struct {
+		Course string `json:"course"`
+		Limit  int    `json:"limit"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", errors.New("could not read the arguments")
+		}
+	}
+	limit := a.Limit
+	if limit <= 0 {
+		limit = 15
+	}
+
+	now := time.Now()
+	var b strings.Builder
+	shown := 0
+	for _, course := range s.coursesInScope(a.Course) {
+		log := LoadReviews(s.dest, course)
+		items := log.Weakest(limit - shown)
+		if len(items) == 0 {
+			continue
+		}
+		total, _, shaky := log.Counts(now)
+		fmt.Fprintf(&b, "\n%s — %d shaky of %d recorded\n", course, shaky, total)
+		for _, it := range items {
+			b.WriteString(describeItem(it, now))
+			shown++
+		}
+		if shown >= limit {
+			break
+		}
+	}
+
+	if shown == 0 {
+		return "Nothing has been missed yet — either nothing is recorded, or every " +
+			"answer so far has been right.", nil
+	}
+	return strings.TrimSpace(b.String()) +
+		"\n\nWorst first, by how often each is missed rather than raw count.", nil
 }
 
 // resolveInside turns a library-relative path into an absolute one, refusing
