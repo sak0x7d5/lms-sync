@@ -198,6 +198,7 @@ type syncRun struct {
 	c        *Client
 	cfg      *Config
 	manifest *Manifest
+	index    *Index
 	dest     string
 	dryRun   bool
 	report   Reporter
@@ -229,8 +230,8 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 	// hard question to answer from the log alone.
 	report(Event{Type: "start", Path: dest})
 
-	r := &syncRun{c: c, cfg: cfg, manifest: manifest, dest: dest,
-		dryRun: dryRun, report: report}
+	r := &syncRun{c: c, cfg: cfg, manifest: manifest, index: LoadIndex(dest),
+		dest: dest, dryRun: dryRun, report: report}
 
 	for _, course := range cfg.Courses {
 		if ctx.Err() != nil {
@@ -300,8 +301,16 @@ func (r *syncRun) course(ctx context.Context, course Course) error {
 
 	if !r.dryRun {
 		// Save after each course so an interrupted run doesn't re-fetch
-		// everything next time.
+		// everything next time. The sidecar rides along on the same rhythm:
+		// it describes what is on disk, so it should never be staler than
+		// the disk is.
 		if err := r.manifest.Save(); err != nil {
+			r.report(Event{Type: "warn", Message: err.Error()})
+		}
+		// A sidecar that cannot be written is worth a warning and nothing
+		// more. The course material is already saved, and failing the run
+		// over its metadata would be the tail wagging the dog.
+		if err := r.index.Save(); err != nil {
 			r.report(Event{Type: "warn", Message: err.Error()})
 		}
 	}
@@ -342,6 +351,7 @@ func (r *syncRun) save(ctx context.Context, a artifact, sec section,
 	if info, err := os.Stat(path); err == nil {
 		if e, ok := r.manifest.Get(key); ok && current(e, info, a) {
 			r.res.Current++
+			r.note(a, sec, course, rel, e)
 			return nil
 		}
 	}
@@ -373,9 +383,37 @@ func (r *syncRun) save(ctx context.Context, a artifact, sec section,
 	}
 
 	r.manifest.Set(key, e)
+	r.note(a, sec, course, rel, e)
 	r.res.New++
 	r.reportFile(course, sec, rel)
 	return nil
+}
+
+// note records one artifact in the sidecar beside the mirrored tree.
+//
+// Everything here is already in hand at this point in the run and is
+// otherwise dropped on the floor — the tab a file came from, the URL behind
+// it, whether it was downloaded or rendered. A reader of the folder can only
+// guess at those, and guesses are what turn "the Syllabus tab of 102066" into
+// a bare path.
+//
+// The guard on dryRun is what keeps that flag honest: its whole promise is
+// that a run changes nothing on disk, and the sidecar is on disk.
+func (r *syncRun) note(a artifact, sec section, course Course, rel string, e entry) {
+	if r.dryRun {
+		return
+	}
+	r.index.Record(record{
+		Path:        filepath.ToSlash(rel),
+		Course:      course.Folder,
+		CourseID:    course.ID,
+		Section:     sec.ID(),
+		SectionName: sec.Name(),
+		URL:         a.url,
+		Rendered:    a.body != nil,
+		Size:        e.Size,
+		Hash:        e.Hash,
+	})
 }
 
 func (r *syncRun) reportFile(course Course, sec section, rel string) {

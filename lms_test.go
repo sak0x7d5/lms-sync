@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -594,6 +595,11 @@ func TestDryRunWritesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cfg.Destination, "Calculus", "limits.pdf")); err == nil {
 		t.Error("dry run wrote a file")
 	}
+	// The sidecar is a second thing a run puts on disk, and the promise of
+	// this flag covers it too.
+	if _, err := os.Stat(filepath.Join(cfg.Destination, indexName)); err == nil {
+		t.Error("dry run wrote the index")
+	}
 }
 
 func TestSessionExpiryDetected(t *testing.T) {
@@ -1138,5 +1144,247 @@ func TestKeepPagesReadsAndWrites(t *testing.T) {
 	back, _ := LoadConfig(path)
 	if back.KeepPages {
 		t.Error("keep_pages did not survive a save/load round trip")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The provenance sidecar
+// ---------------------------------------------------------------------------
+
+func readIndex(t *testing.T, dest string) []record {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dest, indexName))
+	if err != nil {
+		t.Fatalf("no index written: %v", err)
+	}
+	var file struct {
+		Version int      `json:"version"`
+		Files   []record `json:"files"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatalf("the index is not readable JSON: %v", err)
+	}
+	if file.Version != indexVersion {
+		t.Errorf("index version = %d, want %d", file.Version, indexVersion)
+	}
+	return file.Files
+}
+
+func findRecord(t *testing.T, recs []record, path string) record {
+	t.Helper()
+	for _, rec := range recs {
+		if rec.Path == path {
+			return rec
+		}
+	}
+	var got []string
+	for _, rec := range recs {
+		got = append(got, rec.Path)
+	}
+	t.Fatalf("no index record for %q; have %v", path, got)
+	return record{}
+}
+
+// The sidecar exists so that whatever reads the folder later does not have to
+// infer a file's origin from its path. Every field it writes is one the run
+// held in its hand and used to throw away.
+func TestIndexRecordsProvenance(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	recs := readIndex(t, cfg.Destination)
+
+	// A downloaded file: the URL it came from is the thing no reader of the
+	// folder could ever recover on its own.
+	pdf := findRecord(t, recs, "Programming/Syllabus/Course Outline ITS Fall 2026.pdf")
+	if pdf.Section != "syllabus" || pdf.SectionName != "Syllabus" {
+		t.Errorf("section = %q/%q, want syllabus/Syllabus", pdf.Section, pdf.SectionName)
+	}
+	if pdf.CourseID != "site-prog" || pdf.Course != "Programming" {
+		t.Errorf("course = %q/%q, want site-prog/Programming", pdf.CourseID, pdf.Course)
+	}
+	if pdf.URL == "" {
+		t.Error("a downloaded file recorded no source URL")
+	}
+	if pdf.Rendered {
+		t.Error("a downloaded file was recorded as rendered")
+	}
+	if pdf.Size == 0 || pdf.FirstSeen == "" || pdf.Updated == "" {
+		t.Errorf("incomplete record: %+v", pdf)
+	}
+
+	// A rendered page. Rendered is the field a reader branches on: this one
+	// is HTML with its structure intact, while the PDF beside it is opaque
+	// until something extracts it.
+	page := findRecord(t, recs, "Programming/Syllabus/Syllabus.html")
+	if !page.Rendered {
+		t.Error("the rendered page was not marked as rendered")
+	}
+	if page.Hash == "" {
+		t.Error("a rendered page must carry the hash its freshness rests on")
+	}
+	if page.URL != "" {
+		t.Errorf("a rendered page has no source URL, got %q", page.URL)
+	}
+}
+
+// A second run changes nothing on disk, so it must not restamp the sidecar
+// either: "what appeared this week" is the question the timestamps exist to
+// answer, and it stops meaning anything if every run rewrites them.
+func TestIndexTimestampsSurviveAnUnchangedRun(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	before, err := os.ReadFile(filepath.Join(cfg.Destination, indexName))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {})
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if res.New != 0 {
+		t.Fatalf("second run fetched %d files; the test below proves nothing", res.New)
+	}
+
+	after, err := os.ReadFile(filepath.Join(cfg.Destination, indexName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("an unchanged run rewrote the index; timestamps are being restamped")
+	}
+}
+
+// The sidecar is metadata, and losing it must cost nothing but the writing of
+// it. In particular it must not provoke a re-download: the manifest, not the
+// index, is what decides freshness.
+func TestCorruptIndexIsRebuiltWithoutRedownloading(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	want := len(readIndex(t, cfg.Destination))
+
+	path := filepath.Join(cfg.Destination, indexName)
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {})
+	if err != nil {
+		t.Fatalf("a corrupt index ended the run: %v", err)
+	}
+	if res.New != 0 {
+		t.Errorf("new = %d, want 0: a corrupt index must not force a re-download", res.New)
+	}
+	if got := len(readIndex(t, cfg.Destination)); got != want {
+		t.Errorf("index rebuilt with %d records, want %d", got, want)
+	}
+}
+
+// The index describes the folder, not the run. A file deleted from disk is
+// gone and should leave; a file whose tab was merely switched off this run is
+// still there and must stay.
+func TestIndexForgetsDeletedFilesButKeepsDisabledTabs(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus", "resources"}
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	first := readIndex(t, cfg.Destination)
+	if len(first) < 3 {
+		t.Fatalf("expected both tabs to contribute files, got %d", len(first))
+	}
+
+	// Delete one file the way a user would, then sync with Syllabus switched
+	// off entirely.
+	gone := "Programming/Syllabus/Course Outline ITS Fall 2026.pdf"
+	if err := os.Remove(filepath.Join(cfg.Destination, filepath.FromSlash(gone))); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Sections = []string{"resources"}
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	after := readIndex(t, cfg.Destination)
+	for _, rec := range after {
+		if rec.Path == gone {
+			t.Error("a deleted file is still in the index")
+		}
+	}
+	// The rendered page belongs to the tab that was switched off, and is
+	// still sitting on disk. An index that dropped it would be describing
+	// the run instead of the folder.
+	findRecord(t, after, "Programming/Syllabus/Syllabus.html")
+}
+
+// The index is the one place the tool takes a path from a file on disk rather
+// than deriving it. A hand-edited entry pointing outside the destination is
+// dropped, not followed.
+func TestIndexIgnoresPathsOutsideTheDestination(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// These have to exist, or the missing-file pruning would drop them for
+	// the wrong reason and the test would pass without the guard.
+	outside := filepath.Dir(cfg.Destination)
+	for _, name := range []string{"escaped.pdf", "escaped-too.pdf"} {
+		if err := os.WriteFile(filepath.Join(outside, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	planted := `{"version":1,"files":[
+		{"path":"../escaped.pdf","course":"x","size":1},
+		{"path":"Calculus/../../escaped-too.pdf","course":"x","size":1}
+	]}`
+	path := filepath.Join(cfg.Destination, indexName)
+	if err := os.WriteFile(path, []byte(planted), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	for _, rec := range readIndex(t, cfg.Destination) {
+		if strings.Contains(rec.Path, "..") {
+			t.Errorf("kept a record pointing outside the destination: %q", rec.Path)
+		}
 	}
 }

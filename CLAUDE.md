@@ -43,6 +43,7 @@ Two front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (local
 - [errors.go](errors.go) — `Kind`, `*Error`, `Explain`.
 - [names.go](names.go) — filename/folder/URL normalisation.
 - [manifest.go](manifest.go) — the "already downloaded" record.
+- [index.go](index.go) — the provenance sidecar written into the destination.
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
@@ -112,6 +113,51 @@ These encode bugs that already cost someone real time — the comments in the so
 ### Freshness check
 
 `manifest.json` maps file URL → byte size. A file is skipped only if it exists on disk *and* the manifest size matches — that catches an instructor re-uploading a corrected deck under the same name. The manifest is saved after each course so an interrupt doesn't force a full re-fetch.
+
+### The provenance sidecar is not a second manifest
+
+`.lms-index.json` is written at the root of the *destination*, not beside the
+executable, and that is the whole point: it describes the folder, so anything
+reading the folder — a search index, a script, another machine the tree was
+copied to — finds it without being told where lms-sync was installed.
+
+Keep it separate from `manifest.json`. They are peers with opposite jobs: the
+manifest answers *"have I already got this?"* for this tool and is keyed by
+URL; the index answers *"what is this file?"* for somebody else and is keyed
+by path. Folding them together would tie a format meant to grow to the one
+file a mis-decode turns into a full re-download.
+
+`note()` in sync.go fills a record from what `save` is already holding — the
+tab, the site id, the source URL, downloaded-vs-rendered. Every one of those
+is thrown away otherwise and cannot be recovered from the tree afterwards,
+which is what reduces a citation to a bare path.
+
+- **The index describes the folder, not the run.** A record whose tab was
+  switched off this run is kept — the file is still on disk. Only a record
+  whose file is *gone* is dropped, and only on `IsNotExist`: a permission
+  error or an unplugged drive must never quietly erase a live file's record.
+  `TestIndexForgetsDeletedFilesButKeepsDisabledTabs`.
+- **Pruning must mark the index dirty.** Dropping a record happens at load,
+  where nothing else may change all run — a sync where every file is already
+  current records nothing new. Without the dirty flag `Save` decides it has no
+  work and the deleted file stays in the sidecar forever. This was a real bug,
+  caught by the test above.
+- **An unchanged run must not restamp it.** `Updated` moves only when a
+  record actually differs, so `first_seen`/`updated` keep answering "what
+  appeared this week". Re-stamping every file each run would make the fields
+  worthless. `TestIndexTimestampsSurviveAnUnchangedRun`.
+- **Losing it costs nothing.** A corrupt sidecar starts fresh like a corrupt
+  manifest — but unlike the manifest it must not provoke a re-download, since
+  freshness is the manifest's job alone.
+  `TestCorruptIndexIsRebuiltWithoutRedownloading`.
+- **A record's path is not trusted.** `LoadIndex` is the one place the tool
+  takes a path from a file instead of deriving it, so an entry resolving
+  outside the destination is dropped rather than stat'd. The test plants
+  files that really exist outside the tree — without them the missing-file
+  pruning would drop the entries for the wrong reason and the test would pass
+  with the guard removed. `TestIndexIgnoresPathsOutsideTheDestination`.
+- **`--dry-run` covers it too.** It is a second thing a run puts on disk, so
+  `note()` and the per-course save both guard on `dryRun`.
 
 ### Why the folder chooser is server-side
 

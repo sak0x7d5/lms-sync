@@ -144,6 +144,8 @@ readable in git history even after the file is deleted.
 4. **Walk or capture.** Resources and Drop Box are directory indexes and
    recurse. Syllabus has no files — its content is captured as a page.
 5. **Download.** Only new or changed items, tracked in `manifest.json`.
+6. **Write it down.** Each file's origin is recorded in `.lms-index.json`
+   at the root of the destination.
 
 It only ever reads. There is no upload or delete path, so it cannot damage an
 instructor's folder — worth knowing, since Sakai's WebDAV interface *can*.
@@ -168,6 +170,37 @@ Installs differ, so if a tab you expected is missing, ask the server:
 
 That reports each course's tabs and which endpoints answered, and downloads
 nothing.
+
+### Reading the mirror
+
+Every run writes `.lms-index.json` at the root of the destination — one record
+per file, holding what the run knew at the moment it saved it:
+
+```json
+{
+  "path": "Introduction to Statistics (102066)/Syllabus/Course Outline.pdf",
+  "course": "Introduction to Statistics (102066)",
+  "course_id": "102066",
+  "section": "syllabus",
+  "section_name": "Syllabus",
+  "url": "https://lms.example.edu/access/content/attachment/...",
+  "size": 284119,
+  "first_seen": "2026-09-02T11:04:33Z",
+  "updated": "2026-09-02T11:04:33Z"
+}
+```
+
+None of that survives in the folder itself, which matters if you point a
+search index or a script at the tree: it is the difference between citing
+*the Syllabus tab of 102066* and citing a bare path. Pages the tool rendered
+itself carry `"rendered": true` — prefer those, because their headings, lists
+and tables are intact where the PDF beside them is opaque until something
+extracts it.
+
+Unlike `config.toml` and `manifest.json`, this one travels with the folder
+rather than living beside the executable, so a tree copied to another machine
+arrives complete. It is metadata and nothing else: delete it and the next run
+rebuilds it without re-downloading a thing.
 
 ### Error handling
 
