@@ -101,7 +101,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A wrong password returns HTTP 200 with the login form.** Status codes prove nothing; `Client.Authenticated` verifies the session via `/direct/session/current.json` *and* falls back to regex-matching the rendered portal, because Entity Broker is disabled on many installs. `TestWrongPasswordIsAuthError`.
 - **Auth failures are never retried** (lockouts). `Client.do` retries only timeouts, connection errors, 429 and 5xx — 4xx are answers. A request with a non-nil body is never retried, since the body can only be read once.
 - **`childLinks` keeps only immediate children of the current page URL.** That single prefix rule is what makes `../` traversal out of the course tree impossible — `TestChildLinksTraversal` asserts it.
-- **Everything durable is written temp-then-rename**: downloads (`.part`), `config.toml`, `manifest.json`.
+- **Everything durable is written temp-then-rename**: downloads (`.part`), `config.toml`, `manifest.json`, `.lms-index.json`. Five copies of the same dance now; if a sixth appears, extract a helper instead.
 - **One bad file must not end the run.** `KindNotFound` on a file is counted and skipped; only `cancelled`, `tls` and `session` abort the whole sync.
 - **A corrupt manifest starts fresh rather than failing**, and `sanitise()` clamps hand-edited config values.
 - **Resources stays at the course root**, never in a `Resources/` subfolder. Freshness needs the file to still be where the manifest last saw it, so moving the tree would silently re-download every existing user's whole library. `TestResourcesStayAtTheCourseRoot`.
@@ -137,18 +137,23 @@ which is what reduces a citation to a bare path.
   whose file is *gone* is dropped, and only on `IsNotExist`: a permission
   error or an unplugged drive must never quietly erase a live file's record.
   `TestIndexForgetsDeletedFilesButKeepsDisabledTabs`.
-- **Pruning must mark the index dirty.** Dropping a record happens at load,
-  where nothing else may change all run — a sync where every file is already
-  current records nothing new. Without the dirty flag `Save` decides it has no
-  work and the deleted file stays in the sidecar forever. This was a real bug,
-  caught by the test above.
+- **Every drop is a change.** Records are dropped at load — by the
+  missing-file prune *and* by the path guard below — where nothing else in the
+  run need change: a sync where every file is already current records nothing
+  new. Each drop must set `dirty`, or `Save` decides it has no work and the
+  dropped record stays in the sidecar forever. Both sites got this wrong once;
+  the guard's version survived review only because its test replaced the whole
+  file, so the bad records vanished for the wrong reason.
 - **An unchanged run must not restamp it.** `Updated` moves only when a
   record actually differs, so `first_seen`/`updated` keep answering "what
   appeared this week". Re-stamping every file each run would make the fields
   worthless. `TestIndexTimestampsSurviveAnUnchangedRun`.
-- **Losing it costs nothing.** A corrupt sidecar starts fresh like a corrupt
-  manifest — but unlike the manifest it must not provoke a re-download, since
-  freshness is the manifest's job alone.
+- **Losing it costs only what the next run does not visit.** A corrupt
+  sidecar starts fresh like a corrupt manifest, and unlike the manifest it must
+  not provoke a re-download — freshness is the manifest's job alone. But
+  `note()` is reached only from `save()`, so a rebuild covers the enabled
+  sections of configured courses and nothing else: a file whose tab is off that
+  run stays on disk with no record. Don't write copy that promises more.
   `TestCorruptIndexIsRebuiltWithoutRedownloading`.
 - **A record's path is not trusted.** `LoadIndex` is the one place the tool
   takes a path from a file instead of deriving it, so an entry resolving
@@ -156,8 +161,24 @@ which is what reduces a citation to a bare path.
   files that really exist outside the tree — without them the missing-file
   pruning would drop the entries for the wrong reason and the test would pass
   with the guard removed. `TestIndexIgnoresPathsOutsideTheDestination`.
+- **A record is keyed by the path the guard validated**, never by the string
+  the file supplied. `Record` derives its key from the run's own relative path,
+  so a stored `./Calculus/limits.pdf` would otherwise sit beside the canonical
+  key as a second record of one file — and never be pruned, because the file it
+  names exists. `TestIndexKeysRecordsByCanonicalPath`.
+- **An interrupted run saves the index itself.** Both front ends re-save the
+  *manifest* after `Sync` returns, because a cancelled or fatal run never
+  reaches the per-course save. The index is built inside `Sync` and cannot be
+  reached from out there, so `Sync` defers its own save. Without it an
+  interrupt leaves the manifest holding files the index never recorded — and
+  the manifest is what stops those files being fetched, and so recorded, ever
+  again. `TestIndexSurvivesAnInterruptedRun`.
 - **`--dry-run` covers it too.** It is a second thing a run puts on disk, so
-  `note()` and the per-course save both guard on `dryRun`.
+  `note()`, the per-course save and the deferred save all guard on `dryRun` —
+  and `Sync` no longer creates the destination folder either. Checking a
+  mistyped `--dest` is the whole use of the flag, and creating the typo for
+  real defeats it. The cost is that an unwritable destination goes unreported
+  until the real run, which is the run that needs to know.
 
 ### Why the folder chooser is server-side
 

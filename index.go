@@ -37,8 +37,12 @@ const indexVersion = 1
 // hand was "the Syllabus tab of 102066". The run writes down what it already
 // knows instead.
 type record struct {
-	Path        string `json:"path"`         // relative to the destination, forward slashes
-	Course      string `json:"course"`       // the course's title, as the portal gave it
+	Path string `json:"path"` // relative to the destination, forward slashes
+	// Course is the label from config, which is what the portal gave unless
+	// the user has since edited it. The folder on disk is SafeName() of it and
+	// can differ (a colon becomes an underscore), so Path — not this — is what
+	// locates the file.
+	Course      string `json:"course"`
 	CourseID    string `json:"course_id"`    // the LMS site id
 	Section     string `json:"section"`      // stable id: "resources", "syllabus", "dropbox"
 	SectionName string `json:"section_name"` // the tab's label, as the LMS shows it
@@ -97,6 +101,7 @@ func LoadIndex(dest string) *Index {
 		return i
 	}
 
+	prefix := dest + string(filepath.Separator)
 	for _, rec := range file.Files {
 		// A record names a file inside the destination, and this loop is the
 		// one place the tool takes a path from a file rather than deriving
@@ -104,8 +109,24 @@ func LoadIndex(dest string) *Index {
 		// dropped rather than followed — the same rule childLinks enforces on
 		// the way in, applied on the way back out.
 		full := filepath.Join(dest, filepath.FromSlash(rec.Path))
-		if rec.Path == "" || !strings.HasPrefix(full, dest+string(filepath.Separator)) {
+		if rec.Path == "" || !strings.HasPrefix(full, prefix) {
+			// Dropped in memory is not dropped: nothing else in the run need
+			// change, and Save would then find no work and leave the entry in
+			// the file that readers actually consume. Same rule as the prune
+			// below — a drop is a change.
+			i.dirty = true
 			continue
+		}
+
+		// Key by the path the guard just validated, not by the string the
+		// file supplied. Record builds its key the same way from the run's
+		// own relative path, and a stored "./Calculus/limits.pdf" would
+		// otherwise sit beside the canonical key as a second record of one
+		// file — never pruned, because the file it names does exist.
+		canon := filepath.ToSlash(strings.TrimPrefix(full, prefix))
+		if canon != rec.Path {
+			rec.Path = canon
+			i.dirty = true
 		}
 		// Entries are carried forward even for tabs this run has switched
 		// off — the files are still there, and an index that forgot them
@@ -124,7 +145,7 @@ func LoadIndex(dest string) *Index {
 				continue
 			}
 		}
-		i.records[rec.Path] = rec
+		i.records[canon] = rec
 	}
 	return i
 }
@@ -138,18 +159,21 @@ func (i *Index) Record(rec record) {
 	rec.FirstSeen, rec.Updated = now, now
 
 	if old, ok := i.records[rec.Path]; ok {
-		rec.FirstSeen = old.FirstSeen
+		// Inherit only a timestamp that exists. A sidecar written by hand or
+		// by another tool can arrive without one, and inheriting "" would
+		// pin the field empty for the life of the file — the record would
+		// never be able to answer the question it is there for.
+		if old.FirstSeen != "" {
+			rec.FirstSeen = old.FirstSeen
+		}
 
 		// Compare everything except the timestamp we just stamped. If nothing
-		// else moved, the file did not change and neither should Updated:
-		// restamping the whole library on every run would make the field
+		// else moved, the file did not change, so leave the stored record
+		// alone: restamping the whole library on every run would make Updated
 		// worthless for the one thing it is for.
 		probe := old
 		probe.Updated = rec.Updated
 		if probe == rec {
-			rec.Updated = old.Updated
-		}
-		if old == rec {
 			return
 		}
 	}

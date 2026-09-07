@@ -600,6 +600,11 @@ func TestDryRunWritesNothing(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(cfg.Destination, indexName)); err == nil {
 		t.Error("dry run wrote the index")
 	}
+	// Nor the destination itself. Checking a mistyped --dest is the whole use
+	// of this flag, and creating the typo for real defeats it.
+	if _, err := os.Stat(cfg.Destination); err == nil {
+		t.Error("dry run created the destination folder")
+	}
 }
 
 func TestSessionExpiryDetected(t *testing.T) {
@@ -1170,6 +1175,33 @@ func readIndex(t *testing.T, dest string) []record {
 	return file.Files
 }
 
+// plantRecords appends hand-made records to an existing sidecar, leaving the
+// genuine ones in place.
+func plantRecords(t *testing.T, dest string, extra ...record) {
+	t.Helper()
+	path := filepath.Join(dest, indexName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Version   int      `json:"version"`
+		Generated string   `json:"generated"`
+		Files     []record `json:"files"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		t.Fatal(err)
+	}
+	file.Files = append(file.Files, extra...)
+	out, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func findRecord(t *testing.T, recs []record, path string) record {
 	t.Helper()
 	for _, rec := range recs {
@@ -1370,21 +1402,83 @@ func TestIndexIgnoresPathsOutsideTheDestination(t *testing.T) {
 		}
 	}
 
-	planted := `{"version":1,"files":[
-		{"path":"../escaped.pdf","course":"x","size":1},
-		{"path":"Calculus/../../escaped-too.pdf","course":"x","size":1}
-	]}`
-	path := filepath.Join(cfg.Destination, indexName)
-	if err := os.WriteFile(path, []byte(planted), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Plant them *alongside* the genuine record rather than replacing it. If
+	// the file held nothing but bad records, the run would rewrite it from an
+	// empty map and they would disappear whether or not the guard persisted
+	// its own drop — the test would pass with the fix removed.
+	plantRecords(t, cfg.Destination,
+		record{Path: "../escaped.pdf", Course: "x", Size: 1},
+		record{Path: "Calculus/../../escaped-too.pdf", Course: "x", Size: 1})
 
 	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
-	for _, rec := range readIndex(t, cfg.Destination) {
+	after := readIndex(t, cfg.Destination)
+	for _, rec := range after {
 		if strings.Contains(rec.Path, "..") {
 			t.Errorf("kept a record pointing outside the destination: %q", rec.Path)
 		}
+	}
+	findRecord(t, after, "Calculus/limits.pdf")
+}
+
+// A record is identified by the path the guard validated, not by the string
+// the file happened to carry. Two spellings of one file would otherwise sit
+// in the sidecar as two records, and neither would ever be pruned.
+func TestIndexKeysRecordsByCanonicalPath(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	dup := findRecord(t, readIndex(t, cfg.Destination), "Calculus/limits.pdf")
+	dup.Path = "./Calculus/limits.pdf"
+	plantRecords(t, cfg.Destination, dup)
+
+	if _, err := Sync(context.Background(), client, cfg, manifest, false, func(Event) {}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	var n int
+	for _, rec := range readIndex(t, cfg.Destination) {
+		if strings.HasSuffix(rec.Path, "limits.pdf") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d records for one file; a non-canonical path became a second entry", n)
+	}
+}
+
+// An interrupt must not throw away the records made before it. The manifest
+// gets a second save from both front ends after Sync returns; the index is
+// built inside Sync and has to save itself.
+func TestIndexSurvivesAnInterruptedRun(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-prog", Folder: "Programming"}}
+	client := loggedInClient(t, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	_, err := Sync(ctx, client, cfg, manifest, false, func(e Event) {
+		if e.Type == "file" {
+			cancel() // stop the run the moment one file has been saved
+		}
+	})
+	if KindOf(err) != KindCancelled {
+		t.Fatalf("wanted a cancelled run, got %v", err)
+	}
+
+	if recs := readIndex(t, cfg.Destination); len(recs) == 0 {
+		t.Error("an interrupted run wrote no index: everything recorded " +
+			"before the interrupt was lost")
 	}
 }

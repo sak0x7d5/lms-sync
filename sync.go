@@ -218,10 +218,17 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 		return zero, failf(KindFS, "resolve destination",
 			"That destination path could not be understood.", err)
 	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return zero, failf(KindFS, "create "+dest,
-			"Could not create the destination folder. Check the drive exists\n"+
-				"and that you have permission to write there.", err)
+	// A dry run creates nothing, this folder included: the whole use of the
+	// flag is checking a --dest before committing to it, and a typo that
+	// silently creates the wrong folder defeats that. The cost is that an
+	// unwritable destination is not reported until the real run, which is
+	// the run that needs to know.
+	if !dryRun {
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			return zero, failf(KindFS, "create "+dest,
+				"Could not create the destination folder. Check the drive exists\n"+
+					"and that you have permission to write there.", err)
+		}
 	}
 
 	// Say where the files are going before writing any. A relative
@@ -232,6 +239,20 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 
 	r := &syncRun{c: c, cfg: cfg, manifest: manifest, index: LoadIndex(dest),
 		dest: dest, dryRun: dryRun, report: report}
+
+	// Both front ends re-save the manifest after Sync returns, because a
+	// cancelled or fatal run never reaches the per-course save. The index is
+	// built in here and cannot be reached from out there, so it needs its own
+	// net — and needs it more: an interrupt would otherwise leave the manifest
+	// holding files the index never recorded, and the manifest is exactly what
+	// stops those files being fetched, and so recorded, ever again.
+	if !dryRun {
+		defer func() {
+			if err := r.index.Save(); err != nil {
+				report(Event{Type: "warn", Message: err.Error()})
+			}
+		}()
+	}
 
 	for _, course := range cfg.Courses {
 		if ctx.Err() != nil {

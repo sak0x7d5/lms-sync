@@ -199,8 +199,11 @@ extracts it.
 
 Unlike `config.toml` and `manifest.json`, this one travels with the folder
 rather than living beside the executable, so a tree copied to another machine
-arrives complete. It is metadata and nothing else: delete it and the next run
-rebuilds it without re-downloading a thing.
+arrives complete. It is metadata and nothing else: delete it and the next
+run rebuilds a record for every file it visits, without re-downloading
+anything. What it cannot rebuild is a record for a file whose tab is switched
+off that run — that file keeps its place on disk, unrecorded, until the tab is
+enabled again.
 
 ### Error handling
 
