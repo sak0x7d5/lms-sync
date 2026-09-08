@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"io/fs"
@@ -34,8 +35,8 @@ type indexEntry struct {
 const indexFile = "index.html"
 
 // writeIndex rebuilds the index page at the top of the destination.
-func writeIndex(dest string) (string, error) {
-	entries, err := scanLibrary(dest)
+func writeIndex(ctx context.Context, dest string) (string, error) {
+	entries, err := scanLibrary(ctx, dest)
 	if err != nil {
 		return "", err
 	}
@@ -47,10 +48,16 @@ func writeIndex(dest string) (string, error) {
 	return path, nil
 }
 
-func scanLibrary(dest string) ([]indexEntry, error) {
+func scanLibrary(ctx context.Context, dest string) ([]indexEntry, error) {
 	var out []indexEntry
 
 	err := filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+		// A walk of a large library on a slow filesystem is long enough to
+		// outlive the caller that wanted it — a search the client has since
+		// given up on should stop here rather than finish for nobody.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
 		if err != nil {
 			// One unreadable folder must not cost the whole index.
 			return nil //nolint:nilerr
@@ -94,6 +101,12 @@ func scanLibrary(dest string) ([]indexEntry, error) {
 		return nil
 	})
 	if err != nil {
+		// Callers branch on the kind, and a walk stopped by cancellation is
+		// not a filesystem failure: reporting it as one counts a deliberate
+		// stop as a destination that could not be read.
+		if ctx.Err() != nil {
+			return nil, failf(KindCancelled, "read "+dest, "", ctx.Err())
+		}
 		return nil, failf(KindFS, "read "+dest,
 			"The destination folder could not be listed.", err)
 	}

@@ -1990,7 +1990,7 @@ func TestTextCacheIsNotItselfCoursework(t *testing.T) {
 	// The cache lives inside the destination, so anything that walks the
 	// library has to step over it — otherwise the front page fills with .txt
 	// files and the next pass indexes its own output.
-	entries, err := scanLibrary(dest)
+	entries, err := scanLibrary(context.Background(), dest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3608,5 +3608,153 @@ func TestQuizPromptRequiresRecordingAndDefersTheVerdict(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("quiz_me does not carry %q", want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The MCP server keeps listening while it works
+// ---------------------------------------------------------------------------
+
+// mcpServerFor builds a server over a library, with its replies captured.
+func mcpServerFor(dest string) (*mcpServer, *bytes.Buffer) {
+	out := &bytes.Buffer{}
+	return &mcpServer{
+		cfg:  &Config{Destination: dest},
+		dest: dest,
+		out:  json.NewEncoder(out),
+		ctx:  context.Background(),
+	}, out
+}
+
+// waitInflight waits for a tool call to be registered as running, which is
+// what a cancellation has to find.
+func waitInflight(t *testing.T, s *mcpServer, key string) {
+	t.Helper()
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
+		s.inflightMu.Lock()
+		_, ok := s.inflight[key]
+		s.inflightMu.Unlock()
+		if ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the call was never registered as running")
+}
+
+const listCoursesCall = `{"name":"list_courses","arguments":{}}`
+
+// A cancelled call is dropped, not answered. The client has stopped waiting,
+// and the specification says not to send a result it never asked to keep —
+// but the reason this matters here is the queue: work nobody will read used
+// to hold up every later call, which is what turned one timeout into two.
+func TestMCPCancelledToolCallIsNotAnswered(t *testing.T) {
+	s, out := mcpServerFor(libraryForMCP(t))
+
+	// Holding the tool lock is what makes this deterministic: the call is
+	// registered and cancelled before it can run.
+	s.toolMu.Lock()
+	s.dispatch(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("7"),
+		Method: "tools/call", Params: json.RawMessage(listCoursesCall)})
+	waitInflight(t, s, "7")
+
+	s.dispatch(rpcMessage{JSONRPC: "2.0", Method: "notifications/cancelled",
+		Params: json.RawMessage(`{"requestId":7,"reason":"client timed out"}`)})
+	s.toolMu.Unlock()
+
+	drain(&s.running, 2*time.Second)
+	if got := strings.TrimSpace(out.String()); got != "" {
+		t.Errorf("a cancelled call was answered: %s", got)
+	}
+}
+
+// A ping is answered while a tool call is waiting its turn. Tool calls still
+// run one at a time; what must not happen is the read loop waiting with them,
+// because then the cancellation above could never arrive in time either.
+func TestMCPKeepsAnsweringWhileAToolWaits(t *testing.T) {
+	s, out := mcpServerFor(libraryForMCP(t))
+
+	s.toolMu.Lock()
+	s.dispatch(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("1"),
+		Method: "tools/call", Params: json.RawMessage(listCoursesCall)})
+	waitInflight(t, s, "1")
+
+	// Dispatched on this goroutine, exactly as the read loop would: it must
+	// return an answer without the blocked call finishing first.
+	s.dispatch(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("2"), Method: "ping"})
+
+	s.outMu.Lock()
+	answered := out.String()
+	s.outMu.Unlock()
+	s.toolMu.Unlock()
+	drain(&s.running, 2*time.Second)
+
+	if !strings.Contains(answered, `"id":2`) {
+		t.Errorf("ping was not answered while a tool call waited; got %q", answered)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Extracted text is read once, not once per search
+// ---------------------------------------------------------------------------
+
+func searchThroughServer(t *testing.T, s *mcpServer, query string) string {
+	t.Helper()
+	text, err := s.findMaterial(context.Background(),
+		json.RawMessage(`{"query":"`+query+`"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return text
+}
+
+// The second search reads nothing from disk. A search reads the text of every
+// file in the library, so doing that again per query is what made the call
+// slower than a client would wait — and it grows with the library.
+func TestMCPExtractedTextIsReadOnceAcrossSearches(t *testing.T) {
+	s, _ := mcpServerFor(libraryForMCP(t))
+
+	searchThroughServer(t, s, "Newton")
+	_, first := s.text.counts()
+	if first == 0 {
+		t.Fatal("the first search read no text at all")
+	}
+
+	searchThroughServer(t, s, "Newton")
+	hits, second := s.text.counts()
+	if second != first {
+		t.Errorf("the second search read %d more file(s) from disk, want 0", second-first)
+	}
+	if hits == 0 {
+		t.Error("the second search did not use the cache")
+	}
+}
+
+// Holding text in memory must never outlive the extraction it came from. An
+// instructor re-uploads a corrected deck, a sync re-extracts it, and the next
+// search has to see the new text — the whole point of re-reading the index on
+// every call is that a sync may be running alongside the server.
+func TestReExtractedTextIsNotServedStale(t *testing.T) {
+	dest := libraryForMCP(t)
+	s, _ := mcpServerFor(dest)
+
+	if !strings.Contains(searchThroughServer(t, s, "Newton"), "lecture.pptx") {
+		t.Fatal("the original text was not found")
+	}
+
+	// The same path, different material — longer, so size alone settles it
+	// whether or not the clock has ticked over.
+	writeOffice(t, filepath.Join(dest, "Physics", "Week01", "lecture.pptx"), map[string]string{
+		"ppt/slides/slide1.xml": slideXML("Kepler's laws of planetary motion and orbital periods"),
+	})
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := searchThroughServer(t, s, "Kepler"); !strings.Contains(got, "lecture.pptx") {
+		t.Errorf("the re-extracted text was not found: %s", got)
+	}
+	if got := searchThroughServer(t, s, "Newton"); strings.Contains(got, "lecture.pptx") {
+		t.Errorf("the replaced text was still served from the cache: %s", got)
 	}
 }

@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -84,12 +86,33 @@ type rpcError struct {
 type mcpServer struct {
 	cfg  *Config
 	dest string
-	out  *json.Encoder
+
+	// outMu serialises writes. Tool calls run off the read loop, so without
+	// it two replies could interleave on stdout — an unreadable stream
+	// rather than a slow one, which is what answering them one at a time
+	// used to prevent on its own.
+	outMu sync.Mutex
+	out   *json.Encoder
 
 	// ctx is the server's lifetime, not one request's. A sync outlives the
 	// call that starts it, so it cannot borrow a per-request context.
 	ctx  context.Context
 	sync syncJob
+
+	// text is the library's extracted text, held between calls.
+	text textMemory
+
+	// inflight cancels a tool call by request id, so a cancellation can stop
+	// the work it names; running holds those goroutines so shutdown waits
+	// for them rather than exiting mid-answer.
+	inflightMu sync.Mutex
+	inflight   map[string]context.CancelFunc
+	running    sync.WaitGroup
+
+	// toolMu keeps tool calls one at a time. Two of them can write to the
+	// library, and a client that pipelines a record and a read expects the
+	// read to see the record.
+	toolMu sync.Mutex
 }
 
 // mcpLog writes a line for whoever is watching the server, on stderr, where
@@ -154,6 +177,15 @@ func serveMCPOn(ctx context.Context, cfg *Config, stdin io.Reader, stdout io.Wri
 
 	s := &mcpServer{cfg: cfg, dest: dest, out: json.NewEncoder(stdout), ctx: jobCtx}
 	defer func() {
+		// A tool call still running when the pipe closes is finishing an
+		// answer the client asked for, so it is given a moment to write one:
+		// cancelling first would drop the reply into silence, which looks
+		// exactly like the hang this all exists to stop. A server whose own
+		// context is done is the other case — there, stopping now is the
+		// point, and nobody is left to read the answer anyway.
+		if ctx.Err() == nil {
+			drain(&s.running, toolDrainLimit)
+		}
 		stopJobs()
 		s.sync.wait(10 * time.Second)
 	}()
@@ -191,10 +223,36 @@ func serveMCPOn(ctx context.Context, cfg *Config, stdin io.Reader, stdout io.Wri
 	}
 }
 
+// toolDrainLimit is how long a shutdown waits for tool calls to answer.
+const toolDrainLimit = 5 * time.Second
+
+// drain blocks until every goroutine in the group is done, or the limit
+// passes — the deadline is what keeps one wedged call from holding the
+// process open after the client has gone.
+func drain(wg *sync.WaitGroup, limit time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(limit):
+	}
+}
+
 func (s *mcpServer) dispatch(msg rpcMessage) {
 	// A notification has no id and gets no reply, whatever it says. Answering
 	// one is a protocol violation, not merely noise.
+	//
+	// That is a rule about replying, not about ignoring. A cancellation is
+	// the client saying it has stopped waiting, and acting on it is the
+	// difference between one abandoned call and every later call queued
+	// behind work nobody will read.
 	if len(msg.ID) == 0 {
+		if msg.Method == "notifications/cancelled" {
+			s.cancel(msg.Params)
+		}
 		return
 	}
 	if msg.JSONRPC != jsonRPCVersion {
@@ -210,7 +268,7 @@ func (s *mcpServer) dispatch(msg rpcMessage) {
 	case "tools/list":
 		s.reply(msg.ID, map[string]any{"tools": mcpTools})
 	case "tools/call":
-		s.callTool(msg)
+		s.startTool(msg)
 	case "prompts/list":
 		s.reply(msg.ID, map[string]any{"prompts": mcpPrompts})
 	case "prompts/get":
@@ -221,12 +279,16 @@ func (s *mcpServer) dispatch(msg rpcMessage) {
 }
 
 func (s *mcpServer) reply(id json.RawMessage, result any) {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
 	if err := s.out.Encode(rpcReply{JSONRPC: jsonRPCVersion, ID: id, Result: result}); err != nil {
 		mcpLog("write failed: %v", err)
 	}
 }
 
 func (s *mcpServer) fail(id json.RawMessage, code int, message string) {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
 	if err := s.out.Encode(rpcReply{
 		JSONRPC: jsonRPCVersion, ID: id,
 		Error: &rpcError{Code: code, Message: message},
@@ -423,7 +485,80 @@ var mcpTools = []mcpTool{
 	},
 }
 
-func (s *mcpServer) callTool(msg rpcMessage) {
+// startTool runs one tool call off the read loop.
+//
+// A tool call is the only thing here slow enough to matter, and while one is
+// running the loop has to stay free to read: a ping needs answering, and a
+// cancellation has to arrive in time to stop the work it names. Handling
+// everything in turn is what let one slow search hold up every message behind
+// it — including the client's notice that it had already given up.
+func (s *mcpServer) startTool(msg rpcMessage) {
+	// Derived from the server's lifetime, so shutdown stops a running tool
+	// as surely as a cancellation does.
+	ctx, cancel := context.WithCancel(s.ctx)
+	key := requestKey(msg.ID)
+
+	s.inflightMu.Lock()
+	if s.inflight == nil {
+		s.inflight = map[string]context.CancelFunc{}
+	}
+	s.inflight[key] = cancel
+	s.inflightMu.Unlock()
+
+	s.running.Add(1)
+	go func() {
+		defer s.running.Done()
+		defer func() {
+			s.inflightMu.Lock()
+			delete(s.inflight, key)
+			s.inflightMu.Unlock()
+			cancel()
+		}()
+
+		// Still one at a time — what has changed is where the waiting
+		// happens. Queueing here instead of on the read loop is what lets a
+		// ping be answered, and a cancellation be heard, while one runs.
+		s.toolMu.Lock()
+		defer s.toolMu.Unlock()
+		s.callTool(ctx, msg)
+	}()
+}
+
+// cancel stops the tool call a notifications/cancelled names.
+func (s *mcpServer) cancel(params json.RawMessage) {
+	var p struct {
+		RequestID json.RawMessage `json:"requestId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || len(p.RequestID) == 0 {
+		return
+	}
+	s.inflightMu.Lock()
+	stop, ok := s.inflight[requestKey(p.RequestID)]
+	s.inflightMu.Unlock()
+	if ok {
+		stop()
+	}
+}
+
+// requestKey normalises a JSON-RPC id, so that the id written on a request
+// and the one written in the cancellation naming it compare equal however
+// each was spelled — 2 and 2.0 are the same request.
+func requestKey(id json.RawMessage) string {
+	var v any
+	if err := json.Unmarshal(id, &v); err != nil {
+		return strings.TrimSpace(string(id))
+	}
+	if f, ok := v.(float64); ok {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return fmt.Sprint(v)
+}
+
+func (s *mcpServer) callTool(ctx context.Context, msg rpcMessage) {
+	// Cancelled while it waited its turn: there is nobody to answer.
+	if ctx.Err() != nil {
+		return
+	}
 	var req struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
@@ -433,7 +568,14 @@ func (s *mcpServer) callTool(msg rpcMessage) {
 		return
 	}
 
-	text, err := s.runTool(req.Name, req.Arguments)
+	text, err := s.runTool(ctx, req.Name, req.Arguments)
+
+	// A client that has cancelled is not waiting for an answer, and the
+	// specification says not to send one. Replying anyway hands it a result
+	// for a request it has already forgotten.
+	if ctx.Err() != nil {
+		return
+	}
 	if err != nil {
 		// A tool that failed reports it in the result, not as a protocol
 		// error: the model is meant to see what went wrong and try something
@@ -473,16 +615,16 @@ func toolText(text string, isError bool) map[string]any {
 	}
 }
 
-func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
+func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	switch name {
 	case "list_courses":
-		return s.listCourses()
+		return s.listCourses(ctx)
 	case "find_material":
-		return s.findMaterial(args)
+		return s.findMaterial(ctx, args)
 	case "read_material":
 		return s.readMaterial(args)
 	case "whats_new":
-		return s.whatsNew(args)
+		return s.whatsNew(ctx, args)
 	case "sync_courses":
 		return s.syncCourses()
 	case "record_answer":
@@ -500,16 +642,16 @@ func (s *mcpServer) runTool(name string, args json.RawMessage) (string, error) {
 // It is re-read on every call rather than cached, because a sync may well run
 // while this server is up and a stale answer about coursework is worse than a
 // few milliseconds of walking a folder.
-func (s *mcpServer) library() ([]indexEntry, *TextIndex, error) {
-	entries, err := scanLibrary(s.dest)
+func (s *mcpServer) library(ctx context.Context) ([]indexEntry, *TextIndex, error) {
+	entries, err := scanLibrary(ctx, s.dest)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not read the library at %s: %w", s.dest, err)
 	}
 	return entries, LoadTextIndex(s.dest), nil
 }
 
-func (s *mcpServer) listCourses() (string, error) {
-	entries, ti, err := s.library()
+func (s *mcpServer) listCourses(ctx context.Context) (string, error) {
+	entries, ti, err := s.library(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -573,7 +715,7 @@ type searchHit struct {
 	snippet string
 }
 
-func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
+func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Query  string `json:"query"`
 		Course string `json:"course"`
@@ -597,7 +739,7 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 	terms := searchTerms(query)
 	phrase := strings.ToLower(strings.Join(strings.Fields(query), " "))
 
-	entries, ti, err := s.library()
+	entries, ti, err := s.library(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -606,11 +748,17 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 	var unsearchable int
 
 	for _, e := range entries {
+		// Checked per file rather than per search: the loop is the long part,
+		// and a client that has stopped waiting should not go on paying for
+		// the rest of the library.
+		if err := ctx.Err(); err != nil {
+			return "", failf(KindCancelled, "search cancelled", "", err)
+		}
 		if a.Course != "" && !strings.EqualFold(e.course, a.Course) {
 			continue
 		}
 
-		text, hasText := ti.Text(e.rel)
+		text, hasText := s.text.text(ti, e.rel)
 		if !hasText {
 			if r, ok := ti.Record(e.rel); !ok || r.Status != string(extractOK) {
 				unsearchable++
@@ -714,7 +862,7 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 	}
 
 	ti := LoadTextIndex(s.dest)
-	text, ok := ti.Text(rel)
+	text, ok := s.text.text(ti, rel)
 	if !ok {
 		// Why there is no text is the useful part: one of these is fixed by
 		// installing poppler, one never will be, and one means the path is
@@ -753,7 +901,7 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 	return b.String(), nil
 }
 
-func (s *mcpServer) whatsNew(args json.RawMessage) (string, error) {
+func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Days   int    `json:"days"`
 		Course string `json:"course"`
@@ -773,7 +921,7 @@ func (s *mcpServer) whatsNew(args json.RawMessage) (string, error) {
 		limit = 30
 	}
 
-	entries, _, err := s.library()
+	entries, _, err := s.library(ctx)
 	if err != nil {
 		return "", err
 	}

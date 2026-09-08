@@ -284,7 +284,7 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 	// Rebuilt from what is on disk, so courses that needed nothing this run
 	// still appear in it.
 	if !dryRun {
-		if path, err := writeIndex(dest); err != nil {
+		if path, err := writeIndex(ctx, dest); err != nil {
 			report(Event{Type: "warn", Message: "index not written: " + err.Error()})
 		} else {
 			report(Event{Type: "index", Path: path})
