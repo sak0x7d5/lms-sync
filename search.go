@@ -1,6 +1,7 @@
 package main
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -31,6 +32,23 @@ import (
 // query words must be to count as appearing "together" when choosing which
 // part of a long document to quote.
 const snippetWindow = 260
+
+// maxQuote caps a quote that has grown to fit its material. A reading list of
+// forty entries is still one list, and quoting the whole of it would crowd out
+// every other result in the same answer.
+const maxQuote = 4 * snippetWindow
+
+// listItemRe matches a line opening a list entry, numbered or bulleted.
+// Extracted text keeps its line breaks and little else, so this is the only
+// structure a plain-text file reliably still has.
+var listItemRe = regexp.MustCompile(`^\s*(?:\(?\d+[.)]|[-*•▪‣–—])\s+\S`)
+
+// excerpt is what one result quotes, and whether that is all of it.
+type excerpt struct {
+	text     string
+	at       int  // byte offset in the file's text where the quote begins
+	complete bool // false when maxQuote stopped it short of the material's end
+}
 
 // stopWords are words too common to rank on. They are dropped from a query
 // so that pasting a whole question searches for the part that carries the
@@ -130,7 +148,7 @@ type hit struct {
 	inName  bool     // the path itself matched
 	matched []string // which words were found, for the caller to show
 	at      int      // where to quote from
-	quote   string   // the surrounding text, filled in by the caller
+	quote   excerpt  // the surrounding text, filled in by the caller
 }
 
 // score orders results. Coverage dominates everything: a file containing all
@@ -221,26 +239,138 @@ func bestWindow(places []placed, termCount int) int {
 	return best
 }
 
-// quoteAround returns readable context around an offset.
-func quoteAround(text string, at int) string {
+// quoteAround returns the text around an offset, ending where the material
+// ends rather than where a character budget runs out.
+//
+// The fixed window this replaced cost a real answer. Asked which textbook a
+// course used, the search landed on entry 3 of a 7-entry reading list and
+// quoted 260 characters around it. The reply named three books with the third
+// cut off mid-title — and reported that truncation as the *document* being cut
+// off, which is worse than quoting nothing. A list is one piece of material:
+// an arbitrary slice of it is the wrong thing to quote however many characters
+// the slice holds.
+//
+// So a quote starts on the line the match is on and grows outwards while the
+// material continues — over the rest of a list, or to the ends of a paragraph.
+// Growing by lines also removes the old need to trim to rune boundaries: a
+// line break is always one.
+//
+// When maxQuote stops it early the caller is told, so "there is more" is a
+// fact in the response rather than something a reader has to infer from an
+// ellipsis that was printed either way.
+func quoteAround(text string, at int) excerpt {
 	if text == "" {
-		return ""
+		return excerpt{complete: true}
 	}
-	start := at - snippetWindow/3
-	if start < 0 {
-		start = 0
+	if at < 0 {
+		at = 0
 	}
-	end := at + snippetWindow
-	if end > len(text) {
-		end = len(text)
+	if at > len(text) {
+		at = len(text)
 	}
-	// Trim to rune boundaries: slicing extracted text mid-character puts
-	// replacement glyphs in the middle of a quote.
-	for start < len(text) && !utf8.RuneStart(text[start]) {
-		start++
+
+	start, end := lineStart(text, at), lineEnd(text, at)
+
+	// Whether this run is a list decides how a blank line reads: between list
+	// entries it is spacing, in prose it is the end of the paragraph.
+	inList := listItemRe.MatchString(text[start:end])
+	complete := true
+
+	for {
+		p, ok := prevLine(text, start, inList)
+		if !ok {
+			break
+		}
+		if end-p > maxQuote {
+			complete = false
+			break
+		}
+		start = p
 	}
-	for end < len(text) && !utf8.RuneStart(text[end]) {
-		end++
+	for {
+		e, ok := nextLine(text, end, inList)
+		if !ok {
+			break
+		}
+		if e-start > maxQuote {
+			complete = false
+			break
+		}
+		end = e
 	}
-	return strings.Join(strings.Fields(text[start:end]), " ")
+
+	// Collapse runs of spaces inside a line but keep the line breaks: the
+	// entries of a reading list are only legible as separate lines, and that
+	// structure is the whole reason the quote was grown.
+	var lines []string
+	for _, ln := range strings.Split(text[start:end], "\n") {
+		if f := strings.Join(strings.Fields(ln), " "); f != "" {
+			lines = append(lines, f)
+		}
+	}
+	return excerpt{text: strings.Join(lines, "\n"), at: start, complete: complete}
+}
+
+// lineStart returns the offset of the first byte of the line holding i.
+func lineStart(text string, i int) int {
+	if i <= 0 {
+		return 0
+	}
+	if j := strings.LastIndexByte(text[:i], '\n'); j >= 0 {
+		return j + 1
+	}
+	return 0
+}
+
+// lineEnd returns the offset of the newline that ends the line holding i, or
+// the end of the text.
+func lineEnd(text string, i int) int {
+	if i >= len(text) {
+		return len(text)
+	}
+	if j := strings.IndexByte(text[i:], '\n'); j >= 0 {
+		return i + j
+	}
+	return len(text)
+}
+
+// prevLine extends a quote backwards by one line, reporting whether that line
+// is still the same piece of material.
+func prevLine(text string, start int, inList bool) (int, bool) {
+	if start == 0 {
+		return 0, false
+	}
+	p := lineStart(text, start-1)
+	if strings.TrimSpace(text[p:start-1]) != "" {
+		return p, true
+	}
+	// A blank line ends a paragraph. Between list entries it is usually just
+	// the gap, so look one line past it before giving up.
+	if !inList || p == 0 {
+		return 0, false
+	}
+	q := lineStart(text, p-1)
+	if !listItemRe.MatchString(text[q : p-1]) {
+		return 0, false
+	}
+	return q, true
+}
+
+// nextLine extends a quote forwards by one line, on the same rule.
+func nextLine(text string, end int, inList bool) (int, bool) {
+	if end >= len(text) {
+		return 0, false
+	}
+	e := lineEnd(text, end+1)
+	if strings.TrimSpace(text[end+1:e]) != "" {
+		return e, true
+	}
+	if !inList || e >= len(text) {
+		return 0, false
+	}
+	f := lineEnd(text, e+1)
+	if !listItemRe.MatchString(text[e+1 : f]) {
+		return 0, false
+	}
+	return f, true
 }

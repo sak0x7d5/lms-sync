@@ -163,6 +163,19 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A miss resets the ladder; a verdict is the student's.** Half-remembering something for a month is the state that needs frequent practice, not a longer gap — and a model deciding the verdict itself can drag a known item back for weeks. `TestAMissedQuestionComesBackTomorrow`, `TestGettingItRightPushesItFurtherOut`, `TestQuizPromptRequiresRecordingAndDefersTheVerdict`.
 - **Weak spots rank by rate, not count.** A question missed every time it was asked matters more than one missed more often but usually right. `TestWeakSpotsRankByHowOftenNotHowMany`.
 - **Search matches word prefixes, never substrings.** "eigenvalue" has to find "eigenvalues" or a real question returns nothing, but anchoring only the start is what stops "law" matching "flaw". Ranking is by how many of the query's words a file contains, not by frequency, so a file repeating one word cannot outrank the file answering the whole question. Stop words are dropped so pasting an actual question works. `TestSearchMatchesWordPrefixesNotSubstrings`, `TestSearchRanksByHowMuchOfTheQuestionAFileAnswers`.
+- **A quote ends where the material does, not at a character count.**
+  `quoteAround` starts on the matched line and grows over the rest of a list,
+  or to the ends of a paragraph, capped by `maxQuote`; when the cap stops it,
+  `excerpt.complete` is false and the result says so with an offset for
+  `read_material`. The fixed 260-character window this replaced quoted two and
+  a half entries of a seven-entry reading list — the answer named three books
+  with the third cut off mid-title, and reported that truncation as the
+  *document* being cut off, which is worse than quoting nothing. Half a list is
+  not a smaller answer, it is a wrong one. Growing by lines also removes the
+  old need to trim to rune boundaries: a line break is always one.
+  `TestQuoteKeepsAWholeReadingList`,
+  `TestAClippedQuoteSaysSoAndStillEndsOnALine`,
+  `TestFindMaterialReturnsAWholeReadingList`.
 - **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
 - **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
 - **The extraction summary means the same thing on every run.** A fresh file still counts towards what the library can answer, by its recorded status — counting all of them as searchable would claim a scan was readable and make the number jump between an extracting run and a no-op one. `TestSummaryDoesNotChangeWhenThereIsNoWorkToDo`.

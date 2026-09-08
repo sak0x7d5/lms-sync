@@ -671,8 +671,17 @@ func (s *mcpServer) findMaterial(args json.RawMessage) (string, error) {
 				map[bool]string{true: ", exact phrase"}[h.phrase])
 		}
 		switch {
-		case h.quote != "":
-			fmt.Fprintf(&b, "  …%s…\n", h.quote)
+		case h.quote.text != "":
+			// Indent continuation lines so a multi-line quote stays visibly
+			// part of its result rather than running into the next one.
+			fmt.Fprintf(&b, "  %s\n", strings.ReplaceAll(h.quote.text, "\n", "\n  "))
+			if !h.quote.complete {
+				// Saying so is the point. An ellipsis printed either way told a
+				// reader nothing, and a model that cannot tell a complete quote
+				// from a clipped one answers from the clipped one.
+				fmt.Fprintf(&b, "  (quote clipped — read_material with path %q and offset %d for the rest)\n",
+					h.rel, h.quote.at)
+			}
 		case h.inName:
 			b.WriteString("  (filename match; this file has no extracted text to quote)\n")
 		}
