@@ -83,23 +83,32 @@ func (c *Client) Probe(ctx context.Context, course Course, eid string) probeRepo
 		})
 	}
 
-	syl := probeCheck{
-		Label:  "Syllabus (JSON)",
-		URL:    "/direct/syllabus/site/" + id + ".json",
-		Result: c.probeURL(ctx, c.base+"/direct/syllabus/site/"+id+".json"),
-	}
-	// The status alone doesn't settle it: a 200 whose shape we can't read is
-	// just as much a fallback case as a 404.
-	if items, err := c.syllabusFromAPI(ctx, course.ID); err == nil && len(items) > 0 {
-		syl.Result += fmt.Sprintf(" — parsed %d entr%s, %d attachment%s",
-			len(items), plural(len(items), "y", "ies"),
-			len(attachmentURLs(c, items)), plural(len(attachmentURLs(c, items)), "", "s"))
-	} else if strings.HasPrefix(syl.Result, "HTTP 200") {
-		syl.Result += " — but no syllabus entries could be read from it"
-	}
-	rep.Checks = append(rep.Checks, syl)
-
 	for _, ps := range pageSections {
+		// The API first, where the tab has one. Which of the two routes
+		// answered is the diagnosis when a tab comes back thin: the rendered
+		// Announcements tab is a list of headlines and the rendered
+		// Assignments tab hides the brief behind a detail page, so a course
+		// with both routes working looks very different from one relying on
+		// the crawl.
+		if ps.apiPrefix != "" {
+			api := probeCheck{
+				Label:  ps.name + " (JSON)",
+				URL:    "/direct/" + ps.apiPrefix + "/site/" + id + ".json",
+				Result: c.probeURL(ctx, c.base+"/direct/"+ps.apiPrefix+"/site/"+id+".json"),
+			}
+			// The status alone doesn't settle it: a 200 whose shape we
+			// can't read is just as much a fallback case as a 404.
+			if items, err := ps.fromAPI(ctx, c, course.ID); err == nil && len(items) > 0 {
+				files := attachmentURLs(c, items)
+				api.Result += fmt.Sprintf(" — parsed %d entr%s, %d attachment%s",
+					len(items), plural(len(items), "y", "ies"),
+					len(files), plural(len(files), "", "s"))
+			} else if strings.HasPrefix(api.Result, "HTTP 200") {
+				api.Result += " — but no entries could be read from it"
+			}
+			rep.Checks = append(rep.Checks, api)
+		}
+
 		t, ok := find(rep.Tools, ps.regs, ps.titles)
 		if !ok {
 			rep.Checks = append(rep.Checks, probeCheck{
@@ -169,19 +178,21 @@ func (c *Client) savePage(ctx context.Context, label, rawURL string) []string {
 	}
 	write(label, body)
 
-	// The portal frames the real tool, and the framed document is the one
-	// that matters — saving only the outer page would show none of it.
-	if m := iframeRe.FindStringSubmatch(body); m != nil {
-		if ref, err := url.Parse(unescapeEntities(m[1])); err == nil {
-			if base, err := url.Parse(rawURL); err == nil {
-				inner := base.ResolveReference(ref).String()
-				if strings.HasPrefix(inner, c.base) {
-					if framed, err := c.getText(ctx, inner); err == nil {
-						write(label+" (framed)", framed)
-					}
-				}
-			}
+	// The portal frames the real tool, and the framed documents matter —
+	// saving only the outer page would show none of them.
+	//
+	// Every frame, not the first: a tab can hold several, and capturePage
+	// reads all of them. Saving one showed markup the parser does not
+	// actually work from, which is the single thing this flag exists to
+	// prevent. framesOf is shared with capturePage so the two cannot drift
+	// apart again.
+	for i, frame := range c.framesOf(body, rawURL) {
+		framed, err := c.getText(ctx, frame)
+		if err != nil {
+			written = append(written, "could not fetch "+frame+": "+err.Error())
+			continue
 		}
+		write(fmt.Sprintf("%s (frame %d)", label, i+1), framed)
 	}
 	return written
 }

@@ -308,7 +308,18 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 
 	var items []capturedItem
 	if s.fromAPI != nil {
-		if got, err := s.fromAPI(ctx, c, siteID); err == nil {
+		got, err := s.fromAPI(ctx, c, siteID)
+		if err == nil {
+			// An empty answer is an answer, not a silence. Falling through to
+			// the rendered page here would scrape a tool whose entire content
+			// is the sentence "There are currently no assignments at this
+			// location" and file that as material — on most courses, since
+			// most courses have no assignments. A *failure* is the other
+			// case entirely, since the Entity Broker is switched off on many
+			// installs, and does fall through.
+			if len(got) == 0 {
+				return nil, emptyTab(s.name, siteID)
+			}
 			items = got
 		}
 	}
@@ -320,8 +331,7 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 		items = got
 	}
 	if len(items) == 0 {
-		return nil, failf(KindNotFound, "read "+s.name+" for "+siteID,
-			"The "+s.name+" tab is there but published nothing readable.", nil)
+		return nil, emptyTab(s.name, siteID)
 	}
 
 	files := attachmentURLs(c, items)
@@ -364,6 +374,15 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 	return out, nil
 }
 
+// emptyTab is the answer for a tool that is switched on and holds nothing.
+// That is the state of a great many real courses, and the Sync loop counts it
+// as a skip rather than a failure — a failure count people learn to ignore is
+// worse than no count at all.
+func emptyTab(name, siteID string) error {
+	return failf(KindNotFound, "read "+name+" for "+siteID,
+		"The "+name+" tab is there but published nothing.", nil)
+}
+
 // capturedItem is one entry from a rendered tab, however it was obtained.
 type capturedItem struct {
 	Title       string
@@ -395,76 +414,125 @@ func localNames(urls []string) map[string]string {
 	return out
 }
 
-func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
+// ---------------------------------------------------------------------------
+// The Entity Broker
+// ---------------------------------------------------------------------------
+//
+// Where it is switched on, this is much the better route — not merely a
+// tidier one. A rendered Announcements tab is a list of headlines whose
+// bodies are each behind their own link, and a rendered Assignments tab
+// files the brief as an attachment of a detail page it only links to. So the
+// two things a student actually came for, the text of the notice and the PDF
+// of the brief, are on neither page. They are both in the JSON.
+//
+// It stays optional all the same: plenty of installs have it disabled, and
+// the captured page is then the only route there is.
+
+// apiAttachment is one file as the Entity Broker reports it. Sakai versions
+// disagree about the shape — an object on some, a bare URL string on others —
+// so both are read rather than one being guessed at.
+type apiAttachment struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+func (a *apiAttachment) UnmarshalJSON(b []byte) error {
+	if len(b) > 0 && b[0] == '"' {
+		return json.Unmarshal(b, &a.URL)
+	}
+	type plain apiAttachment // shed the method, or this recurses
+	return json.Unmarshal(b, (*plain)(a))
+}
+
+// firstJSONArray unwraps an Entity Broker response to the array it carries.
+//
+// The wrapper key differs per tool — "announcement_collection",
+// "assignment_collection" — and has changed between Sakai versions, so rather
+// than pinning names, take the first array in the object. An unrecognised
+// shape yields nothing and the caller falls back to the rendered page, which
+// is better than confidently producing an empty tab.
+func firstJSONArray(body string) (json.RawMessage, bool) {
+	if strings.HasPrefix(strings.TrimSpace(body), "[") {
+		return json.RawMessage(body), true
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		return nil, false
+	}
+	keys := make([]string, 0, len(envelope))
+	for k := range envelope {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // deterministic pick when there are several
+	for _, k := range keys {
+		if strings.HasPrefix(strings.TrimSpace(string(envelope[k])), "[") {
+			return envelope[k], true
+		}
+	}
+	return nil, false
+}
+
+// entityList reads one of the Entity Broker's per-site collections into v.
+func (c *Client) entityList(ctx context.Context, prefix, siteID string, v any) error {
 	body, err := c.getText(ctx,
-		c.base+"/direct/syllabus/site/"+url.PathEscape(siteID)+".json")
+		c.base+"/direct/"+prefix+"/site/"+url.PathEscape(siteID)+".json")
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	// The wrapper key has changed between Sakai versions, so rather than
-	// pinning one name, take the first array in the object. An unrecognised
-	// shape yields nothing and the caller falls back to the rendered page,
-	// which is better than confidently producing an empty syllabus.
-	raw := []byte(body)
-	if !strings.HasPrefix(strings.TrimSpace(body), "[") {
-		var envelope map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &envelope); err != nil {
-			return nil, failf(KindNotFound, "read syllabus JSON", "", err)
-		}
-		raw = nil
-		keys := make([]string, 0, len(envelope))
-		for k := range envelope {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys) // deterministic pick when there are several
-		for _, k := range keys {
-			if strings.HasPrefix(strings.TrimSpace(string(envelope[k])), "[") {
-				raw = envelope[k]
-				break
-			}
-		}
-		if raw == nil {
-			return nil, failf(KindNotFound, "read syllabus JSON",
-				"No syllabus entries in the response.", nil)
-		}
+	raw, ok := firstJSONArray(body)
+	if !ok {
+		return failf(KindNotFound, "read "+prefix+" JSON",
+			"No "+prefix+" entries in the response.", nil)
 	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		return failf(KindNotFound, "read "+prefix+" JSON", "", err)
+	}
+	return nil
+}
 
+// absoluteAttachments resolves what the API reported against the LMS root:
+// the URL comes back absolute on some versions and root-relative on others.
+// The allowlist still decides what may be fetched, exactly as for a link
+// found on a page.
+func (c *Client) absoluteAttachments(atts []apiAttachment) []string {
+	base, err := url.Parse(c.base)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range atts {
+		raw := strings.TrimSpace(a.URL)
+		if raw == "" {
+			continue
+		}
+		ref, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, base.ResolveReference(ref).String())
+	}
+	return out
+}
+
+func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
 	var entries []struct {
-		Title       string `json:"title"`
-		Asset       string `json:"asset"`
-		Data        string `json:"data"`
-		Attachments []struct {
-			URL  string `json:"url"`
-			Name string `json:"name"`
-		} `json:"attachments"`
+		Title       string          `json:"title"`
+		Asset       string          `json:"asset"`
+		Data        string          `json:"data"`
+		Attachments []apiAttachment `json:"attachments"`
 	}
-	if err := json.Unmarshal(raw, &entries); err != nil {
-		return nil, failf(KindNotFound, "read syllabus JSON", "", err)
+	if err := c.entityList(ctx, "syllabus", siteID, &entries); err != nil {
+		return nil, err
 	}
 
 	out := make([]capturedItem, 0, len(entries))
 	for _, e := range entries {
 		// Links inside the asset are relative to the LMS root, since this
 		// content was never rendered on a page of its own.
-		item := capturedItem{Title: e.Title, Body: e.Asset, pageURL: c.base + "/"}
+		item := capturedItem{Title: e.Title, Body: e.Asset, pageURL: c.base + "/",
+			Attachments: c.absoluteAttachments(e.Attachments)}
 		if item.Body == "" {
 			item.Body = e.Data
-		}
-		for _, a := range e.Attachments {
-			// The API returns these absolute on some versions and
-			// root-relative on others.
-			if a.URL == "" {
-				continue
-			}
-			if ref, err := url.Parse(a.URL); err == nil {
-				if base, err := url.Parse(c.base); err == nil {
-					item.Attachments = append(item.Attachments,
-						base.ResolveReference(ref).String())
-					continue
-				}
-			}
-			item.Attachments = append(item.Attachments, a.URL)
 		}
 		if item.Title != "" || item.Body != "" || len(item.Attachments) > 0 {
 			out = append(out, item)
@@ -473,14 +541,113 @@ func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]captured
 	return out, nil
 }
 
+// announcementsFromAPI reads the Announcements tab through the Entity Broker.
+//
+// The rendered tab is a list of headlines: the body of a notice sits behind a
+// per-item link, so capturing that page gets a student the title of the
+// announcement about the room change and never the room.
+func (c *Client) announcementsFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
+	var entries []struct {
+		Title       string          `json:"title"`
+		Body        string          `json:"body"`
+		Author      string          `json:"createdByDisplayName"`
+		Attachments []apiAttachment `json:"attachments"`
+	}
+	if err := c.entityList(ctx, "announcement", siteID, &entries); err != nil {
+		return nil, err
+	}
+
+	out := make([]capturedItem, 0, len(entries))
+	for _, e := range entries {
+		item := capturedItem{
+			Title:       strings.TrimSpace(e.Title),
+			Body:        e.Body,
+			pageURL:     c.base + "/",
+			Attachments: c.absoluteAttachments(e.Attachments),
+		}
+		if isEmptyItem(item) {
+			continue
+		}
+		// Who posted it, and nothing at all about when this ran: a rendered
+		// page is hashed to decide freshness, so anything varying between
+		// runs would rewrite the file and report it as new every time.
+		if by := strings.TrimSpace(e.Author); by != "" {
+			item.Body = "<p><em>Posted by " + html.EscapeString(by) + "</em></p>\n" + item.Body
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// assignmentsFromAPI reads the Assignments tab through the Entity Broker.
+//
+// Same reason as announcements, and sharper: the rendered tab lists titles,
+// and the brief — very often the only thing a student needs — is an
+// attachment of a detail page that the list merely links to. Here the
+// brief's own URL is reported, so it downloads like any other file.
+func (c *Client) assignmentsFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
+	var entries []struct {
+		Title        string          `json:"title"`
+		Instructions string          `json:"instructions"`
+		Due          string          `json:"dueTimeString"`
+		Attachments  []apiAttachment `json:"attachments"`
+	}
+	if err := c.entityList(ctx, "assignment", siteID, &entries); err != nil {
+		return nil, err
+	}
+
+	out := make([]capturedItem, 0, len(entries))
+	for _, e := range entries {
+		item := capturedItem{
+			Title:       strings.TrimSpace(e.Title),
+			Body:        e.Instructions,
+			pageURL:     c.base + "/",
+			Attachments: c.absoluteAttachments(e.Attachments),
+		}
+		if isEmptyItem(item) {
+			continue
+		}
+		// The server's own absolute timestamp, verbatim. A due date is half
+		// of what an assignment is, and this string is identical on every
+		// run — unlike anything worked out from the clock.
+		if due := strings.TrimSpace(e.Due); due != "" {
+			item.Body = "<p><strong>Due:</strong> " + html.EscapeString(due) + "</p>\n" + item.Body
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+// isEmptyItem reports whether an entry carries nothing worth writing down.
+func isEmptyItem(item capturedItem) bool {
+	return item.Title == "" && len(item.Attachments) == 0 &&
+		strings.TrimSpace(tagRe.ReplaceAllString(item.Body, "")) == ""
+}
+
 var (
 	// RE2 has no backreferences, so each tag is spelled out.
 	scriptRe = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<noscript\b[^>]*>.*?</noscript>`)
 	iframeRe = regexp.MustCompile(`(?is)<iframe\b[^>]*\bsrc\s*=\s*["']([^"']+)["']`)
-	// The opening tag of the region a tool renders its content into.
+	// A whole <iframe> element. The document one points at is captured as an
+	// item of its own, and a page saved to disk has nothing to load a frame
+	// from, so the element itself is never worth keeping.
+	iframeBlockRe = regexp.MustCompile(`(?is)<iframe\b[^>]*>.*?</iframe>|<iframe\b[^>]*/?>`)
+	// The opening tag of a region a tool may render its content into. Several
+	// of these match on one portal page, so extractRegion chooses between
+	// them rather than trusting the first.
 	regionStartRe = regexp.MustCompile(`(?is)<div[^>]*\b(?:id|class)\s*=\s*["'][^"']*(?:portletbody|syllabus|announcement|assignment)[^"']*["'][^>]*>`)
-	eventAttrRe   = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
-	attrRe        = regexp.MustCompile(`(?i)\b(href|src)\s*=\s*["']([^"']*)["']`)
+	// portletBody is the element the tool itself renders into. Its container
+	// also holds the tool's header — the Help link, the "Direct link to this
+	// tool" popup — so the inner one is the better capture when both match.
+	portletBodyRe = regexp.MustCompile(`(?i)portletbody`)
+	// The portal's tool menu labels every entry with the registration id of
+	// the tool it links to, so the menu's own icon <div>s match
+	// regionStartRe. Being navigation, they come first on the page.
+	regionChromeRe = regexp.MustCompile(`(?i)Mrphs-toolsNav|toolMenu|siteNav|portalNav`)
+	// Anything that makes a region worth keeping even with no words in it.
+	contentTagRe = regexp.MustCompile(`(?is)<(?:a|img|iframe|embed|object)\b`)
+	eventAttrRe  = regexp.MustCompile(`(?i)\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
+	attrRe       = regexp.MustCompile(`(?i)\b(href|src)\s*=\s*["']([^"']*)["']`)
 )
 
 // capturePage captures what a tool renders.
@@ -514,16 +681,22 @@ func (c *Client) capturePage(ctx context.Context, t tool) ([]capturedItem, error
 	// So every frame on the LMS's own host is captured, each carrying the URL
 	// it came from, because the links inside resolve against the page they
 	// were written on.
+	//
+	// And the host page is captured too, not only its frames — which is the
+	// other half of the same bug. A real Overview renders sakai.iframe.site
+	// INLINE and puts the synoptic widgets in the frames, so keeping only
+	// the frames kept Recent Announcements and Calendar and threw away the
+	// Site Information Display: on one course, the marks breakdown, the
+	// reading list and five lecture playlists. The host goes first because
+	// it is the tool the tab is named after.
 	var items []capturedItem
+	items = append(items, captureOne(c, body, t.URL))
 	for _, frame := range c.framesOf(body, t.URL) {
 		framed, err := c.getText(ctx, frame)
 		if err != nil {
 			continue // one unreadable widget is not the whole tab
 		}
 		items = append(items, captureOne(c, framed, frame))
-	}
-	if len(items) == 0 {
-		items = append(items, captureOne(c, body, t.URL))
 	}
 
 	var out []capturedItem
@@ -572,6 +745,7 @@ func (c *Client) framesOf(body, pageURL string) []string {
 // captureOne reduces one document to the region a tool rendered into.
 func captureOne(c *Client, body, pageURL string) capturedItem {
 	body = scriptRe.ReplaceAllString(body, "")
+	body = iframeBlockRe.ReplaceAllString(body, "")
 	if region, ok := extractRegion(body); ok {
 		body = region
 	}
@@ -582,20 +756,64 @@ func captureOne(c *Client, body, pageURL string) capturedItem {
 	}
 }
 
-// extractRegion returns the contents of the element a tool renders into,
-// counting nested <div>s so that it stops at the matching closing tag.
+// extractRegion returns the contents of the element a tool renders into.
 //
-// A greedy regex used to do this, and it read from the marker to the LAST
-// </div> on the page — which swallowed the portal's own navigation. Every
-// file linked anywhere in that navigation then looked like an attachment of
-// this one tab, and was downloaded into it.
+// Two things make this harder than finding a marker.
+//
+// The first is nesting. A greedy regex used to do this, and it read from the
+// marker to the LAST </div> on the page — which swallowed the portal's own
+// navigation. Every file linked anywhere in that navigation then looked like
+// an attachment of this one tab, and was downloaded into it. So the closing
+// tag is found by counting nested <div>s.
+//
+// The second is that several elements match, and the first one is the wrong
+// one. The portal's tool menu labels each entry with the registration id of
+// the tool it links to — "icon-sakai--sakai-announcements" — so the menu's
+// own icon <div>s match the marker, and being navigation they come first on
+// the page. Taking the first match captured an empty icon and reported the
+// tab as unreadable, which is what Announcements and Assignments did on
+// every real course: reached, HTTP 200, nothing found.
+//
+// So every candidate is weighed. Chrome is skipped, empty ones are skipped,
+// and the tool's own portletBody beats the container that also holds the
+// tool's header.
 func extractRegion(body string) (string, bool) {
-	loc := regionStartRe.FindStringIndex(body)
-	if loc == nil {
+	const (
+		rankNone = iota
+		rankRegion
+		rankPortletBody
+	)
+
+	best, bestRank := "", rankNone
+	for _, loc := range regionStartRe.FindAllStringIndex(body, -1) {
+		tag := body[loc[0]:loc[1]]
+		if regionChromeRe.MatchString(tag) {
+			continue
+		}
+		region := balancedDiv(body, loc[1])
+		if !hasReadableContent(region) {
+			continue
+		}
+		rank := rankRegion
+		if portletBodyRe.MatchString(tag) {
+			rank = rankPortletBody
+		}
+		if rank > bestRank {
+			best, bestRank = region, rank
+		}
+		if bestRank == rankPortletBody {
+			break // the innermost match already; nothing later can beat it
+		}
+	}
+	if bestRank == rankNone {
 		return "", false
 	}
-	start := loc[1]
+	return best, true
+}
 
+// balancedDiv returns the markup from start up to the </div> that closes the
+// element start is inside, counting nested <div>s on the way.
+func balancedDiv(body string, start int) string {
 	lower := strings.ToLower(body)
 	depth, i := 1, start
 	for i < len(body) {
@@ -611,11 +829,22 @@ func extractRegion(body string) (string, bool) {
 		}
 		depth--
 		if depth == 0 {
-			return body[start : i+shut], true
+			return body[start : i+shut]
 		}
 		i += shut + len("</div")
 	}
-	return body[start:], true
+	return body[start:]
+}
+
+// hasReadableContent reports whether a candidate region holds anything worth
+// capturing: words, a link, or an image. A menu icon has none of them, which
+// is how the portal's chrome is told apart from the tool's content even on a
+// skin whose class names this tool has never seen.
+func hasReadableContent(region string) bool {
+	if strings.TrimSpace(unescapeEntities(tagRe.ReplaceAllString(region, ""))) != "" {
+		return true
+	}
+	return contentTagRe.MatchString(region)
 }
 
 // contentLinks pulls the downloadable files a rendered tool page points at.
@@ -861,22 +1090,23 @@ var pageSections = []struct {
 	// threw those away whenever the tab happened to also carry an attachment.
 	textIsContent bool
 
-	fromAPI func(context.Context, *Client, string) ([]capturedItem, error)
+	// apiPrefix is the Entity Broker collection this tab can also be read
+	// from, and is empty when there is no such route. It is here rather than
+	// buried inside fromAPI so that --probe can name the endpoint it tried:
+	// on an install where the tab comes back empty, which of the two routes
+	// answered is the whole diagnosis.
+	apiPrefix string
+	fromAPI   func(context.Context, *Client, string) ([]capturedItem, error)
 }{
-	{
-		id: "syllabus", name: "Syllabus", file: "Syllabus.html",
-		regs:   []string{"sakai.syllabus"},
-		titles: []string{"syllabus"},
-		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
-			return c.syllabusFromAPI(ctx, siteID)
-		},
-	},
 	{
 		// Sakai calls the Overview tool "Site Information Display", and its
 		// registration is sakai.iframe.site — which is why it read as portal
 		// chrome and was refused outright. It is not chrome: on a course
 		// whose instructor never touched Resources, it is the only place
 		// anything was ever posted.
+		//
+		// First, because every real course shows it first, and this table is
+		// the order the catalogue and the web interface offer the tabs in.
 		id: "overview", name: "Overview", file: "Overview.html", textIsContent: true,
 		// The dashed form is what a portal icon class yields, exactly as for
 		// Assignments; the dotted one is what the Entity Broker reports.
@@ -884,18 +1114,41 @@ var pageSections = []struct {
 		titles: []string{"overview", "home", "course information"},
 	},
 	{
+		id: "syllabus", name: "Syllabus", file: "Syllabus.html",
+		regs:      []string{"sakai.syllabus"},
+		titles:    []string{"syllabus"},
+		apiPrefix: "syllabus",
+		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
+			return c.syllabusFromAPI(ctx, siteID)
+		},
+	},
+	{
 		id: "announcements", name: "Announcements", file: "Announcements.html",
 		textIsContent: true,
 		regs:          []string{"sakai.announcements", "sakai.announcement"},
 		titles:        []string{"announcements"},
+		apiPrefix:     "announcement",
+		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
+			return c.announcementsFromAPI(ctx, siteID)
+		},
 	},
 	{
 		// The registration is sakai.assignment.grades, but a portal icon
 		// class spells it with dashes, so both forms have to be matched.
+		// An assignment is not a wrapper around its brief. The due date and
+		// the instructions live in the tool and nowhere else — no PDF "is"
+		// the due date — so dropping the page whenever a brief happened to
+		// be attached lost exactly the half a student needs first. That is
+		// the same mistake keep_pages already made with announcements.
 		id: "assignments", name: "Assignments", file: "Assignments.html",
+		textIsContent: true,
 		regs: []string{"sakai.assignment.grades", "sakai.assignment-grades",
 			"sakai.assignment"},
-		titles: []string{"assignments"},
+		titles:    []string{"assignments"},
+		apiPrefix: "assignment",
+		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
+			return c.assignmentsFromAPI(ctx, siteID)
+		},
 	},
 }
 
@@ -914,6 +1167,35 @@ func sectionCatalogue() []sectionInfo {
 		out = append(out, sectionInfo{ID: ps.id, Name: ps.name})
 	}
 	return append(out, sectionInfo{ID: "dropbox", Name: "Drop Box"})
+}
+
+// sectionIDList names every tab that can be enabled, and textSectionList
+// every tab whose page is kept whatever keep_pages says.
+//
+// Both are derived rather than spelled out, because the config writer's own
+// copy of the first list went stale the moment Overview, Announcements and
+// Assignments were added: it went on telling people the only tabs were
+// resources, syllabus and dropbox. An existing config already carries an
+// explicit sections line, so a new tab never reaches it by default — and the
+// one place someone would look to find out the tab existed was the comment
+// directly above that line, saying it did not.
+func sectionIDList() string {
+	cat := sectionCatalogue()
+	ids := make([]string, 0, len(cat))
+	for _, s := range cat {
+		ids = append(ids, "'"+s.ID+"'")
+	}
+	return strings.Join(ids, ", ")
+}
+
+func textSectionList() string {
+	var names []string
+	for _, ps := range pageSections {
+		if ps.textIsContent {
+			names = append(names, ps.name)
+		}
+	}
+	return strings.Join(names, ", ")
 }
 
 // sectionsFor decides which tabs of one course to mirror.

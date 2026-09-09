@@ -234,6 +234,43 @@ const toolMenuCalc = `<html><ul>
   <li><a href="/portal/site/site-calc/tool/t-res"><span class="icon-sakai--sakai-resources"></span><span>Resources</span></a></li>
 </ul></html>`
 
+// A course on an install whose Entity Broker is switched on, which is where
+// the Announcements and Assignments tabs have anything worth reading.
+const toolMenuBroker = `<html><ul>
+  <li><a href="/portal/site/site-broker/tool/t-brk-syl"><span class="icon-sakai--sakai-syllabus"></span><span>Syllabus</span></a></li>
+  <li><a href="/portal/site/site-broker/tool/t-brk-annc"><span class="icon-sakai--sakai-announcements"></span><span>Announcements</span></a></li>
+  <li><a href="/portal/site/site-broker/tool/t-brk-asn"><span class="icon-sakai--sakai-assignment-grades"></span><span>Assignments</span></a></li>
+</ul></html>`
+
+// portalChrome wraps a tool's markup the way the Morpheus portal really does.
+//
+// This wrapper is the whole reason Announcements and Assignments captured
+// nothing on a real install. The tool menu labels every entry with the
+// registration id of the tool it links to, so the menu's own icon <div>s
+// carry class names like "icon-sakai--sakai-announcements" — and being
+// navigation, they come first on the page, ahead of the content by a couple
+// of hundred lines. Serving bare <div id="portletBody"> pages, which is what
+// this fake used to do, hid that completely.
+//
+// The tool's own header is here too: the container that holds it matches the
+// same marker as the content, so a capture that stops at the container drags
+// in the Help link and the "Direct link to this tool" box.
+func portalChrome(active, body string) string {
+	return `<html><body>
+	  <div id="toolMenuWrap" class="Mrphs-container Mrphs-container--nav-tools"><ul>
+	    <li><a href="/portal/site/site-prog/tool/t-syllabus"><div class="Mrphs-toolsNav__menuitem--icon icon-sakai--sakai-syllabus   "></div><div class="Mrphs-toolsNav__menuitem--title">Syllabus</div></a></li>
+	    <li><a href="/portal/site/site-prog/tool/t-annc"><div class="Mrphs-toolsNav__menuitem--icon icon-sakai--sakai-announcements  icon-active "></div><div class="Mrphs-toolsNav__menuitem--title">Announcements</div></a></li>
+	    <li><a href="/portal/site/site-prog/tool/t-asn"><div class="Mrphs-toolsNav__menuitem--icon icon-sakai--sakai-assignment-grades   "></div><div class="Mrphs-toolsNav__menuitem--title">Assignments</div></a></li>
+	  </ul></div>
+	  <div class="Mrphs-container Mrphs-sakai-` + active + `">
+	    <div class="Mrphs-toolTitleNav Mrphs-container--toolTitleNav">
+	      <h2><a href="/portal/site/site-prog/tool-reset/x">Tool Home</a></h2>
+	      <a href="/portal/help/main?help=sakai.` + active + `">Help</a>
+	    </div>
+	    ` + body + `
+	  </div></body></html>`
+}
+
 func newFakeSakai(t *testing.T, password string) *fakeSakai {
 	t.Helper()
 	f := &fakeSakai{}
@@ -267,8 +304,44 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 	})
 
 	// Entity Broker disabled, as on many real installs.
+	// The Entity Broker, off for every course but site-broker.
+	//
+	// Both states are real and both have to be exercised: a great many
+	// installs have /direct/ disabled entirely, which is why the captured
+	// page can never stop being the fallback — and the one the author of
+	// this tool actually uses has it switched on, where it carries material
+	// that is on no rendered page at all.
 	mux.HandleFunc("/direct/", func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
+		if !f.authed.Load() {
+			fmt.Fprint(w, loginPage)
+			return
+		}
+		switch r.URL.Path {
+		case "/direct/syllabus/site/site-broker.json":
+			// Switched on and empty, which is the state of most tabs on most
+			// courses. The rendered tab still says so at length.
+			io.WriteString(w, `{"entityPrefix":"syllabus","syllabus_collection":[]}`)
+		case "/direct/announcement/site/site-broker.json":
+			// The body is the announcement. On the rendered tab it is behind
+			// a per-item link and the list carries only this title.
+			io.WriteString(w, `{"entityPrefix":"announcement","announcement_collection":[
+			  {"announcementId":"a1","title":"Room change for Thursday",
+			   "createdByDisplayName":"Dr Ayesha Khan",
+			   "body":"<p>Thursday's lecture moves to LT-4.</p>",
+			   "attachments":[]}
+			]}`)
+		case "/direct/assignment/site/site-broker.json":
+			// The brief is an attachment of a detail page the rendered list
+			// only links to, so this URL appears nowhere a crawl can see it.
+			io.WriteString(w, `{"entityPrefix":"assignment","assignment_collection":[
+			  {"id":"as1","title":"Homework 1","dueTimeString":"2026-09-19T19:25:00Z",
+			   "instructions":"<p>Hand it in on paper.</p>",
+			   "attachments":[{"name":"Homework_1.pdf","size":91319,"type":"application/pdf",
+			     "url":"/access/content/attachment/site-broker/Assignments/f6f7/Homework_1.pdf"}]}
+			]}`)
+		default:
+			http.NotFound(w, r)
+		}
 	})
 
 	mux.HandleFunc("/access/content/group/", func(w http.ResponseWriter, r *http.Request) {
@@ -317,33 +390,42 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			// playlist living somewhere else entirely. Mirroring this course
 			// without recording those links leaves an empty folder and the
 			// false impression that nothing was ever taught.
-			io.WriteString(w, `<html><div id="portletBody">
+			//
+			// It is also the shape that hid a second bug, so the frame
+			// beside it is here on purpose. sakai.iframe.site renders
+			// INLINE on this page; what sits in the frames is the synoptic
+			// widgets. Keeping only the frames kept Recent Announcements and
+			// threw the course away.
+			io.WriteString(w, `<html><body>
+			  <div id="portletBody">
 			  <h3>Calculus I</h3>
 			  <p>We follow Stewart, 8th edition. Watch the playlist before each class.</p>
 			  <a href="https://www.youtube.com/playlist?list=PLcalculus">Lecture playlist</a>
 			  <a href="https://textbooks.example.org/stewart-8e.pdf">Stewart 8e (PDF)</a>
 			  <a href="mailto:lecturer@example.edu">email me</a>
-			  </div></html>`)
+			  </div>
+			  <iframe src="/portal/tool/calc-synoptic" title="Recent Announcements"></iframe>
+			  </body></html>`)
 		case strings.HasSuffix(r.URL.Path, "/tool/t-annc"):
 			// With an attachment, because that is the case that used to lose
 			// the announcement text: keep_pages defaulted off, so the page
 			// was dropped and only the file kept — and the words are the
 			// announcement.
-			io.WriteString(w, `<html><div id="portletBody">
+			io.WriteString(w, portalChrome("announcements", `<div id="portletBody">
 			  <h3>Midterm moved to Friday</h3>
 			  <p>The midterm is now on Friday. Bring a calculator.</p>
 			  <p>Google Classroom code for this section: 4kx9m2p</p>
 			  <a href="/access/content/attachment/site-prog/Announcements/seating.pdf">seating.pdf</a>
-			  </div></html>`)
+			  </div>`))
 		case strings.HasSuffix(r.URL.Path, "/tool/t-asn"):
 			// Two briefs sharing a basename, filed under different opaque
 			// parent folders — exactly how Sakai stores attachments.
-			io.WriteString(w, `<html><div id="portletBody">
+			io.WriteString(w, portalChrome("assignment-grades", `<div id="portletBody">
 			  <h3>Assignment 1</h3>
 			  <a href="/access/content/attachment/site-prog/Assignments/a1/brief.pdf">brief.pdf</a>
 			  <h3>Assignment 2</h3>
 			  <a href="/access/content/attachment/site-prog/Assignments/a2/brief.pdf">brief.pdf</a>
-			  </div></html>`)
+			  </div>`))
 		case strings.HasSuffix(r.URL.Path, "/tool/t-syllabus-text"):
 			fmt.Fprint(w, `<html><div id="portletBody">
 			  <h3>Grading</h3><p>40% midterm, 60% final. Nothing is attached.</p>
@@ -371,6 +453,21 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			  </body></html>`)
 		case r.URL.Path == "/portal/site/site-calc":
 			fmt.Fprint(w, toolMenuCalc)
+		case r.URL.Path == "/portal/site/site-broker":
+			fmt.Fprint(w, toolMenuBroker)
+		case strings.HasSuffix(r.URL.Path, "/tool/t-brk-syl"):
+			// Prose about there being nothing, which is exactly what must not
+			// end up mirrored as though it were a syllabus.
+			fmt.Fprint(w, portalChrome("syllabus", `<div id="portletBody">
+			  <p>There is currently no syllabus at this location.</p></div>`))
+		case strings.HasSuffix(r.URL.Path, "/tool/t-brk-annc"),
+			strings.HasSuffix(r.URL.Path, "/tool/t-brk-asn"):
+			// What the rendered tabs offer on this course: headlines, and a
+			// link to a detail page. Neither the notice nor the brief is
+			// here, which is the whole reason the API route exists.
+			fmt.Fprint(w, portalChrome("announcements", `<div id="portletBody">
+			  <a href="/portal/site/site-broker/tool/t-brk-annc?sakai_action=doShowmetadata">Room change for Thursday</a>
+			  </div>`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -392,6 +489,15 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 			      <a href="/portal/tool/civ-annc?itemReference=/announcement/msg/x&amp;sakai_action=doShowmetadata">Google Classroom Code | Civics</a>
 			    </div></li></ul>
 			  </div></html>`)
+			return
+		case "/portal/tool/calc-synoptic":
+			// The widget that sits beside the instructor's box on a real
+			// Overview. Capturing it is fine; capturing it INSTEAD of the
+			// page it is embedded in is what lost the course.
+			io.WriteString(w, `<html><div class="portletBody container-fluid">
+			  <ul class="synopticList"><li><div class="textPanelHeader">
+			    <a href="/portal/tool/calc-annc?sakai_action=doShowmetadata">Quiz 1 is on Monday</a>
+			  </div></li></ul></div></html>`)
 			return
 		case "/portal/tool/civ-siteinfo":
 			// The box the instructor types into, second in the markup.
@@ -1347,8 +1453,11 @@ func TestAssignmentBriefsGetUniqueNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
-	if res.New != 2 {
-		t.Errorf("new = %d, want 2 (both briefs; the wrapper page is off by default)", res.New)
+	// Both briefs, and the page: an assignment's due date and instructions
+	// live in the tool and in no file, so the page is content rather than a
+	// wrapper around one.
+	if res.New != 3 {
+		t.Errorf("new = %d, want 3 (both briefs and the page)", res.New)
 	}
 
 	dir := filepath.Join(cfg.Destination, "Programming", "Assignments")
@@ -3325,7 +3434,7 @@ func TestProbeCanSaveTheMarkupItSaw(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(e.Name(), "framed") && strings.Contains(string(body), "portletBody") {
+		if strings.Contains(e.Name(), "frame") && strings.Contains(string(body), "portletBody") {
 			sawFramed = true
 		}
 	}
@@ -3352,6 +3461,208 @@ func TestProbeSavesNothingUnlessAsked(t *testing.T) {
 	// course pages to disk by default would change that quietly.
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Error("probe wrote pages without being asked")
+	}
+}
+
+// Most courses have no assignments, and the tool says so in prose: "There are
+// currently no assignments at this location." Scraping that sentence and
+// filing it as material would put a folder and a page into every course in
+// the library. Where the API answers, an empty collection settles it — which
+// is an answer, unlike the silence of an install with no Entity Broker.
+func TestAnEmptyCollectionIsAnAnswerNotAFallback(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"syllabus"}
+	cfg.Courses = []Course{{ID: "site-broker", Folder: "Broker"}}
+	client := loggedInClient(t, cfg)
+
+	// site-broker's syllabus collection is empty, and its rendered Syllabus
+	// tab is not consulted.
+	res, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {})
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Failed != 0 {
+		t.Errorf("failed = %d, want 0 — an empty tab is a skip", res.Failed)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.Destination, "Broker", "Syllabus")); err == nil {
+		t.Error("an empty tab was given a folder of its own")
+	}
+	// The point is that the API settled it. Reaching for the page anyway
+	// would be the fallback firing on an answer rather than on a silence.
+	if srv.requested("/portal/site/site-broker/tool/t-brk-syl") {
+		t.Error("the rendered tab was scraped even though the API answered")
+	}
+}
+
+// The written config's comment is the one place a person finds out a tab
+// exists — an existing config carries an explicit sections line, so a newly
+// supported tab never reaches it by default. That comment spelled out
+// "resources, syllabus, dropbox" long after Overview, Announcements and
+// Assignments were added, which is exactly how a real config sat there
+// mirroring none of them.
+func TestTheWrittenConfigNamesEveryTabThatCanBeEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+	cfg.Password = "x"
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	body, err := os.ReadFile(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, s := range sectionCatalogue() {
+		if !strings.Contains(string(body), "'"+s.ID+"'") {
+			t.Errorf("the config never mentions the %q tab:\n%s", s.ID, body)
+		}
+	}
+	// And what it says is loadable: a comment listing an id that sanitise
+	// drops would be worse than no comment.
+	for _, s := range sectionCatalogue() {
+		if !knownSections[s.ID] {
+			t.Errorf("%q is offered but not a known section", s.ID)
+		}
+	}
+}
+
+// syncBroker mirrors the one course whose Entity Broker answers.
+func syncBroker(t *testing.T, sections ...string) string {
+	t.Helper()
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = sections
+	cfg.Courses = []Course{{ID: "site-broker", Folder: "Broker"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	return cfg.Destination
+}
+
+// A rendered Announcements tab is a list of headlines: the body of a notice
+// is behind a per-item link, so a student got the title of the announcement
+// about the room change and never the room. Where the Entity Broker answers,
+// the text itself is one request away.
+func TestAnnouncementBodiesComeFromTheEntityBroker(t *testing.T) {
+	dest := syncBroker(t, "announcements")
+
+	body, err := os.ReadFile(filepath.Join(dest, "Broker", "Announcements", "Announcements.html"))
+	if err != nil {
+		t.Fatalf("the Announcements tab produced no page: %v", err)
+	}
+	if !strings.Contains(string(body), "moves to LT-4") {
+		t.Errorf("the announcement body was not captured:\n%s", body)
+	}
+	if !strings.Contains(string(body), "Dr Ayesha Khan") {
+		t.Errorf("who posted it was dropped:\n%s", body)
+	}
+}
+
+// The brief is an attachment of an assignment's detail page, and the rendered
+// list only links to that page — so on the crawl route the PDF a student
+// actually needs has no URL anywhere. Through the API it is an ordinary file.
+func TestAssignmentBriefsComeFromTheEntityBroker(t *testing.T) {
+	dest := syncBroker(t, "assignments")
+
+	if _, err := os.Stat(filepath.Join(dest, "Broker", "Assignments", "Homework_1.pdf")); err != nil {
+		t.Errorf("the assignment brief was not downloaded: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dest, "Broker", "Assignments", "Assignments.html"))
+	if err != nil {
+		t.Fatalf("the Assignments tab produced no page: %v", err)
+	}
+	// A due date is half of what an assignment is, and the server's own
+	// absolute string is the same on every run — which a hashed page needs.
+	if !strings.Contains(string(body), "2026-09-19T19:25:00Z") {
+		t.Errorf("the due date was dropped:\n%s", body)
+	}
+}
+
+// Some Sakai versions report an attachment as an object and others as a bare
+// URL string. Reading only one shape loses every file on the other.
+func TestAPIAttachmentsAreReadInEitherShape(t *testing.T) {
+	var got []apiAttachment
+	if err := json.Unmarshal([]byte(
+		`[{"name":"a.pdf","url":"/access/content/attachment/s/a.pdf"},
+		  "/access/content/attachment/s/b.pdf"]`), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 || got[0].Name != "a.pdf" ||
+		!strings.HasSuffix(got[1].URL, "/b.pdf") {
+		t.Errorf("attachments = %+v", got)
+	}
+}
+
+// The portal's tool menu names every tab by the registration id of the tool
+// it links to, so the menu's own icon <div>s carry "syllabus",
+// "announcements" and "assignment-grades" in their class names — and being
+// navigation, they come first on the page by a couple of hundred lines.
+// Taking the first element that matched captured an empty icon and reported
+// the tab as unreadable: on a real install, Announcements and Assignments
+// were reached, answered HTTP 200, and produced nothing at all on every
+// single course.
+func TestPageRegionIsNotTheToolMenuIcon(t *testing.T) {
+	body := portalChrome("announcements", `<div class="portletBody container-fluid">
+	  <h3>Midterm moved to Friday</h3>
+	  <p>Bring a calculator.</p></div>`)
+
+	region, ok := extractRegion(body)
+	if !ok {
+		t.Fatal("no region found in a tool page wrapped in the portal's own menu")
+	}
+	if !strings.Contains(region, "Midterm moved to Friday") {
+		t.Errorf("the tool's content was not captured; got %q", region)
+	}
+	if strings.Contains(region, "icon-sakai--") {
+		t.Errorf("the portal's tool menu was captured as content; got %q", region)
+	}
+	// The container that holds the content also holds the tool's header, so
+	// stopping there drags in the Help link and the tool-reset link. The
+	// tool's own portletBody is the tighter, better capture.
+	if strings.Contains(region, "Tool Home") || strings.Contains(region, "help=sakai.") {
+		t.Errorf("the tool header was captured as content; got %q", region)
+	}
+}
+
+// A real Overview renders sakai.iframe.site INLINE and puts the synoptic
+// widgets in the frames beside it. Capturing only the frames therefore kept
+// Recent Announcements and threw away the box the instructor actually types
+// into — on one real course, the marks breakdown, the reading list and five
+// lecture playlists, mirrored as a page of headlines.
+func TestInlineToolContentSurvivesItsFrames(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"overview"}
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	client := loggedInClient(t, cfg)
+
+	if _, err := Sync(context.Background(), client, cfg,
+		LoadManifest(filepath.Join(t.TempDir(), "manifest.json")),
+		false, func(Event) {}); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(cfg.Destination, "Calculus", "Overview", "Overview.html"))
+	if err != nil {
+		t.Fatalf("the Overview tab produced no page: %v", err)
+	}
+	if !strings.Contains(string(body), "Stewart, 8th edition") {
+		t.Errorf("the inline tool content was dropped in favour of its frames:\n%s", body)
+	}
+	if !strings.Contains(string(body), "Quiz 1 is on Monday") {
+		t.Errorf("the frame beside it was lost:\n%s", body)
+	}
+	// The frames are captured as items of their own, and a page opened from
+	// a folder on a laptop has nothing to load one from.
+	if strings.Contains(string(body), "<iframe") {
+		t.Errorf("a dead frame was written into the saved page:\n%s", body)
 	}
 }
 

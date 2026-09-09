@@ -428,7 +428,7 @@ func (c *Config) Save() error {
 		b.WriteString("    " + strings.Join(quoted, ", ") + ",\n")
 	}
 	b.WriteString("]\n")
-	b.WriteString("\n# Which tabs to mirror. Available: 'resources', 'syllabus', 'dropbox'.\n")
+	b.WriteString("\n# Which tabs to mirror. Available: " + sectionIDList() + ".\n")
 	b.WriteString("# Resources lands in the course folder itself; the others get a subfolder.\n")
 	quoted := make([]string, 0, len(c.sections()))
 	for _, id := range c.sections() {
@@ -438,7 +438,8 @@ func (c *Config) Save() error {
 	b.WriteString("\n# Tabs like Syllabus are usually just a wrapper around a PDF, so by default\n")
 	b.WriteString("# only the linked files are kept. Set this to true to also save the page\n")
 	b.WriteString("# itself, which is worth doing if your instructors type notes into the tab.\n")
-	b.WriteString("# A tab that links to no files always gets its page either way.\n")
+	b.WriteString("# A tab that links to no files always gets its page either way, and so\n")
+	b.WriteString("# do tabs whose text IS the material: " + textSectionList() + ".\n")
 	fmt.Fprintf(&b, "keep_pages  = %t\n", c.KeepPages)
 	b.WriteString("\n# Your courses. Rename folders freely; only the ids matter.\n[courses]\n")
 	for _, course := range c.Courses {

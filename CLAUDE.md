@@ -94,7 +94,7 @@ Because installs vary, **`--probe` is how you find out what a server does**
 rather than guessing: it reports each course's tabs and which candidate
 endpoints answered, and downloads nothing.
 `--probe --save-pages DIR` additionally writes the raw tool pages, following
-the same iframe hop `capturePage` does — because when a tab is reached but
+every frame `capturePage` follows — because when a tab is reached but
 nothing useful comes out, the markup this tool fetched is the only thing that
 settles why, and a browser's View Source shows the portal frame instead.
 
@@ -143,6 +143,9 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A tab whose text is the material always keeps its page.** `keep_pages` is off because a Syllabus tab wraps a PDF, but an announcement *is* text; applying one setting to both shapes dropped announcement bodies whenever the tab also had an attachment. `TestAnnouncementTextSurvivesKeepPagesOff`, `TestWrapperTabsStillDropTheirStubPage`.
 - **Material that is not a file is still material.** A tab's off-LMS links are written to `Links.md` and never fetched: recording a URL must never become a reason to follow it, and a course whose content is a textbook link is not an empty course. `TestExternalLinksAreRecordedButNeverFetched`, `TestACourseWithOnlyExternalLinksIsNotEmpty`.
 - **Links in captured tool pages are resolved, never regex-matched.** Instructors' attachment links are usually root-relative (`/access/content/attachment/...`); a regex anchored on `https://` misses them, and since most syllabus tabs are nothing but a link to a PDF, that silently produced a stub page and no file. `contentLinks` resolves every href against the page it came from, then filters through `allowedContent`. The fake serves root-relative hrefs on purpose — serving absolute ones is what hid the bug. `TestSyllabusFallsBackToRenderedPage`.
+- **The captured region is chosen, not taken as the first match.** The portal's tool menu names every tab by the registration id of the tool it links to, so the menu's own icon `<div>`s carry `announcement` and `assignment` in their class names — and being navigation, they come hundreds of lines before the content. Taking the first match captured an empty icon, and Announcements and Assignments returned nothing on *every* course of a real install while answering HTTP 200 throughout. `extractRegion` now weighs every candidate: chrome is skipped, empty ones are skipped, and the tool's own `portletBody` beats the container that also holds the tool header. `TestPageRegionIsNotTheToolMenuIcon`.
+- **The page hosting the frames is captured too, not only the frames.** The other half of the same bug: a real Overview renders `sakai.iframe.site` *inline* and puts the synoptic widgets in the frames beside it, so keeping only the frames kept Recent Announcements and Calendar and threw away the box the instructor types into — on one course, the marks breakdown, the reading list and five lecture playlists. The frames are stripped out of the host's markup, since each is captured on its own and a page opened from disk has nothing to load one from. `TestInlineToolContentSurvivesItsFrames`.
+- **Announcements and Assignments prefer the Entity Broker, and fall back to the page.** Where `/direct/` answers it is not merely tidier: a rendered Announcements tab lists headlines whose bodies are each behind their own link, and a rendered Assignments tab files the brief as an attachment of a detail page it only links to — so the notice's text and the brief's PDF are on neither page. `firstJSONArray` takes the first array in the envelope rather than pinning a wrapper key, and `apiAttachment` reads both the object and the bare-string shapes Sakai versions disagree about. `TestAnnouncementBodiesComeFromTheEntityBroker`, `TestAssignmentBriefsComeFromTheEntityBroker`, `TestAPIAttachmentsAreReadInEitherShape`.
 - **Every frame of a tool page is captured, not the first.** A real Overview is a dashboard, and the synoptic "Recent Announcements" widget comes first in the markup — following one iframe captured a list of headlines and never reached the Site Information Display below it, which is where an instructor types. Frames off the LMS are still never fetched. `TestPageRegionIsTakenFromEveryFrameNotJustTheFirst`, `TestFramesOffTheLMSAreNotFetched`.
 - **A captured region stops at its own closing tag.** `extractRegion` counts nested `<div>`s. The greedy regex it replaced ran to the last `</div>` on the page, swallowed the portal navigation, and then downloaded every file linked in that chrome as an attachment of the tab. `TestPageRegionDoesNotSwallowSiteNavigation`.
 - **Links in a saved page are rewritten, or they are dead.** The LMS writes root-relative hrefs, which point at nothing once the page is a file on a laptop. `localiseLinks` repoints links to downloaded files at the local copy and makes everything else absolute; inline `on*` handlers are stripped because the page is opened from disk. `TestSavedPageLinksWorkOffline`.
@@ -306,11 +309,11 @@ which is why the default is off. Whether a given *page* is a wrapper or a real
 syllabus cannot be judged from the markup (the tool's own chrome reads as
 content), so this is a setting, not a heuristic.
 
-What can be judged is the *tab*. `pageSections` marks Overview and
-Announcements `textIsContent`, and their pages are always written: an
-announcement is text, there is no PDF that "is" the announcement, and a room
-change or an enrolment code typed into an Overview box has no file behind it
-either. One global setting applied to both shapes silently discarded exactly
+What can be judged is the *tab*. `pageSections` marks Overview,
+Announcements and Assignments `textIsContent`, and their pages are always
+written: an announcement is text, there is no PDF that "is" the announcement,
+a room change or an enrolment code typed into an Overview box has no file
+behind it either, and no brief "is" an assignment's due date. One global setting applied to both shapes silently discarded exactly
 what a student asks for whenever such a tab also carried an attachment.
 `keep_pages` can still turn the wrapper pages on; it cannot turn these off.
 
