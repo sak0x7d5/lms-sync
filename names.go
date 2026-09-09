@@ -23,6 +23,22 @@ var (
 	spacesRe  = regexp.MustCompile(`\s+`)
 )
 
+// reservedNames are the DOS device names Windows still refuses to use as a
+// filename, with or without an extension: "NUL.pdf" is as impossible as
+// "NUL". Nothing rejects them on Linux or macOS, which is what makes this
+// worth handling here rather than leaving to the filesystem — a course whose
+// instructor posted "aux.pdf" or "con.docx" would sync cleanly for whoever
+// built the library and fail on that one file, every single run, for every
+// Windows user. Checked on all platforms so a tree made on one still copies
+// onto the others.
+var reservedNames = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
 // SafeName turns arbitrary text into a portable path component.
 func SafeName(name string) string {
 	if decoded, err := url.PathUnescape(name); err == nil {
@@ -42,6 +58,16 @@ func SafeName(name string) string {
 	out := strings.TrimRight(strings.TrimSpace(spacesRe.ReplaceAllString(b.String(), " ")), ". ")
 	if out == "" {
 		return "unnamed"
+	}
+	// The stem is what Windows matches on, so the extension has to come off
+	// before the comparison and go back on after it: the file wants to stay
+	// a .pdf.
+	stem := out
+	if i := strings.IndexByte(out, '.'); i > 0 {
+		stem = out[:i]
+	}
+	if reservedNames[strings.ToLower(stem)] {
+		out = "_" + out
 	}
 	if len([]rune(out)) > 120 {
 		out = string([]rune(out)[:120])

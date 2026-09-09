@@ -428,7 +428,16 @@ func (c *Config) Save() error {
 		b.WriteString("    " + strings.Join(quoted, ", ") + ",\n")
 	}
 	b.WriteString("]\n")
-	b.WriteString("\n# Which tabs to mirror. Available: 'resources', 'syllabus', 'dropbox'.\n")
+	// Listed from the catalogue rather than spelled out, because spelling it
+	// out is how this line came to advertise three tabs when the tool had
+	// grown to six: a student reading their own config had no way to learn
+	// that Overview or Announcements could be switched on at all.
+	available := make([]string, 0, len(sectionCatalogue()))
+	for _, sec := range sectionCatalogue() {
+		available = append(available, "'"+sec.ID+"'")
+	}
+	fmt.Fprintf(&b, "\n# Which tabs to mirror. Available: %s.\n",
+		strings.Join(available, ", "))
 	b.WriteString("# Resources lands in the course folder itself; the others get a subfolder.\n")
 	quoted := make([]string, 0, len(c.sections()))
 	for _, id := range c.sections() {

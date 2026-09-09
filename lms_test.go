@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -3608,5 +3609,261 @@ func TestQuizPromptRequiresRecordingAndDefersTheVerdict(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("quiz_me does not carry %q", want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regressions fixed while stabilising for release
+// ---------------------------------------------------------------------------
+
+// A retry must never post an empty form.
+//
+// The body is an io.Reader and the attempt that failed has already drained
+// it, so every retry after the first sent a request with no content at all.
+// On the login endpoint that is not a wasted round trip — the server records
+// a sign-in attempt with no eid and no pw, against the one endpoint where
+// repeated failures lock an account. Retries only ever helped a GET here, so
+// a request carrying a body is now answered rather than repeated.
+func TestARetriedRequestNeverPostsAnEmptyBody(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	cfg := DefaultConfig()
+	cfg.Delay = 0
+	client, err := NewClient(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retries = 3
+
+	resp, err := client.do(context.Background(), http.MethodPost, srv.URL+"/access/login",
+		strings.NewReader("eid=37103&pw=correct-horse"),
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a run of 500s was reported as success")
+	}
+	if KindOf(err) != KindServer {
+		t.Errorf("kind = %v, want server", KindOf(err))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, body := range bodies {
+		if body == "" {
+			t.Fatalf("attempt %d posted an empty body; all attempts: %q", i+1, bodies)
+		}
+	}
+}
+
+// do must never hand back a nil response with a nil error.
+//
+// Every caller goes straight to resp.Body, so that pair is a panic rather
+// than a failure — and the loop simply never ran when retries was below 1,
+// which is what a Config built in code rather than loaded through sanitise()
+// carries.
+func TestDoAlwaysReturnsAResponseOrAnError(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	client, err := NewClient(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retries = 0
+
+	resp, err := client.do(context.Background(), http.MethodGet, srv.URL+"/portal", nil, nil)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if resp == nil && err == nil {
+		t.Fatal("no response and no error: every caller would panic on resp.Body")
+	}
+}
+
+// Windows refuses the DOS device names as filenames, extension or not, so a
+// course holding "aux.pdf" synced cleanly on the machine it was built on and
+// failed on that one file forever on every Windows machine.
+func TestSafeNameAvoidsWindowsDeviceNames(t *testing.T) {
+	for _, name := range []string{"NUL", "aux.pdf", "Con.docx", "com1.txt", "LPT9"} {
+		got := SafeName(name)
+		stem := got
+		if i := strings.IndexByte(got, '.'); i > 0 {
+			stem = got[:i]
+		}
+		if reservedNames[strings.ToLower(stem)] {
+			t.Errorf("SafeName(%q) = %q, still a reserved device name", name, got)
+		}
+	}
+
+	// Ordinary names that merely start with those letters must be left alone:
+	// "constitution.pdf" is not "con".
+	for _, name := range []string{"constitution.pdf", "auxiliary.docx", "nulls.txt", "lecture.pdf"} {
+		if got := SafeName(name); got != name {
+			t.Errorf("SafeName(%q) = %q, want it unchanged", name, got)
+		}
+	}
+}
+
+// The written config is the only place a student learns which tabs exist.
+// Spelling the list out by hand is how it came to advertise three when the
+// tool had grown to six.
+func TestSavedConfigListsEveryAvailableSection(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(dir, "config.toml")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The comment line specifically, not the sections= line below it: that
+	// one lists whatever is switched on, which is not the same question as
+	// what could be.
+	var advertised string
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "# Which tabs to mirror.") {
+			advertised = line
+		}
+	}
+	if advertised == "" {
+		t.Fatalf("the saved config no longer says which tabs exist:\n%s", body)
+	}
+	for _, sec := range sectionCatalogue() {
+		if !strings.Contains(advertised, "'"+sec.ID+"'") {
+			t.Errorf("the %q tab is not advertised in %q", sec.ID, advertised)
+		}
+	}
+}
+
+// A chunk boundary must land between characters.
+//
+// read_material hands back a byte offset for the caller to continue from, so
+// cutting at a fixed width split a character in half on any material that is
+// not plain ASCII: the seam arrived as replacement glyphs and the next call
+// resumed midway through a letter.
+func TestReadMaterialChunksOnCharacterBoundaries(t *testing.T) {
+	dest := t.TempDir()
+	// Three-byte runes, so almost every byte offset falls inside one.
+	// Trimmed, because extraction trims what it stores and the comparison
+	// below is against the stored copy.
+	text := strings.TrimSpace(strings.Repeat("café — naïve ∑ δx ", 400))
+
+	rel := "Physics/notes.txt"
+	if err := os.MkdirAll(filepath.Join(dest, "Physics"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, rel), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(dest, "config.toml")
+	cfg.Destination = dest
+	s := &mcpServer{cfg: cfg, dest: dest}
+
+	// Walk the whole file in small chunks, exactly as a client would.
+	var rebuilt strings.Builder
+	offset := 0
+	for step := 0; step < 200; step++ {
+		out, err := s.readMaterial([]byte(fmt.Sprintf(
+			`{"path":%q,"offset":%d,"max_chars":97}`, rel, offset)))
+		if err != nil {
+			t.Fatalf("read at offset %d: %v", offset, err)
+		}
+		if !utf8.ValidString(out) {
+			t.Fatalf("chunk at offset %d is not valid UTF-8", offset)
+		}
+		body := out
+		if i := strings.Index(body, "\n\n"); i >= 0 {
+			body = body[i+2:]
+		}
+		next := offset
+		if i := strings.Index(body, "[truncated — continue with read_material at offset "); i >= 0 {
+			fmt.Sscanf(body[i:], "[truncated — continue with read_material at offset %d]", &next)
+			body = strings.TrimRight(body[:i], "\n")
+		}
+		rebuilt.WriteString(body)
+		if next == offset {
+			break
+		}
+		offset = next
+	}
+
+	if rebuilt.String() != text {
+		t.Errorf("reassembled text does not match the original (%d bytes vs %d)",
+			rebuilt.Len(), len(text))
+	}
+}
+
+// pdftotext's output is capped as it arrives rather than after the process
+// has finished.
+//
+// The trimming in finish() hides this from the returned text either way — the
+// difference is only ever visible in memory, which is the whole point: a PDF
+// that expands to gigabytes of text used to be held whole on its way to being
+// cut down to four megabytes. So the buffer is what is asserted on, not the
+// extraction around it.
+func TestPDFOutputBufferStopsAtItsLimit(t *testing.T) {
+	buf := &cappedBuffer{limit: 10}
+
+	// A short write, then one that straddles the limit, then one entirely
+	// past it. Every one has to be reported as fully accepted: a short count
+	// reaches the producer as an I/O error and would fail the extraction.
+	for _, chunk := range []string{"abcde", "fghijklmno", "pqrstuvwxyz"} {
+		n, err := buf.Write([]byte(chunk))
+		if err != nil {
+			t.Fatalf("write %q: %v", chunk, err)
+		}
+		if n != len(chunk) {
+			t.Errorf("write %q reported %d of %d bytes accepted", chunk, n, len(chunk))
+		}
+	}
+
+	if got := buf.String(); got != "abcdefghij" {
+		t.Errorf("buffer holds %q, want the first 10 bytes only", got)
+	}
+}
+
+// The whole path still works with a real (stubbed) external tool, and the
+// text that comes back respects the cap.
+func TestPDFTextIsCappedAsItArrives(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a shell script")
+	}
+	dir := t.TempDir()
+	stub := fakePDFTool(t, strings.Repeat("x", 4096))
+	old := pdfTool
+	pdfTool = stub
+	defer func() { pdfTool = old }()
+
+	pdf := filepath.Join(dir, "lecture.pdf")
+	if err := os.WriteFile(pdf, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ex, err := extractPDF(context.Background(), pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Status != extractOK {
+		t.Fatalf("status = %q, want ok", ex.Status)
+	}
+	if len(ex.Text) > maxExtractBytes {
+		t.Errorf("kept %d bytes, more than the %d-byte cap", len(ex.Text), maxExtractBytes)
 	}
 }

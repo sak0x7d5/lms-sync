@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -738,10 +739,22 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 			a.Offset, rel, len(text))
 	}
 
+	// Both ends of the chunk have to land on a character boundary. The offset
+	// handed back for the next call is a byte offset into the extracted text,
+	// so cutting at a fixed width lands mid-character on any material that is
+	// not plain ASCII: the seam arrives as replacement glyphs, and the caller
+	// then resumes half way through a letter.
+	for a.Offset < len(text) && !utf8.RuneStart(text[a.Offset]) {
+		a.Offset++
+	}
 	end := a.Offset + max
 	truncated := end < len(text)
 	if !truncated {
 		end = len(text)
+	} else {
+		for end > a.Offset && !utf8.RuneStart(text[end]) {
+			end--
+		}
 	}
 
 	var b strings.Builder
