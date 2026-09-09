@@ -3867,3 +3867,35 @@ func TestPDFTextIsCappedAsItArrives(t *testing.T) {
 		t.Errorf("kept %d bytes, more than the %d-byte cap", len(ex.Text), maxExtractBytes)
 	}
 }
+
+// A dry run must not create the destination folder.
+//
+// Checking a mistyped --dest is most of what the flag is for, and it created
+// the typo before any of the dryRun guards below it were consulted — then
+// reported the files it would have put in it. The folder is a write like the
+// lock file and the text cache, both of which the same run already skips.
+func TestDryRunDoesNotCreateTheDestination(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	cfg.Destination = filepath.Join(t.TempDir(), "mistyped-folder")
+
+	client, _ := NewClient(cfg, false)
+	ctx := context.Background()
+	if err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	res, err := Sync(ctx, client, cfg, manifest, true, func(Event) {})
+	if err != nil {
+		t.Fatalf("dry run failed: %v", err)
+	}
+	// It still has to do its job: say what would be downloaded.
+	if res.New == 0 {
+		t.Error("the dry run reported nothing it would download")
+	}
+	if _, err := os.Stat(cfg.Destination); err == nil {
+		t.Errorf("the dry run created %s", cfg.Destination)
+	}
+}

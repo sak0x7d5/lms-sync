@@ -247,10 +247,20 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 	if err != nil {
 		return zero, err
 	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return zero, failf(KindFS, "create "+dest,
-			"Could not create the destination folder. Check the drive exists\n"+
-				"and that you have permission to write there.", err)
+	// Not on a dry run. Creating the folder is a write like any other, and
+	// checking a mistyped --dest without leaving an empty folder behind is
+	// most of what the flag is for — it created the typo, then reported the
+	// files it would have put in it.
+	//
+	// The cost is that an unwritable destination goes unreported until the
+	// real run. That is the run that needs to know, and every write below
+	// creates its own parent anyway.
+	if !dryRun {
+		if err := os.MkdirAll(dest, 0o755); err != nil {
+			return zero, failf(KindFS, "create "+dest,
+				"Could not create the destination folder. Check the drive exists\n"+
+					"and that you have permission to write there.", err)
+		}
 	}
 
 	// Say where the files are going before writing any. A relative
