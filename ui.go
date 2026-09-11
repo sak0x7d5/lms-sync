@@ -86,6 +86,14 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 
 	go func() {
 		<-ctx.Done()
+		// A sync started from the page runs on a context of its own, so that
+		// closing one browser tab cannot abandon it — which also means
+		// nothing here stops it. Sync releases the library's lock file with a
+		// defer, and a process killed at the terminal never runs that defer:
+		// closing this window mid-crawl left the destination locked for the
+		// full staleness timeout, hours later, and the next run refused to
+		// start. Stop the crawl and let it unwind first.
+		s.stopSync(5 * time.Second)
 		shutCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		srv.Shutdown(shutCtx)
@@ -276,8 +284,17 @@ func (s *server) runSync(ctx context.Context, cfg *Config, dryRun bool) {
 	defer func() {
 		// A panic in a background goroutine would kill the process and take
 		// the interface with it. Surface it instead.
+		//
+		// The "done" is not decoration. The page re-enables its buttons on
+		// that event and on nothing else, so an error on its own leaves Sync,
+		// Dry run and Discover greyed out until the tab is reloaded — the
+		// interface looking broken for what may be one bad file.
 		if r := recover(); r != nil {
+			s.mu.Lock()
+			s.lastErr = fmt.Sprintf("internal error: %v", r)
+			s.mu.Unlock()
 			s.broadcast(Event{Type: "error", Message: fmt.Sprintf("internal error: %v", r)})
+			s.broadcast(Event{Type: "done", Message: "Stopped after an internal error."})
 		}
 		s.mu.Lock()
 		s.running, s.cancel = false, nil
@@ -393,6 +410,36 @@ func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// stopSync cancels a sync in flight and waits for it to unwind, up to limit.
+//
+// The wait is the whole point, and it is the same one syncJob.wait makes for
+// the MCP server: cancelling only asks the crawl to stop, and the deferred
+// release of the lock file runs on the way out. Returning before that has
+// happened is indistinguishable, from the next run's point of view, from
+// never having cancelled at all.
+func (s *server) stopSync(limit time.Duration) {
+	s.mu.Lock()
+	running := s.running
+	if s.cancel != nil {
+		s.cancel()
+	}
+	s.mu.Unlock()
+	if !running {
+		return
+	}
+
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		s.mu.Lock()
+		running = s.running
+		s.mu.Unlock()
+		if !running {
+			return
+		}
+	}
 }
 
 // handleEvents streams progress with Server-Sent Events — one stdlib

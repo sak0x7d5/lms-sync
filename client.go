@@ -95,8 +95,8 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader,
 				return nil, failf(KindTLS, method+" "+shortURL(rawURL), hintTLS, err)
 			}
 			lastErr = failf(KindNetwork, method+" "+shortURL(rawURL), hintNetwork, err)
-			// A body can only be read once, so a retry with a body would
-			// send nothing. Callers that POST pass a rewindable body.
+			// A body can only be read once, so a retry would send nothing.
+			// See the branch below, which has to make the same check.
 			if body != nil {
 				return nil, lastErr
 			}
@@ -106,6 +106,15 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader,
 			lastErr = failf(KindServer,
 				fmt.Sprintf("%s %s returned %d", method, shortURL(rawURL), resp.StatusCode),
 				hintServer, nil)
+			// Same rule as the branch above, and it has to be stated in both:
+			// the reader was drained by the attempt that just failed, so a
+			// retry would POST an empty form. On the login endpoint that is
+			// not merely a wasted round trip — the server records it as a
+			// sign-in attempt with no password, against the one endpoint
+			// where repeated failures lock an account.
+			if body != nil {
+				return nil, lastErr
+			}
 			if wait > 0 && attempt < c.retries {
 				if err := sleepCtx(ctx, wait); err != nil {
 					return nil, err
@@ -125,6 +134,15 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader,
 				return nil, err
 			}
 		}
+	}
+
+	// Never return a nil response with a nil error. Every caller here goes
+	// straight to resp.Body, so that pair is a panic rather than a failure —
+	// and it is reachable whenever retries is below 1, which is the value a
+	// Config built in code rather than loaded through sanitise() carries.
+	if lastErr == nil {
+		lastErr = failf(KindConfig, method+" "+shortURL(rawURL),
+			"No request was attempted. Check that \"retries\" is at least 1.", nil)
 	}
 	return nil, lastErr
 }

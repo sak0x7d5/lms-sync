@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -109,10 +110,21 @@ type mcpServer struct {
 	inflight   map[string]context.CancelFunc
 	running    sync.WaitGroup
 
-	// toolMu keeps tool calls one at a time. Two of them can write to the
-	// library, and a client that pipelines a record and a read expects the
-	// read to see the record.
-	toolMu sync.Mutex
+	// prevTool is the baton that keeps tool calls one at a time AND in the
+	// order the client sent them. Two of them can write to the library, and a
+	// client that pipelines a record and a read expects the read to see the
+	// record.
+	//
+	// A mutex gave the first half and not the second. Each call runs on its
+	// own goroutine, and goroutines do not acquire a mutex in the order they
+	// were started — so record_answer and the weak_spots call behind it ran
+	// backwards about a quarter of the time, and the read reported nothing
+	// recorded. A chain of channels, linked on the read loop where the
+	// client's order is still known, gives both.
+	//
+	// Only ever touched from the read loop: startTool is called from dispatch
+	// and nowhere else.
+	prevTool chan struct{}
 }
 
 // mcpLog writes a line for whoever is watching the server, on stderr, where
@@ -505,9 +517,19 @@ func (s *mcpServer) startTool(msg rpcMessage) {
 	s.inflight[key] = cancel
 	s.inflightMu.Unlock()
 
+	// Take a place in the queue here, on the read loop, while the order the
+	// client sent things in is still known. Inside the goroutine it is not:
+	// that is the whole bug a mutex had.
+	prev := s.prevTool
+	mine := make(chan struct{})
+	s.prevTool = mine
+
 	s.running.Add(1)
 	go func() {
 		defer s.running.Done()
+		// Hand the baton on however this call ends, or every call behind it
+		// waits forever.
+		defer close(mine)
 		defer func() {
 			s.inflightMu.Lock()
 			delete(s.inflight, key)
@@ -518,8 +540,20 @@ func (s *mcpServer) startTool(msg rpcMessage) {
 		// Still one at a time — what has changed is where the waiting
 		// happens. Queueing here instead of on the read loop is what lets a
 		// ping be answered, and a cancellation be heard, while one runs.
-		s.toolMu.Lock()
-		defer s.toolMu.Unlock()
+		//
+		// The wait is not abandoned on cancellation: giving up here would
+		// close the baton while the call ahead is still running, and let the
+		// next one start beside it. Every call closes its own baton, so this
+		// always finishes.
+		if prev != nil {
+			<-prev
+		}
+		// Cancelled while queued: the client has stopped waiting, so the work
+		// is skipped and no reply is written — the same answer callTool gives
+		// for a call cancelled while running.
+		if ctx.Err() != nil {
+			return
+		}
 		s.callTool(ctx, msg)
 	}()
 }
@@ -895,10 +929,22 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 			a.Offset, rel, len(text))
 	}
 
+	// Both ends of the chunk have to land on a character boundary. The offset
+	// handed back for the next call is a byte offset into the extracted text,
+	// so cutting at a fixed width lands mid-character on any material that is
+	// not plain ASCII: the seam arrives as replacement glyphs, and the caller
+	// then resumes half way through a letter.
+	for a.Offset < len(text) && !utf8.RuneStart(text[a.Offset]) {
+		a.Offset++
+	}
 	end := a.Offset + max
 	truncated := end < len(text)
 	if !truncated {
 		end = len(text)
+	} else {
+		for end > a.Offset && !utf8.RuneStart(text[end]) {
+			end--
+		}
 	}
 
 	var b strings.Builder

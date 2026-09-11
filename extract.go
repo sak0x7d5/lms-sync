@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -533,8 +534,13 @@ func extractPDF(ctx context.Context, pathname string) (extraction, error) {
 
 	// -q keeps the tool's own warnings out of the text; "-" writes to stdout.
 	cmd := exec.CommandContext(ctx, exe, "-q", "-enc", "UTF-8", pathname, "-")
-	var out bytes.Buffer
-	cmd.Stdout = &out
+	// Capped as it arrives, not after. Everything else that reads a file here
+	// goes through a LimitReader for the same reason, but this one output was
+	// collected whole and only trimmed once the process had finished — so a
+	// PDF that expands to gigabytes of text held all of it in memory on the
+	// way to being cut down to four megabytes.
+	out := &cappedBuffer{limit: maxExtractBytes}
+	cmd.Stdout = out
 	cmd.Stderr = io.Discard
 
 	if err := cmd.Run(); err != nil {
@@ -551,13 +557,50 @@ func extractPDF(ctx context.Context, pathname string) (extraction, error) {
 	}
 
 	text := out.String()
-	if len(text) > maxExtractBytes {
-		text = text[:maxExtractBytes]
-	}
 	// A PDF with no text at all is almost always a scan. Saying so is what
 	// tells a student the file needs OCR rather than leaving them to wonder
 	// why searching never finds their handwritten-notes lecture.
 	return finish(text, "this PDF holds no text layer, so it is probably a scan"), nil
+}
+
+// cappedBuffer collects at most limit bytes and quietly drops the rest.
+//
+// Dropping rather than erroring is deliberate: the overflow is going to be
+// truncated anyway, and failing the command here would turn a very long
+// lecture into "could not be read" instead of into its first four megabytes.
+type cappedBuffer struct {
+	buf   bytes.Buffer
+	limit int
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.limit - c.buf.Len(); room > 0 {
+		if len(p) < room {
+			room = len(p)
+		}
+		c.buf.Write(p[:room])
+	}
+	// Report the whole write as accepted; the producer is not at fault and
+	// a short write would be reported to it as an I/O error.
+	return len(p), nil
+}
+
+func (c *cappedBuffer) String() string { return c.buf.String() }
+
+// truncateBytes cuts a string to at most n bytes without splitting a
+// character in half.
+//
+// Slicing extracted text at a fixed byte offset lands mid-rune on anything
+// that is not plain ASCII, and the broken tail then travels: into the cached
+// .txt file, into a search snippet, and into what an assistant reads back.
+func truncateBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // ---------------------------------------------------------------------------
@@ -570,9 +613,7 @@ func finish(text, emptyNote string) extraction {
 	text = manyBlanksRe.ReplaceAllString(text, "\n\n")
 	text = strings.TrimSpace(text)
 
-	if len(text) > maxExtractBytes {
-		text = text[:maxExtractBytes]
-	}
+	text = truncateBytes(text, maxExtractBytes)
 	if text == "" {
 		return extraction{Status: extractEmpty, Note: emptyNote}
 	}

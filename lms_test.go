@@ -13,11 +13,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -4061,6 +4063,19 @@ func waitInflight(t *testing.T, s *mcpServer, key string) {
 
 const listCoursesCall = `{"name":"list_courses","arguments":{}}`
 
+// blockQueue holds the tool queue shut until the returned function is called.
+//
+// It seeds the baton chain with a gate nothing closes yet, which is what makes
+// these tests deterministic: a call can be registered and cancelled before it
+// can possibly run. It replaces holding a mutex, which stopped working once
+// the queue became a chain — and the chain is what keeps pipelined calls in
+// the order the client sent them.
+func blockQueue(s *mcpServer) func() {
+	gate := make(chan struct{})
+	s.prevTool = gate
+	return func() { close(gate) }
+}
+
 // A cancelled call is dropped, not answered. The client has stopped waiting,
 // and the specification says not to send a result it never asked to keep —
 // but the reason this matters here is the queue: work nobody will read used
@@ -4068,16 +4083,16 @@ const listCoursesCall = `{"name":"list_courses","arguments":{}}`
 func TestMCPCancelledToolCallIsNotAnswered(t *testing.T) {
 	s, out := mcpServerFor(libraryForMCP(t))
 
-	// Holding the tool lock is what makes this deterministic: the call is
+	// Holding the queue shut is what makes this deterministic: the call is
 	// registered and cancelled before it can run.
-	s.toolMu.Lock()
+	release := blockQueue(s)
 	s.dispatch(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("7"),
 		Method: "tools/call", Params: json.RawMessage(listCoursesCall)})
 	waitInflight(t, s, "7")
 
 	s.dispatch(rpcMessage{JSONRPC: "2.0", Method: "notifications/cancelled",
 		Params: json.RawMessage(`{"requestId":7,"reason":"client timed out"}`)})
-	s.toolMu.Unlock()
+	release()
 
 	drain(&s.running, 2*time.Second)
 	if got := strings.TrimSpace(out.String()); got != "" {
@@ -4091,7 +4106,7 @@ func TestMCPCancelledToolCallIsNotAnswered(t *testing.T) {
 func TestMCPKeepsAnsweringWhileAToolWaits(t *testing.T) {
 	s, out := mcpServerFor(libraryForMCP(t))
 
-	s.toolMu.Lock()
+	release := blockQueue(s)
 	s.dispatch(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage("1"),
 		Method: "tools/call", Params: json.RawMessage(listCoursesCall)})
 	waitInflight(t, s, "1")
@@ -4103,7 +4118,7 @@ func TestMCPKeepsAnsweringWhileAToolWaits(t *testing.T) {
 	s.outMu.Lock()
 	answered := out.String()
 	s.outMu.Unlock()
-	s.toolMu.Unlock()
+	release()
 	drain(&s.running, 2*time.Second)
 
 	if !strings.Contains(answered, `"id":2`) {
@@ -4173,5 +4188,342 @@ func TestReExtractedTextIsNotServedStale(t *testing.T) {
 	}
 	if got := searchThroughServer(t, s, "Newton"); strings.Contains(got, "lecture.pptx") {
 		t.Errorf("the replaced text was still served from the cache: %s", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Regressions fixed while stabilising for release
+// ---------------------------------------------------------------------------
+
+// A retry must never post an empty form.
+//
+// The body is an io.Reader and the attempt that failed has already drained
+// it, so every retry after the first sent a request with no content at all.
+// On the login endpoint that is not a wasted round trip — the server records
+// a sign-in attempt with no eid and no pw, against the one endpoint where
+// repeated failures lock an account. Retries only ever helped a GET here, so
+// a request carrying a body is now answered rather than repeated.
+func TestARetriedRequestNeverPostsAnEmptyBody(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(body))
+		mu.Unlock()
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	cfg := DefaultConfig()
+	cfg.Delay = 0
+	client, err := NewClient(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retries = 3
+
+	resp, err := client.do(context.Background(), http.MethodPost, srv.URL+"/access/login",
+		strings.NewReader("eid=37103&pw=correct-horse"),
+		map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("a run of 500s was reported as success")
+	}
+	if KindOf(err) != KindServer {
+		t.Errorf("kind = %v, want server", KindOf(err))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, body := range bodies {
+		if body == "" {
+			t.Fatalf("attempt %d posted an empty body; all attempts: %q", i+1, bodies)
+		}
+	}
+}
+
+// do must never hand back a nil response with a nil error.
+//
+// Every caller goes straight to resp.Body, so that pair is a panic rather
+// than a failure — and the loop simply never ran when retries was below 1,
+// which is what a Config built in code rather than loaded through sanitise()
+// carries.
+func TestDoAlwaysReturnsAResponseOrAnError(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	client, err := NewClient(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.retries = 0
+
+	resp, err := client.do(context.Background(), http.MethodGet, srv.URL+"/portal", nil, nil)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	if resp == nil && err == nil {
+		t.Fatal("no response and no error: every caller would panic on resp.Body")
+	}
+}
+
+// Windows refuses the DOS device names as filenames, extension or not, so a
+// course holding "aux.pdf" synced cleanly on the machine it was built on and
+// failed on that one file forever on every Windows machine.
+func TestSafeNameAvoidsWindowsDeviceNames(t *testing.T) {
+	for _, name := range []string{"NUL", "aux.pdf", "Con.docx", "com1.txt", "LPT9"} {
+		got := SafeName(name)
+		stem := got
+		if i := strings.IndexByte(got, '.'); i > 0 {
+			stem = got[:i]
+		}
+		if reservedNames[strings.ToLower(stem)] {
+			t.Errorf("SafeName(%q) = %q, still a reserved device name", name, got)
+		}
+	}
+
+	// Ordinary names that merely start with those letters must be left alone:
+	// "constitution.pdf" is not "con".
+	for _, name := range []string{"constitution.pdf", "auxiliary.docx", "nulls.txt", "lecture.pdf"} {
+		if got := SafeName(name); got != name {
+			t.Errorf("SafeName(%q) = %q, want it unchanged", name, got)
+		}
+	}
+}
+
+// The written config is the only place a student learns which tabs exist.
+// Spelling the list out by hand is how it came to advertise three when the
+// tool had grown to six.
+func TestSavedConfigListsEveryAvailableSection(t *testing.T) {
+	dir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(dir, "config.toml")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The comment line specifically, not the sections= line below it: that
+	// one lists whatever is switched on, which is not the same question as
+	// what could be.
+	var advertised string
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.HasPrefix(line, "# Which tabs to mirror.") {
+			advertised = line
+		}
+	}
+	if advertised == "" {
+		t.Fatalf("the saved config no longer says which tabs exist:\n%s", body)
+	}
+	for _, sec := range sectionCatalogue() {
+		if !strings.Contains(advertised, "'"+sec.ID+"'") {
+			t.Errorf("the %q tab is not advertised in %q", sec.ID, advertised)
+		}
+	}
+}
+
+// A chunk boundary must land between characters.
+//
+// read_material hands back a byte offset for the caller to continue from, so
+// cutting at a fixed width split a character in half on any material that is
+// not plain ASCII: the seam arrived as replacement glyphs and the next call
+// resumed midway through a letter.
+func TestReadMaterialChunksOnCharacterBoundaries(t *testing.T) {
+	dest := t.TempDir()
+	// Three-byte runes, so almost every byte offset falls inside one.
+	// Trimmed, because extraction trims what it stores and the comparison
+	// below is against the stored copy.
+	text := strings.TrimSpace(strings.Repeat("café — naïve ∑ δx ", 400))
+
+	rel := "Physics/notes.txt"
+	if err := os.MkdirAll(filepath.Join(dest, "Physics"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, rel), []byte(text), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(dest, "config.toml")
+	cfg.Destination = dest
+	s := &mcpServer{cfg: cfg, dest: dest}
+
+	// Walk the whole file in small chunks, exactly as a client would.
+	var rebuilt strings.Builder
+	offset := 0
+	for step := 0; step < 200; step++ {
+		out, err := s.readMaterial([]byte(fmt.Sprintf(
+			`{"path":%q,"offset":%d,"max_chars":97}`, rel, offset)))
+		if err != nil {
+			t.Fatalf("read at offset %d: %v", offset, err)
+		}
+		if !utf8.ValidString(out) {
+			t.Fatalf("chunk at offset %d is not valid UTF-8", offset)
+		}
+		body := out
+		if i := strings.Index(body, "\n\n"); i >= 0 {
+			body = body[i+2:]
+		}
+		next := offset
+		if i := strings.Index(body, "[truncated — continue with read_material at offset "); i >= 0 {
+			fmt.Sscanf(body[i:], "[truncated — continue with read_material at offset %d]", &next)
+			body = strings.TrimRight(body[:i], "\n")
+		}
+		rebuilt.WriteString(body)
+		if next == offset {
+			break
+		}
+		offset = next
+	}
+
+	if rebuilt.String() != text {
+		t.Errorf("reassembled text does not match the original (%d bytes vs %d)",
+			rebuilt.Len(), len(text))
+	}
+}
+
+// pdftotext's output is capped as it arrives rather than after the process
+// has finished.
+//
+// The trimming in finish() hides this from the returned text either way — the
+// difference is only ever visible in memory, which is the whole point: a PDF
+// that expands to gigabytes of text used to be held whole on its way to being
+// cut down to four megabytes. So the buffer is what is asserted on, not the
+// extraction around it.
+func TestPDFOutputBufferStopsAtItsLimit(t *testing.T) {
+	buf := &cappedBuffer{limit: 10}
+
+	// A short write, then one that straddles the limit, then one entirely
+	// past it. Every one has to be reported as fully accepted: a short count
+	// reaches the producer as an I/O error and would fail the extraction.
+	for _, chunk := range []string{"abcde", "fghijklmno", "pqrstuvwxyz"} {
+		n, err := buf.Write([]byte(chunk))
+		if err != nil {
+			t.Fatalf("write %q: %v", chunk, err)
+		}
+		if n != len(chunk) {
+			t.Errorf("write %q reported %d of %d bytes accepted", chunk, n, len(chunk))
+		}
+	}
+
+	if got := buf.String(); got != "abcdefghij" {
+		t.Errorf("buffer holds %q, want the first 10 bytes only", got)
+	}
+}
+
+// The whole path still works with a real (stubbed) external tool, and the
+// text that comes back respects the cap.
+func TestPDFTextIsCappedAsItArrives(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stub is a shell script")
+	}
+	dir := t.TempDir()
+	stub := fakePDFTool(t, strings.Repeat("x", 4096))
+	old := pdfTool
+	pdfTool = stub
+	defer func() { pdfTool = old }()
+
+	pdf := filepath.Join(dir, "lecture.pdf")
+	if err := os.WriteFile(pdf, []byte("%PDF-1.4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ex, err := extractPDF(context.Background(), pdf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex.Status != extractOK {
+		t.Fatalf("status = %q, want ok", ex.Status)
+	}
+	if len(ex.Text) > maxExtractBytes {
+		t.Errorf("kept %d bytes, more than the %d-byte cap", len(ex.Text), maxExtractBytes)
+	}
+}
+
+// A dry run must not create the destination folder.
+//
+// Checking a mistyped --dest is most of what the flag is for, and it created
+// the typo before any of the dryRun guards below it were consulted — then
+// reported the files it would have put in it. The folder is a write like the
+// lock file and the text cache, both of which the same run already skips.
+func TestDryRunDoesNotCreateTheDestination(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	cfg.Destination = filepath.Join(t.TempDir(), "mistyped-folder")
+
+	client, _ := NewClient(cfg, false)
+	ctx := context.Background()
+	if err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	res, err := Sync(ctx, client, cfg, manifest, true, func(Event) {})
+	if err != nil {
+		t.Fatalf("dry run failed: %v", err)
+	}
+	// It still has to do its job: say what would be downloaded.
+	if res.New == 0 {
+		t.Error("the dry run reported nothing it would download")
+	}
+	if _, err := os.Stat(cfg.Destination); err == nil {
+		t.Errorf("the dry run created %s", cfg.Destination)
+	}
+}
+
+// Tool calls come back in the order the client sent them.
+//
+// They run off the read loop, one at a time — but "one at a time" was a mutex,
+// and goroutines do not acquire a mutex in the order they were started. So a
+// client that pipelined record_answer and the weak_spots call behind it got
+// them the other way round about a quarter of the time, and the read reported
+// nothing recorded. The queue is a chain of channels linked on the read loop,
+// where the client's order is still known.
+//
+// Blocking the queue first is what makes this deterministic rather than
+// merely likely: all five are dispatched and waiting before any can run.
+func TestMCPToolCallsAnswerInTheOrderTheyArrived(t *testing.T) {
+	s, out := mcpServerFor(libraryForMCP(t))
+
+	release := blockQueue(s)
+	const n = 5
+	for i := 1; i <= n; i++ {
+		s.dispatch(rpcMessage{JSONRPC: "2.0", ID: json.RawMessage(strconv.Itoa(i)),
+			Method: "tools/call", Params: json.RawMessage(listCoursesCall)})
+		waitInflight(t, s, strconv.Itoa(i))
+	}
+	release()
+	drain(&s.running, 5*time.Second)
+
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var reply struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &reply); err != nil {
+			t.Fatalf("reply is not JSON: %s", line)
+		}
+		got = append(got, string(reply.ID))
+	}
+
+	want := []string{"1", "2", "3", "4", "5"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d replies, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("replies came back as %v, want %v", got, want)
+		}
 	}
 }
