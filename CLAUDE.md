@@ -156,7 +156,9 @@ These encode bugs that already cost someone real time — the comments in the so
 - **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
 - **One sync at a time per library, across processes.** A scheduled `--sync`, the web UI and a tool call can all reach for one destination; two crawls duplicate every request and hammering a login endpoint is how an account gets locked. `takeLock` is inside `Sync`, so every surface inherits it; a dry run is exempt because a lock file is a write. A lock older than `lockStaleAfter` is treated as a corpse — refusing to sync ever again would be worse than the collision it guards. `TestOnlyOneSyncRunsAtATime`, `TestAStaleLockDoesNotBlockForever`, `TestDryRunTakesNoLock`.
 - **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
-- **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`.
+- **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`. That is a rule about *replying*, not about ignoring: `notifications/cancelled` is acted on, and the invariant below is why it has to be.
+- **A tool call never blocks the read loop, and a cancelled one is dropped.** Handling messages strictly in turn meant a slow search also held up the client's notice that it had given up on it — so one timed-out call left every later call queued behind work nobody would read, which is what turned a single timeout into two. Calls still run one at a time (`toolMu`), since a client that pipelines a record and a read expects the read to see the record, and replies are serialised on `outMu` because interleaved ones are an unreadable stream rather than a slow one. A cancelled call writes no reply: the client is not waiting for one, and dropping it is what clears the queue. `TestMCPCancelledToolCallIsNotAnswered`, `TestMCPKeepsAnsweringWhileAToolWaits`.
+- **Cached text is only ever as old as the last extraction.** Holding bodies in memory is what stops a search re-reading the whole library, but a cached answer must never outlive the file it came from: each is validated against its index record, so a sync that re-extracts a deck drops the old text on the next search. `TestMCPExtractedTextIsReadOnceAcrossSearches`, `TestReExtractedTextIsNotServedStale`.
 - **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
 - **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
 - **Every prompt carries the ground rules.** A client with no project instructions is the normal case, so "search before answering", "cite the path", and above all "an empty folder means the material was not uploaded, not that it was never taught" have to travel with the prompt. `TestEveryPromptCarriesTheGroundRules`.
@@ -268,10 +270,25 @@ and far too slow to sit inside a tool call. Keeping the mirror current stays
 anywhere on that path corrupts the stream and the client disconnects with no
 usable diagnosis. Everything for a human goes to stderr via `mcpLog`.
 
-Four of the five tools (`list_courses`, `find_material`, `read_material`,
+Four of the tools (`list_courses`, `find_material`, `read_material`,
 `whats_new`) read `scanLibrary` plus the text index, re-read per call rather
 than cached: a sync may well run while the server is up, and a stale answer
 about coursework is worse than a few milliseconds of walking a folder.
+
+**The extracted text those answers quote is the exception, and had to become
+one.** `find_material` reads the text of every file in the library to answer
+one query, so re-reading it per call costs one file open per library file, per
+search — measured at ~2,100 opens a search on a 2,000-file library, and on a
+destination inside a cloud-synced folder every one of those can be a download
+rather than a read. `textMemory` holds the bodies between calls, each keyed to
+the size and modification time of the record describing its source file, so
+re-extraction still drops the stale copy. What is re-read per call is the
+index; what is cached is only the text that index still vouches for.
+
+A tool call runs on its own goroutine so the read loop keeps answering while
+one works — `ping`, and above all `notifications/cancelled`. Calls are still
+serialised on `toolMu`, because two of them can write to the library; what
+moved off the read loop is the *waiting*.
 
 `sync_courses` is the exception and the only thing here that goes online. It
 **starts** a sync and returns — a crawl is minutes and a tool call has seconds

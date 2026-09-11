@@ -229,7 +229,7 @@ func (s TextStats) Searchable() int { return s.Extracted + s.Current }
 func RefreshText(ctx context.Context, dest string, report Reporter) (TextStats, error) {
 	var stats TextStats
 
-	entries, err := scanLibrary(dest)
+	entries, err := scanLibrary(ctx, dest)
 	if err != nil {
 		return stats, err
 	}
@@ -369,4 +369,93 @@ func (s TextStats) Summary() string {
 		b.WriteString("; " + strconv.Itoa(s.Failed) + " could not be read")
 	}
 	return b.String()
+}
+
+// ---------------------------------------------------------------------------
+// Reading the same text more than once
+// ---------------------------------------------------------------------------
+//
+// find_material reads the extracted text of every file in the library to
+// answer one query, and re-reading all of it from disk on every call is what
+// made a search take longer than the client was willing to wait for it. The
+// cost is one file open per library file, per query, and it grows with the
+// library all semester — on a destination inside a cloud-synced folder, where
+// opening a file can mean fetching it, that is the difference between
+// milliseconds and minutes.
+//
+// The bodies are held in memory between calls instead, each validated against
+// the index record describing the file it came from. Re-extraction changes
+// that record's size or modification time, which is what drops a stale body:
+// a cached answer is therefore never older than the last extraction, and a
+// sync running alongside the server still cannot serve yesterday's text.
+
+// textMemoryLimit bounds what is held at once. Extracted text is far smaller
+// than the material it came from, so this covers an ordinary semester several
+// times over; the limit exists so that a pathological library degrades to the
+// old behaviour rather than to an out-of-memory kill.
+const textMemoryLimit = 256 << 20
+
+// textMemory caches extracted text between tool calls.
+type textMemory struct {
+	mu     sync.Mutex
+	bodies map[string]memoText
+	bytes  int64
+
+	// Counted so a test can prove a second identical search reads nothing
+	// from disk. There is no other way to observe a cache that is working.
+	hits, reads int
+}
+
+type memoText struct {
+	body string
+	size int64 // of the source file, as its index record describes it
+	mod  int64
+}
+
+// text returns the extracted text of one file, from memory when the index
+// record still matches what was cached.
+func (m *textMemory) text(ti *TextIndex, rel string) (string, bool) {
+	r, ok := ti.Record(rel)
+	if !ok || r.Status != string(extractOK) {
+		return "", false
+	}
+
+	m.mu.Lock()
+	if got, ok := m.bodies[rel]; ok && got.size == r.Size && got.mod == r.Mod {
+		m.hits++
+		m.mu.Unlock()
+		return got.body, true
+	}
+	m.mu.Unlock()
+
+	// Read outside the lock: one slow file must not stall every other call.
+	body, err := os.ReadFile(textPathFor(ti.dest, rel))
+	if err != nil {
+		return "", false
+	}
+	text := string(body)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.reads++
+	if m.bodies == nil {
+		m.bodies = map[string]memoText{}
+	}
+	// Over the limit everything goes, rather than the least recently used:
+	// tracking use order costs more than the occasional refill, and a library
+	// too large to hold is no worse off than it was with no cache at all.
+	if m.bytes+int64(len(text)) > textMemoryLimit {
+		m.bodies = map[string]memoText{}
+		m.bytes = 0
+	}
+	m.bodies[rel] = memoText{body: text, size: r.Size, mod: r.Mod}
+	m.bytes += int64(len(text))
+	return text, true
+}
+
+// counts reports cache hits and disk reads, for tests.
+func (m *textMemory) counts() (hits, reads int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hits, m.reads
 }
