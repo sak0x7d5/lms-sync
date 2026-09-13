@@ -268,8 +268,9 @@ A browser is never told the real path of a folder the user picks — the File Sy
 ### The MCP server
 
 `--mcp` speaks JSON-RPC 2.0 over stdio so an assistant can search and read the
-library. It is a *reader*: it never logs in, never fetches, and needs no
-password, which is also why it can answer in milliseconds — a crawl is minutes
+library. It is a *reader* everywhere but `sync_courses` (below): it
+never logs in, never fetches, and needs no password, which is also why it can
+answer in milliseconds — a crawl is minutes
 and far too slow to sit inside a tool call. Keeping the mirror current stays
 `--sync`'s job, on a schedule.
 
@@ -303,7 +304,15 @@ moved off the read loop is the *waiting*.
 `Client` every other surface uses, which is the point: Samigo stays refused,
 `allowedContent` still holds, and auth failures are still never retried. A
 second HTTP path here is how those protections would quietly stop applying.
-`connectQuiet` exists because `connect` prints to stdout. Tool descriptions carry
+`connectQuiet` exists because `connect` prints to stdout.
+
+Credentials reach it the same way they reach every other surface: `run()`
+applies `LMS_USER` / `LMS_PASS` over the loaded config *before* dispatching to
+`serveMCP`, so an `env` block in a client's `mcpServers` entry works with no
+code here knowing about MCP at all — which is the idiom every other MCP server
+uses for its secrets, and what the README documents. An env-only setup has no
+config file to carry the destination, so `--dest` goes in `args`; without it
+the library resolves to `Courses` beside the binary. Tool descriptions carry
 their own context because the server is meant to work in any MCP client, and
 most have no project instructions to lean on.
 

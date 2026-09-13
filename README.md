@@ -65,8 +65,10 @@ configuration, `130` interrupted. Enough for a scheduler to act on.
 ## Use it with an AI assistant
 
 `--mcp` serves your synced library to any assistant that speaks MCP, so you can
-ask about a course instead of hunting through folders. It reads the mirror on
-disk — it never logs in and needs no password.
+ask about a course instead of hunting through folders. It answers from the
+mirror on your disk, which is why it answers in milliseconds — a crawl takes
+minutes, far too long to sit inside a question. One tool, `sync_courses`, goes
+online to fetch new material; everything else needs no password and no network.
 
 A sync makes the text searchable as it goes (`grep` cannot see inside a
 PowerPoint), so there is nothing extra to run:
@@ -78,18 +80,51 @@ lms-sync --sync
 `lms-sync --extract` does that pass on its own, which is what you want after
 installing `pdftotext` — it picks up the PDFs it previously had to skip.
 
-Then point your client at the binary. For Claude Code, in `.mcp.json`:
+### Setting it up
+
+Point your client at the binary. The shape is the same everywhere; only the
+file differs.
+
+**Claude Code** — `.mcp.json` in your project, or run `claude mcp add`.
+**Claude Desktop** — `claude_desktop_config.json`:
+`~/Library/Application Support/Claude/` on macOS,
+`%APPDATA%\Claude\` on Windows.
+Other clients (opencode, Cursor) use the same `mcpServers` block.
 
 ```json
 {
   "mcpServers": {
     "lms": {
       "command": "/full/path/to/lms-sync",
-      "args": ["--mcp"]
+      "args": ["--mcp", "--dest", "/full/path/to/your/Courses"],
+      "env": {
+        "LMS_USER": "your-username",
+        "LMS_PASS": "your-password"
+      }
     }
   }
 }
 ```
+
+Use absolute paths for both. A client starts this binary from its own working
+directory, not from yours.
+
+**`env` is optional, and worth understanding before you fill it in.** Seven of
+the eight tools only read the folder on your disk — they never connect to
+anything, and they work with no credentials at all. The password buys you one
+tool: `sync_courses`, which fetches new material so you can ask for it in
+conversation instead of dropping to a terminal.
+
+So if you would rather not put a password in a client's config file, leave
+`env` out. Keep `lms-sync --sync` on a schedule instead and the assistant
+still sees everything, just as of the last run.
+
+If you already have a `config.toml` beside the binary, its credentials and
+destination are used and you can drop both `env` and `--dest`. Environment
+variables win over the file where both are set, which is what makes `env`
+useful for a second library or a throwaway setup.
+
+### What it offers
 
 It offers eight tools. Four read the mirror: `list_courses`, `find_material`
 (searches the text of every slide, document and saved page), `read_material`
