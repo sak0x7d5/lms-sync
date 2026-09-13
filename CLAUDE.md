@@ -308,8 +308,8 @@ their own context because the server is meant to work in any MCP client, and
 most have no project instructions to lean on.
 
 `prompts` are the study workflows — `prep_for_class`, `quiz_me`,
-`explain_from_my_material`, `catch_up` — offered as things to pick rather than
-sentences to compose. They also carry `groundRules`, which is the less obvious
+`explain_from_my_material`, `catch_up` and `study_plan` — offered as things to
+pick rather than sentences to compose. They also carry `groundRules`, which is the less obvious
 half of why they exist: this server is meant to work in any MCP client, and
 most have no project instructions anywhere, so anything a model must not do
 has to travel with the prompt or it is never said. The load-bearing rule is

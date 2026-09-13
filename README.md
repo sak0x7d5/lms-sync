@@ -1,5 +1,9 @@
 # lms-sync
 
+[![ci](https://github.com/sak0x7d5/lms-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/sak0x7d5/lms-sync/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/go-1.21%2B-00ADD8)](https://go.dev)
+[![licence: MIT](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
+
 Mirror your course materials from a [Sakai](https://www.sakailms.org/) LMS to a
 folder on your machine — slides, handouts and code, as ordinary local files.
 
@@ -43,7 +47,11 @@ lms-sync --probe --save-pages ./pages
 lms-sync --extract       make synced files searchable, without going online
 lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
 lms-sync --dest PATH     override the destination
+lms-sync --config PATH   use a config file elsewhere
 lms-sync --insecure      skip TLS verification (last resort)
+lms-sync --no-browser    start the interface without opening a browser
+lms-sync --addr HOST:PORT   bind the interface to a fixed address
+lms-sync --version       print the version and exit
 ```
 
 Exit codes: `0` success, `1` some files failed, `2` bad credentials or
@@ -83,10 +91,12 @@ Then point your client at the binary. For Claude Code, in `.mcp.json`:
 }
 ```
 
-It offers five tools: `list_courses`, `find_material` (searches the text of
-every slide, document and saved page), `read_material`, `whats_new`, and
-`sync_courses` — the only one that goes online, so the assistant can fetch new
-material when you ask instead of you dropping to a terminal.
+It offers eight tools. Four read the mirror: `list_courses`, `find_material`
+(searches the text of every slide, document and saved page), `read_material`
+and `whats_new`. Three keep your study history: `record_answer`, `due_reviews`
+and `weak_spots`. And `sync_courses` is the only one that goes online, so the
+assistant can fetch new material when you ask instead of you dropping to a
+terminal.
 
 It also offers study workflows as prompts, which most clients show as a menu:
 **prep_for_class**, **quiz_me**, **explain_from_my_material**, **catch_up**
@@ -176,7 +186,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `retries` | `3` | attempts on timeout / 429 / 5xx |
 | `login_path` | auto | pin the login endpoint |
 | `extensions` | common types | which files to download |
-| `sections` | all five below | which tabs to mirror |
+| `sections` | all six below | which tabs to mirror |
 | `keep_pages` | `false` | also save the captured page, not just the files a tab links to |
 
 `LMS_USER` and `LMS_PASS` override the file, so a scheduled run need not
@@ -205,11 +215,16 @@ instructor's folder — worth knowing, since Sakai's WebDAV interface *can*.
 | Tab | What you get |
 |---|---|
 | Resources | the files, in the course folder itself |
+| Overview | what the instructor typed on the course home page |
 | Syllabus | the linked files — usually the course outline PDF |
 | Announcements | the posts, as a page you can read offline |
 | Assignments | the briefs, which are usually the PDFs you actually need |
-
 | Drop Box | your own Drop Box folder |
+
+**Overview matters most on the courses that look empty.** Where an instructor
+never touched Resources, it is often the only place anything was posted at all
+— a reading list, a marks breakdown, a room change, links to lecture
+recordings.
 
 Every run also writes **`index.html`** at the top of your courses folder: one
 page listing every file you have, newest first, with a box that filters as you
