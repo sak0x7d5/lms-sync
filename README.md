@@ -91,6 +91,37 @@ file differs.
 `%APPDATA%\Claude\` on Windows.
 Other clients (opencode, Cursor) use the same `mcpServers` block.
 
+If you have already run the tool once, `config.toml` sits beside the binary
+and holds your destination and credentials. Point at the binary and you are
+done:
+
+```json
+{
+  "mcpServers": {
+    "lms": {
+      "command": "/full/path/to/lms-sync",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Use an absolute path. A client starts this binary from its own working
+directory, not from yours — the destination is resolved against the config
+file beside the binary, never against wherever the client happened to be.
+
+**Prefer this form if you have a `config.toml`.** The alternative below
+repeats settings that already exist in it, and repeated settings drift: change
+your destination in the interface a term from now and a hardcoded `--dest`
+keeps pointing at the old folder, so your assistant reads a library nothing is
+filling any more. Nothing reports that — it just looks like a course stopped
+having material.
+
+#### Without a config file
+
+For a machine where the binary has never been run — a second library, or a
+setup you would rather keep entirely in the client — pass everything in:
+
 ```json
 {
   "mcpServers": {
@@ -106,8 +137,10 @@ Other clients (opencode, Cursor) use the same `mcpServers` block.
 }
 ```
 
-Use absolute paths for both. A client starts this binary from its own working
-directory, not from yours.
+`--dest` is needed here because with no config file a relative destination
+resolves to `Courses` beside the binary, which is rarely where you want it.
+Both paths absolute. Environment variables win over the file wherever both
+are set.
 
 **`env` is optional, and worth understanding before you fill it in.** Seven of
 the eight tools only read the folder on your disk — they never connect to
@@ -118,11 +151,6 @@ conversation instead of dropping to a terminal.
 So if you would rather not put a password in a client's config file, leave
 `env` out. Keep `lms-sync --sync` on a schedule instead and the assistant
 still sees everything, just as of the last run.
-
-If you already have a `config.toml` beside the binary, its credentials and
-destination are used and you can drop both `env` and `--dest`. Environment
-variables win over the file where both are set, which is what makes `env`
-useful for a second library or a throwaway setup.
 
 ### What it offers
 
