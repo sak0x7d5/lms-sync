@@ -29,6 +29,8 @@ func run() int {
 		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
+		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
+		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
 		dryRun     = flag.Bool("dry-run", false, "list what would download, write nothing")
 		insecure   = flag.Bool("insecure", false, "skip TLS verification (last resort)")
@@ -70,6 +72,12 @@ func run() int {
 	if v := os.Getenv("LMS_PASS"); v != "" {
 		cfg.Password = v
 	}
+	// The flag turns the push on for one run; drive_push in the config is
+	// what every other surface reads, since neither the interface nor the
+	// MCP server has a command line to pass this on.
+	if *pushDrive {
+		cfg.DrivePush = true
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -77,6 +85,8 @@ func run() int {
 	manifest := LoadManifest(manifestPath())
 
 	switch {
+	case *driveLogIn:
+		return cliDriveLogin(ctx, cfg)
 	case *doDiscover:
 		return cliDiscover(ctx, cfg, *insecure)
 	case *doProbe:
@@ -106,6 +116,7 @@ func usage() {
   lms-sync --probe         report which tabs your LMS offers, and how
   lms-sync --extract       make synced files searchable, without going online
   lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
+  lms-sync --drive-login   sign in to Google Drive (once; everything else is silent)
 
 Options:
 `, version)
@@ -240,6 +251,12 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 			fmt.Printf("\nOpen this to browse everything:\n    %s\n", e.Path)
 		case "extract":
 			fmt.Printf("\n%s\n", e.Message)
+		case "push":
+			if e.Path != "" {
+				fmt.Printf("    ^ %s\n", e.Path)
+			} else {
+				fmt.Printf("\n%s\n", e.Message)
+			}
 		case "warn":
 			fmt.Printf("    ! %s %s\n", e.Path, e.Message)
 		case "error":
@@ -346,6 +363,25 @@ func hintOf(err error) string {
 		return full[i+2:]
 	}
 	return ""
+}
+
+// cliDriveLogin is the one place in this tool that asks a human for anything.
+//
+// It deliberately does not call cfg.Validate(): signing in to Google has
+// nothing to do with the LMS password, and refusing to set up a backup
+// because the university credentials are not filled in yet would be a
+// nonsense.
+func cliDriveLogin(ctx context.Context, cfg *Config) int {
+	if err := driveLogin(ctx, cfg); err != nil {
+		return reportErr(err)
+	}
+	if !cfg.DrivePush {
+		fmt.Println()
+		fmt.Println("The push itself is still off. Turn it on with either:")
+		fmt.Println("    drive_push = true      in config.toml, for every run")
+		fmt.Println("    lms-sync --sync --push-drive    for one run")
+	}
+	return 0
 }
 
 // cliExtract makes the already-synced library searchable.

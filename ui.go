@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"os/exec"
@@ -26,14 +28,24 @@ type server struct {
 	insecure bool
 	token    string
 
+	// addr is the address actually bound, which is what the Google redirect
+	// has to name. Taking it from the request's Host header instead would let
+	// whatever the browser happened to type decide where Google sends an
+	// authorisation code.
+	addr string
+
 	mu       sync.Mutex
 	running  bool
 	browsing bool
 	cancel   context.CancelFunc
-	subs     map[chan Event]struct{}
-	subsMu   sync.Mutex
-	lastErr  string
-	lastDone *Result
+	// The sign-in waiting for Google to redirect back, if any. One at a
+	// time: a second Connect click replaces the first, and the state check
+	// in complete then rejects the abandoned one.
+	driveAuth *driveAuthRequest
+	subs      map[chan Event]struct{}
+	subsMu    sync.Mutex
+	lastErr   string
+	lastDone  *Result
 }
 
 func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
@@ -61,6 +73,13 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 	mux.HandleFunc("/api/stop", s.auth(s.handleStop))
 	mux.HandleFunc("/api/browse", s.auth(s.handleBrowse))
 	mux.HandleFunc("/api/events", s.auth(s.handleEvents))
+	mux.HandleFunc("/api/drive/connect", s.auth(s.handleDriveConnect))
+	// Deliberately NOT behind s.auth. Google builds this request, not the
+	// page, so it cannot carry the session token — and a redirect URI with a
+	// secret in it would end up in Google's logs besides. What guards it is
+	// the OAuth state: sixteen random bytes minted per sign-in, compared in
+	// constant time, and useless once spent.
+	mux.HandleFunc("/api/drive/callback", s.handleDriveCallback)
 
 	// Bind to loopback only. Without this, anything else on the network
 	// could drive a form that holds your university password.
@@ -69,6 +88,7 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 		fmt.Printf("Error: could not start the interface on %s: %v\n", addr, err)
 		return 1
 	}
+	s.addr = ln.Addr().String()
 
 	url := fmt.Sprintf("http://%s/?t=%s", ln.Addr().String(), s.token)
 	fmt.Println("lms-sync is running at:")
@@ -147,6 +167,7 @@ type configPayload struct {
 	// "the student unticked everything", which are different intentions.
 	Sections  *[]string `json:"sections,omitempty"`
 	KeepPages *bool     `json:"keep_pages,omitempty"`
+	DrivePush *bool     `json:"drive_push,omitempty"`
 
 	AllSections []sectionInfo `json:"all_sections,omitempty"`
 	Configured  bool          `json:"configured"`
@@ -154,6 +175,12 @@ type configPayload struct {
 	Version     string        `json:"version"`
 	DefaultLMS  string        `json:"default_lms"`
 	CanBrowse   bool          `json:"can_browse"`
+
+	// Whether the backup can be offered at all, and whether it already has
+	// an account. Sent so the page can show one button that says the right
+	// thing, rather than a control that fails when pressed.
+	CanDrive       bool `json:"can_drive"`
+	DriveConnected bool `json:"drive_connected"`
 }
 
 func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -182,6 +209,9 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if in.KeepPages != nil {
 			s.cfg.KeepPages = *in.KeepPages
 		}
+		if in.DrivePush != nil {
+			s.cfg.DrivePush = *in.DrivePush
+		}
 		// The same guard the config file gets: unknown ids are dropped, and
 		// the list can never end up empty.
 		s.cfg.sanitise()
@@ -201,12 +231,16 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Courses:     s.cfg.Courses,
 		Sections:    &sections,
 		KeepPages:   &s.cfg.KeepPages,
+		DrivePush:   &s.cfg.DrivePush,
 		AllSections: sectionCatalogue(),
 		Configured:  s.cfg.Password != "" && s.cfg.Username != "",
 		Running:     s.running,
 		Version:     version,
 		DefaultLMS:  DefaultLMS,
 		CanBrowse:   canBrowse,
+
+		CanDrive:       s.cfg.driveConfigured(),
+		DriveConnected: s.cfg.driveConnected(),
 	})
 }
 
@@ -401,6 +435,97 @@ func (s *server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"path": path})
+}
+
+// handleDriveConnect starts a Google sign-in and hands the page the URL to
+// open.
+//
+// The interface already runs a loopback server, so it needs no listener of
+// its own — the redirect comes back to a route beside this one. That is the
+// whole reason connecting from the page is worth having: the terminal command
+// exists for headless machines, but nobody running the interface should have
+// to go find a terminal to switch a backup on.
+func (s *server) handleDriveConnect(w http.ResponseWriter, r *http.Request) {
+	// Copied, not shared: handleConfig can be writing to s.cfg while this
+	// reads the client id out of it. Same reason handleSync copies.
+	s.mu.Lock()
+	cfg := *s.cfg
+	s.mu.Unlock()
+
+	req, err := newDriveAuthRequest(&cfg, "http://"+s.addr+"/api/drive/callback")
+	if err != nil {
+		writeErr(w, statusFor(err), err.Error(), hintOf(err))
+		return
+	}
+
+	s.mu.Lock()
+	s.driveAuth = req
+	s.mu.Unlock()
+
+	json.NewEncoder(w).Encode(map[string]any{"url": req.url})
+}
+
+// handleDriveCallback finishes what handleDriveConnect started.
+//
+// This one renders a page rather than JSON: the browser arrives here by
+// following Google's redirect, so whatever comes back is what the student
+// reads.
+func (s *server) handleDriveCallback(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	req := s.driveAuth
+	cfg := *s.cfg
+	// Spent either way. A code is good once, and leaving the request in place
+	// would keep a usable state value alive for a second attempt.
+	s.driveAuth = nil
+	s.mu.Unlock()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	if req == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, driveLoginPage("Nothing was waiting",
+			"No sign-in was in progress. Go back to lms-sync and press "+
+				"Connect Google Drive again."))
+		return
+	}
+
+	q := r.URL.Query()
+	if e := q.Get("error"); e != "" {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, driveLoginPage("Not connected",
+			"Google reported: "+template.HTMLEscapeString(e)+
+				". Nothing was saved, and nothing else has changed."))
+		return
+	}
+
+	if err := req.complete(r.Context(), &cfg, q.Get("code"), q.Get("state")); err != nil {
+		w.WriteHeader(statusFor(err))
+		io.WriteString(w, driveLoginPage("Sign-in failed",
+			template.HTMLEscapeString(Explain(err))))
+		return
+	}
+
+	// Connecting an account the student does not then switch the backup on
+	// for is a dead end, so turn it on here. Saving it is what makes it
+	// survive a restart; a save that fails is worth saying so on the page
+	// rather than silently losing the setting.
+	s.mu.Lock()
+	s.cfg.DrivePush = true
+	saveErr := s.cfg.Save()
+	s.mu.Unlock()
+
+	detail := "Your library will be copied to Google Drive after every sync."
+	if saveErr != nil {
+		detail = "Signed in, but the setting could not be saved: " +
+			template.HTMLEscapeString(Explain(saveErr))
+	}
+	// A link back, because this tab was opened by the page and closing it is
+	// not something a browser lets it do for itself. Being dropped on a bare
+	// "you can close this" with the app's URL nowhere in sight is how someone
+	// ends up hunting through their terminal for the token again.
+	detail += ` <a href="http://` + template.HTMLEscapeString(s.addr) +
+		`/?t=` + template.HTMLEscapeString(s.token) + `">Back to lms-sync</a>`
+	io.WriteString(w, driveLoginPage("Google Drive connected", detail))
 }
 
 func (s *server) handleStop(w http.ResponseWriter, r *http.Request) {

@@ -1,8 +1,12 @@
 # Personal — identifies your account, may hold your password
 config.toml
 
+# Your Google sign-in. A refresh token is a live credential.
+drive-token.json
+
 # Local state
 manifest.json
+drive-push.json
 *.part
 
 # Downloaded course material (not yours to redistribute)
