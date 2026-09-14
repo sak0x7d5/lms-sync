@@ -44,6 +44,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [names.go](names.go) — filename/folder/URL normalisation.
 - [manifest.go](manifest.go) — the "already downloaded" record.
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
+- [platform.go](platform.go) — the one question `runtime.GOOS` cannot answer: whether this Linux is a phone.
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
@@ -191,6 +192,25 @@ These encode bugs that already cost someone real time — the comments in the so
 - **An enabled but empty tab is a `skip`, not a failure.** Plenty of courses leave a tool switched on and empty; counting those would train people to ignore the failure count. `TestEmptySectionIsSkippedNotFailed`.
 - **Every path that ends a run emits `done`, the panic path included.** The page re-enables its buttons on that event and on nothing else, so an `error` on its own leaves Sync, Dry run and Discover greyed out until the tab is reloaded — the interface looking broken over what may be one bad file. `runSync`'s recover therefore broadcasts both.
 - **Closing the interface stops the sync it started.** A run launched from the page deliberately has a context of its own, so one closed tab cannot abandon it — which also means nothing stopped it at shutdown. `Sync` releases the library's lock file with a defer that a killed process never runs, so Ctrl-C mid-crawl left the destination locked for the full `lockStaleAfter`, and the next run refused to start. `serveUI` cancels and waits (`stopSync`) before shutting the server down, the same wait `syncJob.wait` makes for the MCP server.
+- **Android is a Linux that has none of Linux's programs.** Termux is a Linux
+  userland, so a static `linux/arm64` binary runs on a phone unchanged and
+  reports `GOOS` "linux" — and then reaches for `xdg-open`, which no Termux
+  install has, so "your browser opens" was simply untrue there. `isTermux`
+  answers it from the environment (`TERMUX_VERSION`, or `com.termux` in
+  `PREFIX`) because nothing about the binary can, and two signals are read for
+  the same reason `Authenticated` reads two. `launchBrowser` walks a *list* of
+  openers rather than picking one per platform, which is what makes that guess
+  safe to get wrong in either direction: a phone falls through to `xdg-open`,
+  a desktop never finds the Termux tools on its PATH.
+  `TestTermuxIsRecognisedFromEitherSignal`,
+  `TestTermuxOpensTheAndroidBrowserNotXdgOpen`.
+- **Advice about the machine has to be true of that machine.** The no-chooser
+  hint tells Linux users to install zenity, which on Android is an afternoon
+  spent on a package that cannot help — Termux has no display to put a dialog
+  on. It is told where phone storage is instead, which is the thing that
+  actually bites: the default destination sits in the app's private data
+  directory, where no PDF reader, file manager or share sheet on the phone can
+  open a single file of it. `TestTheNoPickerHintFitsTheMachine`.
 - **A path component is never a Windows device name.** `NUL`, `AUX`, `COM1` and the rest are refused as filenames by Windows with or without an extension, and nothing rejects them elsewhere — so a course holding `aux.pdf` synced cleanly on the machine that built the library and failed on that one file, every run, for every Windows user. `SafeName` prefixes them; names that merely start with those letters are untouched. `TestSafeNameAvoidsWindowsDeviceNames`.
 - **Text is cut between characters, never inside one.** `read_material` hands back a byte offset for the caller to continue from, so a fixed-width cut splits a rune on any material that is not plain ASCII: the seam arrives as replacement glyphs and the next call resumes midway through a letter. `truncateBytes` and the chunking in `readMaterial` both snap to a boundary. `TestReadMaterialChunksOnCharacterBoundaries`.
 - **The saved config advertises every tab that exists.** The comment above `sections` is the only place a student learns what can be switched on, and spelling the list out by hand is how it came to name three tabs when the tool had grown to six. It is built from `sectionCatalogue()`. `TestSavedConfigListsEveryAvailableSection`.
@@ -263,7 +283,21 @@ A browser is never told the real path of a folder the user picks — the File Sy
 - The starting folder travels in the `LMS_SYNC_START` environment variable, never interpolated into the PowerShell or AppleScript source, so a path containing a quote cannot be executed as code.
 - Cancelling is not a failure. Each tool signals it differently, which is why `interpretPicker` is a pure function tested without a display (`TestInterpretPicker`). A red banner on a plain cancel is the bug to avoid.
 
-`canBrowse` is resolved once at startup and sent to the page, which hides the button entirely when no chooser exists — better than a button that does nothing.
+`canBrowse` is resolved once at startup and sent to the page, which hides the button entirely when no chooser exists — better than a button that does nothing. Android is that case permanently: Termux has no display, so the button is never shown there and the path is typed.
+
+### Which machines it builds for
+
+`windows/amd64`, `darwin/arm64`, `darwin/amd64`, `linux/amd64` and
+`linux/arm64`, in both [ci.yml](.github/workflows/ci.yml)'s cross-compile
+check and [release.yml](.github/workflows/release.yml)'s matrix — **keep those
+two lists the same**, or a target is released without ever having been
+compiled on a pull request.
+
+There is no Android build. `GOOS=android` exists and would need the NDK, while
+Termux runs the static `linux/arm64` binary as it is; a second artifact doing
+the same job would only make a student guess which one to download. That is
+also why `CGO_ENABLED=0` matters in the release job rather than being
+incidental — it is what makes the binary independent of Android's libc.
 
 ### The MCP server
 

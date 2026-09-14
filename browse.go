@@ -39,6 +39,24 @@ const hintNoPicker = `This machine has no folder chooser this tool can open, so 
 has to be typed. On Linux, installing zenity (or kdialog) enables the
 button.`
 
+// Android needs different advice, and the usual line would waste someone's
+// afternoon: Termux has no display to put a dialog on, so no package enables
+// the button there. What a phone needs instead is where its storage is, which
+// is genuinely not obvious — the destination defaults to a folder beside the
+// binary, and on Android that is inside the app's private data directory,
+// where the rest of the phone cannot open a single file of it.
+const hintNoPickerTermux = `Termux has no folder chooser to open, so the path has to be typed.
+Run termux-setup-storage once and your phone's own storage is then at
+~/storage/shared — a destination under there is readable by other apps.`
+
+// noPickerHint is whichever of those two fits the machine this is running on.
+func noPickerHint() string {
+	if isTermux() {
+		return hintNoPickerTermux
+	}
+	return hintNoPicker
+}
+
 const hintPickerFailed = `The folder chooser did not open. Type or paste the path instead —
 it is the only thing the button would have filled in.`
 
@@ -95,7 +113,7 @@ POSIX path of chosen
 func pickFolder(ctx context.Context, start string) (string, error) {
 	picker, ok := folderPicker()
 	if !ok {
-		return "", failf(KindNotFound, "open a folder chooser", hintNoPicker, nil)
+		return "", failf(KindNotFound, "open a folder chooser", noPickerHint(), nil)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, pickTimeout)
@@ -112,7 +130,7 @@ func pickFolder(ctx context.Context, start string) (string, error) {
 	case "linux", "freebsd", "openbsd", "netbsd":
 		cmd = unixPicker(ctx, picker, start)
 	default:
-		return "", failf(KindNotFound, "open a folder chooser", hintNoPicker, nil)
+		return "", failf(KindNotFound, "open a folder chooser", noPickerHint(), nil)
 	}
 
 	cmd.Env = append(os.Environ(), startDirEnv+"="+start)

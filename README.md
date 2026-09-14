@@ -19,7 +19,17 @@ small window opens in your browser. Fill in four fields once and press Sync.
 ## Use it
 
 1. Download the binary for your system from
-   [Releases](https://github.com/sak0x7d5/lms-sync/releases).
+   [Releases](https://github.com/sak0x7d5/lms-sync/releases):
+
+   | Your machine | File |
+   |---|---|
+   | Windows | `lms-sync-windows-amd64.exe` |
+   | Mac (Apple silicon) | `lms-sync-darwin-arm64` |
+   | Mac (Intel) | `lms-sync-darwin-amd64` |
+   | Linux, PC | `lms-sync-linux-amd64` |
+   | Linux on ARM — Raspberry Pi, ARM server | `lms-sync-linux-arm64` |
+   | Android, in [Termux](#on-your-phone-android) | `lms-sync-linux-arm64` |
+
 2. Put it in a folder of its own — it keeps `config.toml` and `manifest.json`
    beside itself.
 3. Run it. Your browser opens.
@@ -30,6 +40,36 @@ Reopening skips straight to the sync screen — settings are remembered.
 
 Only course folders go to your destination; the program and its files stay
 where you put the binary.
+
+### On your phone (Android)
+
+Termux is a Linux userland, so the `linux-arm64` binary is the one Android
+runs — there is no separate Android build and nothing to compile on the
+phone. Install [Termux](https://termux.dev) (the F-Droid build; the Play
+Store one is unmaintained), then:
+
+```bash
+pkg install wget
+termux-setup-storage        # once — Android asks for the storage permission
+
+mkdir -p ~/lms-sync && cd ~/lms-sync
+wget https://github.com/sak0x7d5/lms-sync/releases/latest/download/lms-sync-linux-arm64
+chmod +x lms-sync-linux-arm64
+./lms-sync-linux-arm64
+```
+
+The interface opens in your phone's browser, the same as on a laptop.
+
+**Set the destination to somewhere under `~/storage/shared`** — say
+`/storage/emulated/0/Courses`, which is what the picker on your phone calls
+*Internal storage ▸ Courses*. Termux's own home directory is inside the app's
+private data, which nothing else on the phone is allowed to read: slides
+synced there cannot be opened by a PDF reader, a file manager, or anything
+you might share them to.
+
+`pkg install poppler` makes PDFs searchable, exactly as on a desktop. There is
+no folder-chooser button on Android — no Termux install has a display to put
+one on — so the destination is typed rather than picked.
 
 ## Command line
 
@@ -173,8 +213,10 @@ lives in `<destination>/.lms-study/` and is the one folder here that cannot be
 rebuilt from the LMS.
 
 PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
-`pdftotext` on your PATH. Without it everything else still works and the tool
-tells you which files it could not read.
+`pdftotext` on your PATH: `apt install poppler-utils` on Debian or Ubuntu
+(including a Raspberry Pi), `brew install poppler` on a Mac, `pkg install
+poppler` in Termux. Without it everything else still works and the tool tells
+you which files it could not read.
 
 ## Build from source
 
@@ -192,7 +234,13 @@ Cross-compile for everything from one machine:
 ```bash
 GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o lms-sync.exe
 GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-mac
+GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-arm64
 ```
+
+`CGO_ENABLED=0` (the default when cross-compiling) is what makes those static,
+which is why the `linux/arm64` one runs under Termux as well as on a Raspberry
+Pi: it depends on no libc at all, Android's included. Any other architecture Go
+targets builds the same way — `linux/arm` for a 32-bit phone or an older Pi.
 
 ---
 

@@ -520,16 +520,44 @@ func statusFor(err error) int {
 	return http.StatusInternalServerError
 }
 
+// launchBrowser opens the interface in whatever this machine calls a browser.
+//
+// The openers are tried in turn rather than chosen one per platform, because
+// Android is where the obvious answer is absent: Termux reports GOOS "linux"
+// and has no xdg-open at all, and reaching Android's own browser is what
+// termux-open-url is for. Walking a list is also what makes the Termux guess
+// safe to get wrong — a desktop mistaken for a phone finds none of the
+// Termux tools on its PATH and falls through to xdg-open.
 func launchBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	case "darwin":
-		cmd = exec.Command("open", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
+	for _, argv := range browserOpeners(runtime.GOOS, isTermux()) {
+		if _, err := exec.LookPath(argv[0]); err != nil {
+			continue
+		}
+		args := append(append([]string{}, argv[1:]...), url)
+		// A failure here is not fatal — the URL is printed on the console.
+		if exec.Command(argv[0], args...).Start() == nil {
+			return
+		}
 	}
-	// A failure here is not fatal — the URL is printed on the console.
-	_ = cmd.Start()
+}
+
+// browserOpeners lists the commands that might open a URL, best first, each
+// without the URL itself — the caller appends that. Kept apart from
+// launchBrowser so the order can be tested on a machine that has none of
+// them, and so adding a platform does not mean touching the loop.
+func browserOpeners(goos string, termux bool) [][]string {
+	switch goos {
+	case "windows":
+		return [][]string{{"rundll32", "url.dll,FileProtocolHandler"}}
+	case "darwin":
+		return [][]string{{"open"}}
+	}
+	if termux {
+		// termux-open-url hands the URL straight to the phone's browser.
+		// termux-open takes the same argument and is what older
+		// termux-tools installs ship instead. xdg-open stays last for the
+		// rare Termux running a real desktop under X11.
+		return [][]string{{"termux-open-url"}, {"termux-open"}, {"xdg-open"}}
+	}
+	return [][]string{{"xdg-open"}}
 }

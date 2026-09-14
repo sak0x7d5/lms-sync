@@ -28,6 +28,11 @@ jobs:
           - { goos: darwin,  goarch: arm64, ext: '' }
           - { goos: darwin,  goarch: amd64, ext: '' }
           - { goos: linux,   goarch: amd64, ext: '' }
+          # arm64 covers a Raspberry Pi or an ARM server running Debian, and
+          # Termux on Android: Termux is a Linux userland, so the static
+          # linux/arm64 binary is the one a phone runs. CGO_ENABLED=0 below is
+          # what makes it static, and so independent of Android's libc.
+          - { goos: linux,   goarch: arm64, ext: '' }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
