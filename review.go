@@ -35,12 +35,17 @@ const (
 	// A note left for whoever finds this folder. The text index next door is
 	// disposable and says so; this is not, and two similar dot-directories
 	// side by side is an invitation to delete the wrong one.
-	studyReadme = `This folder is your study history: the questions you have been
-asked, what you got wrong, and when each is due to come back.
+	studyReadme = `This folder is your study history and your course notes:
+
+  review/  the questions you have been asked, what you got wrong, and when
+           each is due to come back
+  notes/   what you have told the tool about each course - a test announced
+           in class, what a lecture actually covered, a deadline that moved
 
 It is NOT disposable. Deleting .lms-index only costs a slow re-read of your
 course files. Deleting this folder loses everything the tool knows about you,
-and none of it can be rebuilt from the LMS.
+and none of it can be rebuilt from the LMS: the material was uploaded by
+somebody else, and this was not.
 `
 )
 
@@ -296,12 +301,20 @@ func (l *ReviewLog) Save() error {
 	if _, err := writeRendered(reviewPath(l.dest, l.course), data); err != nil {
 		return err
 	}
-	if _, err := writeRendered(filepath.Join(studyDir(l.dest), "README.txt"),
-		[]byte(studyReadme)); err != nil {
+	if err := writeStudyReadme(l.dest); err != nil {
 		return err
 	}
 	l.dirty = false
 	return nil
+}
+
+// writeStudyReadme leaves the folder saying what it is.
+//
+// Both halves of .lms-study call it, because either one appearing alone next
+// to a disposable .lms-index is the invitation to delete the wrong one.
+func writeStudyReadme(dest string) error {
+	_, err := writeRendered(filepath.Join(studyDir(dest), "README.txt"), []byte(studyReadme))
+	return err
 }
 
 // reviewedCourses lists the courses that have any history.

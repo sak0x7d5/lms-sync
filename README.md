@@ -106,9 +106,9 @@ configuration, `130` interrupted. Enough for a scheduler to act on.
 
 `--mcp` serves your synced library to any assistant that speaks MCP, so you can
 ask about a course instead of hunting through folders. It answers from the
-mirror on your disk, which is why it answers in milliseconds — a crawl takes
-minutes, far too long to sit inside a question. One tool, `sync_courses`, goes
-online to fetch new material; everything else needs no password and no network.
+mirror on your disk, which is why questions come back in milliseconds rather
+than waiting on the LMS. One tool, `sync_courses`, goes online to fetch new
+material; everything else needs no password and no network.
 
 A sync makes the text searchable as it goes (`grep` cannot see inside a
 PowerPoint), so there is nothing extra to run:
@@ -182,8 +182,8 @@ resolves to `Courses` beside the binary, which is rarely where you want it.
 Both paths absolute. Environment variables win over the file wherever both
 are set.
 
-**`env` is optional, and worth understanding before you fill it in.** Seven of
-the eight tools only read the folder on your disk — they never connect to
+**`env` is optional, and worth understanding before you fill it in.** Nine of
+the ten tools only read or write folders on your disk — they never connect to
 anything, and they work with no credentials at all. The password buys you one
 tool: `sync_courses`, which fetches new material so you can ask for it in
 conversation instead of dropping to a terminal.
@@ -194,23 +194,47 @@ still sees everything, just as of the last run.
 
 ### What it offers
 
-It offers eight tools. Four read the mirror: `list_courses`, `find_material`
+It offers ten tools. Four read the mirror: `list_courses`, `find_material`
 (searches the text of every slide, document and saved page), `read_material`
-and `whats_new`. Three keep your study history: `record_answer`, `due_reviews`
+and `whats_new`. Two keep a notebook for each course: `record_note` and
+`course_notes`. Three keep your study history: `record_answer`, `due_reviews`
 and `weak_spots`. And `sync_courses` is the only one that goes online, so the
 assistant can fetch new material when you ask instead of you dropping to a
 terminal.
 
 It also offers study workflows as prompts, which most clients show as a menu:
-**prep_for_class**, **quiz_me**, **explain_from_my_material**, **catch_up**
-and **study_plan**.
+**prep_for_class**, **after_class**, **quiz_me**, **explain_from_my_material**,
+**catch_up** and **study_plan**.
+
+#### The notebook is the half your LMS never had
+
+An LMS holds what your instructors uploaded. It does not hold "quiz on
+chapters 4 and 5 on Friday", or that she skipped a proof and said it is not
+examinable, or that the lab report moved a week — and those are said once, out
+loud, in a room. Tell your assistant and it writes them into the course
+notebook with `record_note`; from then on every answer about that course knows
+them, in this conversation and the next one. The **after_class** prompt is the
+five-minute version: it asks what happened and files it while you still
+remember.
+
+Notes are appended, never rewritten. Correcting one keeps the original, so a
+term of them cannot be lost to a single bad write.
 
 `quiz_me` builds questions from your own slides, in your lecturer's notation —
 and records how each answer went. Those answers come back on a spacing
 schedule, and `study_plan` uses them to say where an hour should actually go,
-rather than towards whatever is most comfortable to re-read. That history
-lives in `<destination>/.lms-study/` and is the one folder here that cannot be
-rebuilt from the LMS.
+rather than towards whatever is most comfortable to re-read. Both that history
+and your notes live in `<destination>/.lms-study/`, the one folder here that
+cannot be rebuilt from the LMS.
+
+#### Asking it to sync
+
+`sync_courses` waits for the crawl and then says what arrived, so topping up
+mid-conversation is one request and one answer rather than "I have started it,
+ask me again in a minute". A first sync of a whole semester takes minutes and
+outlasts the wait: it keeps going in the background, you are told how far it
+has got, and asking again picks up the same run. Everything downloaded is
+searchable the moment it lands — there is no second command.
 
 PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
 `pdftotext` on your PATH: `apt install poppler-utils` on Debian or Ubuntu

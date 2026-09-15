@@ -51,6 +51,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [search.go](search.go) — turning a question into matches over the text cache.
 - [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.
 - [review.go](review.go) — what the student has been asked, how it went, and when it comes back.
+- [notes.go](notes.go) — the course notebook: what the student was told in class, which the LMS never had.
 - [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
 - [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
@@ -164,7 +165,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
 - **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
 - **Every prompt carries the ground rules.** A client with no project instructions is the normal case, so "search before answering", "cite the path", and above all "an empty folder means the material was not uploaded, not that it was never taught" have to travel with the prompt. `TestEveryPromptCarriesTheGroundRules`.
-- **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`.
+- **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library — in a note's `source` exactly as in `read_material`'s `path`. `TestMCPRefusesPathsOutsideTheLibrary`, `TestANoteSourceOutsideTheLibraryIsRefused`.
 - **A review log that will not parse is left alone, never overwritten.** Every other cache here rebuilds itself from a corrupt file; this one holds the only copy of a year's answers. `TestHistorySurvivesACorruptFileRatherThanBeingOverwritten`.
 - **The same question keeps its history.** `questionID` normalises case and whitespace, so a rephrasing does not split one item into two that each get half the practice. `TestRewordedWhitespaceIsTheSameQuestion`.
 - **A miss resets the ladder; a verdict is the student's.** Half-remembering something for a month is the state that needs frequent practice, not a longer gap — and a model deciding the verdict itself can drag a known item back for weeks. `TestAMissedQuestionComesBackTomorrow`, `TestGettingItRightPushesItFurtherOut`, `TestQuizPromptRequiresRecordingAndDefersTheVerdict`.
@@ -215,6 +216,16 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Text is cut between characters, never inside one.** `read_material` hands back a byte offset for the caller to continue from, so a fixed-width cut splits a rune on any material that is not plain ASCII: the seam arrives as replacement glyphs and the next call resumes midway through a letter. `truncateBytes` and the chunking in `readMaterial` both snap to a boundary. `TestReadMaterialChunksOnCharacterBoundaries`.
 - **The saved config advertises every tab that exists.** The comment above `sections` is the only place a student learns what can be switched on, and spelling the list out by hand is how it came to name three tabs when the tool had grown to six. It is built from `sectionCatalogue()`. `TestSavedConfigListsEveryAvailableSection`.
 - **An external tool's output is capped as it arrives.** Everything else that reads a file goes through a `LimitReader`; `pdftotext`'s stdout was collected whole and trimmed only once the process had finished, so a PDF expanding to gigabytes of text was held entire in memory on the way to being cut to four megabytes. `cappedBuffer` accepts every write and keeps the first `maxExtractBytes` — a short count would reach the producer as an I/O error and fail the extraction. `TestPDFOutputBufferStopsAtItsLimit`.
+- **What the student said is never lost to a bad argument.** A `kind` this tool does not know is filed as a general note, and a date it cannot read is kept in the student's own words and reported as unschedulable — neither is refused. The note is the irreplaceable half of a course; a label and a date format are not worth discarding it over, and a model told what happened can correct itself, which it cannot do if the call simply failed. Guessing at "next Friday" is the other way to be wrong here, and a study tool that invents an exam date is worse than one that admits it could not read it. `TestAnUnknownKindStillKeepsTheNote`, `TestADateThatCannotBeReadIsKeptInTheStudentsWords`.
+- **A note is corrected by superseding it, never by overwriting it.** `replaces` carries the old id; the old entry stops being current and stays on disk. The alternative — a model regenerating a whole notes file — is one careless rewrite away from losing a term of them, and unlike the material there is no second copy to fetch. `TestACorrectedNoteIsSupersededRatherThanDestroyed`.
+- **A notebook that will not parse is left alone and the write fails loudly.** The review log next door declines to *decode* a corrupt file; this refuses to *save* over one, because an empty notebook in memory is indistinguishable from a new one and saving it is exactly the loss the rule exists to prevent. `TestNotesThatWillNotParseAreNotOverwritten`.
+- **The same note recorded twice stays one note.** A model re-running a workflow records what it recorded last time, so without this three sessions leave three copies of one reminder and a notebook nobody can read. Matching normalises case and whitespace, as `questionID` does for questions. `TestTheSameNoteIsNotRecordedTwice`.
+- **Two dates for one thing are reported, never resolved by guessing.** Recording a second date for the same item leaves both current and contradicting, and whoever recorded the second cannot see the first — so the reply names the clash and how to supersede one. Picking a date here would be the tool inventing an exam date, which is the failure the whole notebook design refuses. `TestTwoDatesForTheSameThingAreReportedNotGuessedAt`.
+- **Something happening today is still coming up.** "Upcoming" is measured against the start of the day, not the clock: a nine o'clock exam compared against noon drops off the list at the one moment it must not. `TestSomethingHappeningTodayIsStillComingUp`.
+- **A course with no files is still a course.** `list_courses` merges the courses that have notes into the ones that have files, so a course the student has only ever talked about — or one whose material is a textbook link — is on the list. Leaving it off is how an assistant concludes a course does not exist while holding a notebook full of what it covered. `TestTheNotebookIsVisibleFromListCourses`.
+- **A sync call waits, and returns the moment the sync ends rather than when its ceiling does.** The wait is a limit, not a delay — a top-up that takes five seconds must cost the caller five seconds, or waiting is worse than polling. `syncJob.done` is a channel closed by the run, so the wait is a select and not a sleep. `TestAWaitingCallReturnsAsSoonAsTheSyncEnds`, `TestSyncToolFetchesAndLeavesTheLibrarySearchable`.
+- **Giving up on the call never stops the crawl.** The sync runs on the server's context and the call only watches it, so a client timeout, a cancellation, or a wait that runs out leaves the sync running — abandoning one half way through a course would mean re-fetching it, and a cancelled call is not a request to stop. `TestGivingUpOnASyncCallDoesNotStopTheSync`.
+- **A progress notification is sent only to a client that asked for one, and never carries an id.** The token comes from the request's `_meta`; an id would make the notification a request, and a client reading it as one waits for a reply that is never coming. `TestProgressIsOnlySentWhenAClientAsksAndIsNeverARequest`.
 
 ### The study history
 
@@ -225,6 +236,8 @@ carries a README saying exactly that, because a disposable `.lms-index` sitting
 next to it is an invitation to delete the wrong one — and unlike that one, a
 review log that will not parse is **left on disk untouched** rather than
 started fresh.
+
+It holds two things: `review/`, below, and `notes/` — the course notebook.
 
 Retrieval practice and spaced repetition are the two best-evidenced study
 methods and both fail in practice for one reason: authoring questions is too
@@ -240,6 +253,40 @@ scale the retention difference decides nothing. Verdicts are **self-assessed**
 interval and drags the item back for weeks. `questionID` normalises case and
 whitespace so a rephrased question keeps its history rather than splitting
 into two half-practised items.
+
+### The course notebook
+
+The rule this project turns on is that **the mirror holds what was uploaded,
+which is not a record of what was taught**. Everything else here works on the
+uploaded half. `notes/` is the other half, and there was previously nowhere to
+put it: a test announced out loud, a proof the lecturer skipped and called
+unexaminable, a deadline moved in a corridor. Each is said once, in a room,
+and is the single most useful thing an assistant could know about the course —
+and no amount of searching finds it, because it was never a file.
+
+So `record_note` writes it down and `course_notes` reads it back, and the
+ground rules tell a model to do both: read the notebook before saying how a
+course is going, and record what the student says *as they say it*, because a
+session that ends has lost it.
+
+It is in `.lms-study/` rather than beside the material for the reason that
+folder exists: slides can be fetched again, and Tuesday's lecture cannot. Two
+rules follow, and both are why this is not a Markdown file a model rewrites:
+
+- **Nothing is ever destroyed.** Entries are appended; a correction carries
+  the id of the entry it `replaces`, which stops the old one being current
+  without deleting it. A model rewriting a whole file is one careless
+  regeneration away from losing a term of notes.
+- **A file that will not parse is left alone and the write fails loudly.**
+  Stronger than the review log next door, which merely declines to decode one.
+
+Dates are parsed from a short list of unambiguous layouts and nothing else.
+"Next Friday" needs a calendar and a guess about which Friday, and a study
+tool that quietly gets an exam date wrong is worse than one that says it could
+not read it: an unreadable date is kept verbatim, reported as unschedulable,
+and the caller is told to convert it. The same instinct decides unknown
+`kind`s — filed as a general note rather than refused, because the student's
+words are the irreplaceable part and a label is not worth losing them over.
 
 ### The searchable copy
 
@@ -316,6 +363,8 @@ Four of the tools (`list_courses`, `find_material`, `read_material`,
 `whats_new`) read `scanLibrary` plus the text index, re-read per call rather
 than cached: a sync may well run while the server is up, and a stale answer
 about coursework is worse than a few milliseconds of walking a folder.
+`course_notes` and `record_note` read and write the notebook beside it;
+`record_answer`, `due_reviews` and `weak_spots` the review log.
 
 **The extracted text those answers quote is the exception, and had to become
 one.** `find_material` reads the text of every file in the library to answer
@@ -333,12 +382,34 @@ serialised on `prevTool`, because two of them can write to the library; what
 moved off the read loop is the *waiting*.
 
 `sync_courses` is the exception and the only thing here that goes online. It
-**starts** a sync and returns — a crawl is minutes and a tool call has seconds
-— so progress comes from calling it again. It logs in through the same
-`Client` every other surface uses, which is the point: Samigo stays refused,
-`allowedContent` still holds, and auth failures are still never retried. A
-second HTTP path here is how those protections would quietly stop applying.
-`connectQuiet` exists because `connect` prints to stdout.
+logs in through the same `Client` every other surface uses, which is the
+point: Samigo stays refused, `allowedContent` still holds, and auth failures
+are still never retried. A second HTTP path here is how those protections
+would quietly stop applying. `connectQuiet` exists because `connect` prints to
+stdout.
+
+**It waits for the sync, within a bounded deadline, and that bound is set by
+the client rather than by the crawl.** It used to start a sync and return at
+once, which read as decisive and was not: a model was left to guess how long
+to leave it and call back, and a model that cannot see progress either
+abandons the sync or spins on it — neither of which produces an answer about
+the material that just arrived. The sync now runs in the background as before,
+but the call blocks on it (`syncJob.await`, on a `done` channel so it returns
+the moment the crawl does, not when the ceiling is reached) and answers with
+what actually downloaded. An ordinary top-up is one call with a real answer.
+
+What it must not do is block past the client's own timeout — a minute in most
+of them — because that turns a useful progress report into a cancelled call.
+Hence `syncWaitDefault` at 45 seconds, a `wait_seconds` argument clamped to
+`syncWaitMax`, and `notifications/progress` while it waits, which many clients
+treat as a reason to extend that timeout. A first crawl of a whole semester
+still outlasts the wait: the call comes back with the log tail and calling
+again joins the same run.
+
+A waiting call holds `prevTool` for the length of its wait, exactly as any
+slow call does, so nothing else runs beside it. That is deliberate — the
+ordering guarantee below is worth more than parallelism the caller cannot use,
+since a model blocked on this result is not issuing anything else anyway.
 
 Credentials reach it the same way they reach every other surface: `run()`
 applies `LMS_USER` / `LMS_PASS` over the loaded config *before* dispatching to
@@ -350,9 +421,11 @@ the library resolves to `Courses` beside the binary. Tool descriptions carry
 their own context because the server is meant to work in any MCP client, and
 most have no project instructions to lean on.
 
-`prompts` are the study workflows — `prep_for_class`, `quiz_me`,
-`explain_from_my_material`, `catch_up` and `study_plan` — offered as things to
-pick rather than sentences to compose. They also carry `groundRules`, which is the less obvious
+`prompts` are the study workflows — `prep_for_class`, `after_class`,
+`quiz_me`, `explain_from_my_material`, `catch_up` and `study_plan` — offered
+as things to pick rather than sentences to compose. `after_class` is the one
+that fills the notebook: nobody thinks to dictate what a lecture covered, so
+the workflow has to ask. They also carry `groundRules`, which is the less obvious
 half of why they exist: this server is meant to work in any MCP client, and
 most have no project instructions anywhere, so anything a model must not do
 has to travel with the prompt or it is never said. The load-bearing rule is

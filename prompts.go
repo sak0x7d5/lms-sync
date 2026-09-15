@@ -40,6 +40,14 @@ How to answer this:
   or nothing.
 - Anything you add from general knowledge must be marked as such, separately
   from what came out of their material.
+- Read course_notes before saying how a course is going, what is examinable,
+  what has been covered or what is due. That is where what the student was
+  told in class is kept, the LMS holds none of it, and a note from them beats
+  anything inferred from filenames.
+- When they mention a test, a deadline, what a class covered or anything else
+  that is not in a file, record it with record_note as they say it. Left until
+  the end of the session it is lost, and it is the one thing here that cannot
+  be fetched again.
 - If a course looks empty or out of date, offer to run sync_courses.`
 
 type promptArgument struct {
@@ -86,13 +94,56 @@ var mcpPrompts = []mcpPrompt{
 		build: func(args map[string]string) string {
 			return fmt.Sprintf(`I have a class soon for %s.
 
-Using whats_new and find_material, work out what the most recent material for
-that course covers, and give me a briefing I can read in five minutes:
+Start with course_notes for that course: what I have been told in class about
+tests, deadlines and what is examinable is not in any file, and it decides
+what is worth reading now. Then use whats_new and find_material to work out
+what the most recent material covers, and give me a briefing I can read in
+five minutes:
 
+- anything coming up in my notes, soonest first, and what to do about it today
 - what the last lecture or two covered, in a few lines each
 - the specific terms, formulae or definitions I should recognise on a slide
 - anything that looks like it is being built towards, so I know where this is going
 - anything with a due date attached
+
+If my notes for this course are empty, say so and offer to take some after the
+class.
+%s`, forCourse(args), groundRules)
+		},
+	},
+	{
+		Name:  "after_class",
+		Title: "Save what just happened in class",
+		Description: "Turn what you were told in a lecture into notes the assistant keeps: " +
+			"a test announced, what was actually covered, a deadline that moved. This is " +
+			"the half of a course the LMS never has, and it is gone by tomorrow.",
+		Arguments: []promptArgument{
+			{Name: "course", Description: "Course folder name, as list_courses reports it.", Required: true},
+		},
+		build: func(args map[string]string) string {
+			return fmt.Sprintf(`I have just come out of a class for %s. Get what happened
+into my notes before I forget it.
+
+Read course_notes for the course first, so you know what is already there.
+Then ask me, a couple of questions at a time rather than all at once:
+
+- what the class actually covered
+- anything said about a test, quiz, assignment or deadline, and when it is
+- anything said to be examinable, not examinable, or worth reading
+- anything that changed: a deadline moved, a class cancelled, a room swapped
+
+Record each thing with record_note as I say it, not at the end of the
+conversation — one note per thing, in my own words, with the kind that fits.
+Anything with a date needs a real one: work out the calendar date from today
+and pass it as YYYY-MM-DD, because "next Friday" cannot be scheduled and will
+not show up as coming up.
+
+If something I say corrects a note that is already there — a date that moved,
+a test that was cancelled — record the new version with the old note's id as
+`+"`replaces`"+`, rather than leaving both to contradict each other.
+
+When we are done, tell me in two lines what my notebook now says is coming up,
+and offer to find the material for anything we covered.
 %s`, forCourse(args), groundRules)
 		},
 	},
@@ -114,7 +165,11 @@ that course covers, and give me a briefing I can read in five minutes:
 			}
 			return fmt.Sprintf(`Quiz me on %s, %s. %s questions.
 
-Start with due_reviews. Anything due comes first, asked in its exact recorded
+Check course_notes first. If I have recorded what a class covered, or what the
+lecturer said is or is not examinable, weight the questions that way — an exam
+is set from what was taught, and the folder only holds what was uploaded.
+
+Then start with due_reviews. Anything due comes first, asked in its exact recorded
 wording — re-testing what I already know is the waste this is meant to avoid,
 and re-wording a question files it as a new one and throws away its history.
 Then read the material and write fresh questions to make up the number, mixing
@@ -154,6 +209,10 @@ does — the same notation, the same worked examples, the same emphasis. Where
 my lecturer's treatment differs from the usual textbook one, say so, because
 that difference is usually what an exam is testing.
 
+Check course_notes too: if I have recorded anything my lecturer said about
+this — that a proof was skipped, that it is not examinable, which parts
+matter — that outranks what the slides imply.
+
 End with the file and slide to read next if I want more depth.
 %s`, arg(args, "topic", "the topic I name next"), forCourse(args), groundRules)
 		},
@@ -171,9 +230,10 @@ End with the file and slide to read next if I want more depth.
 		build: func(args map[string]string) string {
 			return fmt.Sprintf(`I have %s minutes. Tell me what to do with them, for %s.
 
-Look at due_reviews and weak_spots first — those say what I have actually
-forgotten and what I keep getting wrong, which is not the same as what feels
-unfinished. Then check whats_new for anything with a deadline attached.
+Look at course_notes, due_reviews and weak_spots first. The notes say what is
+actually coming up and when, which no file here knows; the other two say what
+I have forgotten and what I keep getting wrong, which is not the same as what
+feels unfinished. Then check whats_new for anything with a deadline attached.
 
 Give me a plan in order, with rough minutes against each item and one line on
 why it is there. Put what I keep missing before what is merely due, and put
@@ -197,14 +257,16 @@ plan is worse than "record a few answers first and ask me again".
 			days := arg(args, "days", "7")
 			return fmt.Sprintf(`Tell me what I have missed in %s over the last %s days.
 
-Use whats_new, then read enough of what turned up to say what it actually is —
-a filename tells me nothing. Then:
+Use whats_new and course_notes, then read enough of what turned up to say what
+it actually is — a filename tells me nothing. Then:
 
 - group it by course, newest first
 - say in one line what each item covers
 - pull out anything that is an assignment, a deadline, or an announcement that
-  needs acting on, and put that first
-- say plainly if a course has had nothing, rather than padding the list
+  needs acting on, and put that first, my own recorded notes included
+- say plainly if a course has had nothing, rather than padding the list — but
+  check my notes before calling a course quiet, because a course can be busy
+  in the room and silent on the LMS
 
 Remember these dates are when a file was downloaded, not when it was taught or
 uploaded, so treat them as a rough guide.

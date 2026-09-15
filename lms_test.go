@@ -3166,13 +3166,18 @@ func TestSyncToolIsOfferedAndDescribesItsCost(t *testing.T) {
 			continue
 		}
 		desc := strings.ToLower(tool["description"].(string))
-		// A model that waits on this tool, or calls it in a loop expecting it
-		// to block, will look broken. The description is the only place that
-		// can say so.
-		for _, want := range []string{"minutes", "immediately", "again"} {
+		// The description is the only place a model learns what this call
+		// does with its time. It waits, so it must say it waits; it can
+		// outlast the wait on a first crawl, so it must say what happens
+		// then, or a model reports a sync as failed when it is still going.
+		for _, want := range []string{"waits", "minutes", "again"} {
 			if !strings.Contains(desc, want) {
 				t.Errorf("description does not mention %q: %s", want, desc)
 			}
+		}
+		schema := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)
+		if _, ok := schema["wait_seconds"]; !ok {
+			t.Error("the caller cannot say how long it is willing to wait")
 		}
 		return
 	}
@@ -3185,30 +3190,26 @@ func TestSyncToolFetchesAndLeavesTheLibrarySearchable(t *testing.T) {
 	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
 
 	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
-	if _, err := s.syncCourses(); err != nil {
-		t.Fatalf("starting the sync: %v", err)
-	}
 
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		s.sync.mu.Lock()
-		running, err := s.sync.running, s.sync.err
-		s.sync.mu.Unlock()
-		if !running {
-			if err != nil {
-				t.Fatalf("sync failed: %v", Explain(err))
-			}
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
+	// One call, one answer. The tool waits for the crawl rather than handing
+	// back a promise the caller has to poll on a guess — and it comes back
+	// when the sync does, not when the ceiling is reached.
+	status, err := s.syncCourses(context.Background(),
+		json.RawMessage(`{"wait_seconds":30}`), nil)
+	if err != nil {
+		t.Fatalf("sync: %v", Explain(err))
 	}
-
-	status := s.sync.status()
-	if strings.Contains(status, "running") {
-		t.Fatalf("the sync did not finish in time:\n%s", status)
+	if strings.Contains(status, "still going") {
+		t.Fatalf("the sync did not finish inside the wait:\n%s", status)
 	}
 	if !strings.Contains(status, "finished") {
 		t.Errorf("status does not report the outcome:\n%s", status)
+	}
+	// What arrived, not merely how much of it. The caller waited because it
+	// wants to use what came out, and these are the paths the other tools
+	// take.
+	if !strings.Contains(status, "Calculus/limits.pdf") {
+		t.Errorf("the reply does not say what arrived:\n%s", status)
 	}
 
 	// The whole point: material fetched by a tool call is immediately
@@ -3285,7 +3286,10 @@ func TestPromptsAreOfferedAndDeclared(t *testing.T) {
 			t.Errorf("%s serialised its builder", name)
 		}
 	}
-	for _, want := range []string{"prep_for_class", "quiz_me", "explain_from_my_material", "catch_up"} {
+	for _, want := range []string{
+		"prep_for_class", "quiz_me", "explain_from_my_material",
+		"after_class", "catch_up", "study_plan",
+	} {
 		if !seen[want] {
 			t.Errorf("prompt %s missing", want)
 		}
@@ -3307,6 +3311,11 @@ func TestEveryPromptCarriesTheGroundRules(t *testing.T) {
 			"find_material", // search before answering
 			"not a record of what was taught",
 			"general knowledge", // and mark it when used
+			// The other half of that same rule: what the LMS never had is
+			// in the notebook, and nothing the student says survives unless
+			// it is written there as they say it.
+			"course_notes",
+			"record_note",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s does not carry %q", p.Name, want)
@@ -4623,5 +4632,375 @@ func TestMCPToolCallsAnswerInTheOrderTheyArrived(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("replies came back as %v, want %v", got, want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The course notebook
+// ---------------------------------------------------------------------------
+//
+// The mirror holds what an instructor uploaded. A test announced out loud in a
+// lecture is not in it, and never will be — so the notebook is the only place
+// the other half of a course can live, and these pin down that what a student
+// says into it survives, and survives intact.
+
+func recordNoteThrough(t *testing.T, dest, args string) (string, bool) {
+	t.Helper()
+	replies := mcpExchange(t, dest,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"record_note","arguments":`+
+			args+`}}`)
+	return toolTextOf(t, replies[1])
+}
+
+func courseNotesThrough(t *testing.T, dest, args string) (string, bool) {
+	t.Helper()
+	replies := mcpExchange(t, dest,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"course_notes","arguments":`+
+			args+`}}`)
+	return toolTextOf(t, replies[1])
+}
+
+// Each call above runs a whole server session of its own, which is the point:
+// a note is worth writing down only if the next conversation, in a new
+// process, can still read it.
+func TestANoteSurvivesIntoTheNextConversation(t *testing.T) {
+	dest := libraryForMCP(t)
+	when := time.Now().AddDate(0, 0, 5).Format("2006-01-02")
+
+	text, isError := recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Quiz on chapters 4 and 5","kind":"quiz","when":"`+when+`"}`)
+	if isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+
+	text, isError = courseNotesThrough(t, dest, `{"course":"Physics"}`)
+	if isError {
+		t.Fatalf("course_notes failed: %s", text)
+	}
+	if !strings.Contains(text, "Quiz on chapters 4 and 5") {
+		t.Errorf("the note did not come back:\n%s", text)
+	}
+	if !strings.Contains(text, "Coming up") {
+		t.Errorf("a dated note is not reported as coming up:\n%s", text)
+	}
+	// Omitting the course is the "what is coming up at all" question, which
+	// is the one a student actually asks.
+	text, _ = courseNotesThrough(t, dest, `{}`)
+	if !strings.Contains(text, "Quiz on chapters 4 and 5") {
+		t.Errorf("a note is invisible unless you already know which course to ask about:\n%s", text)
+	}
+}
+
+// The words are the irreplaceable part. A label this tool does not recognise
+// is a reason to say so, never a reason to drop what the student dictated.
+func TestAnUnknownKindStillKeepsTheNote(t *testing.T) {
+	dest := libraryForMCP(t)
+
+	text, isError := recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Midterm is open book","kind":"midterm"}`)
+	if isError {
+		t.Fatalf("a note was refused over its label: %s", text)
+	}
+	if !strings.Contains(text, "Midterm is open book") {
+		t.Errorf("the note itself is not in the reply:\n%s", text)
+	}
+	if !strings.Contains(text, "general note") {
+		t.Errorf("the caller is not told the label was not used:\n%s", text)
+	}
+
+	got := LoadNotes(dest, "Physics").Recent(0)
+	if len(got) != 1 || got[0].Kind != noteGeneral {
+		t.Errorf("the note was filed as %v", got)
+	}
+}
+
+// "The Friday after reading week" cannot be scheduled and must not be
+// guessed at — an exam date quietly invented is worse than one left as text.
+// It is still the best information anyone has about when this is, so it is
+// kept exactly as it was said.
+func TestADateThatCannotBeReadIsKeptInTheStudentsWords(t *testing.T) {
+	dest := libraryForMCP(t)
+
+	text, isError := recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Quiz","kind":"quiz","when":"the Friday after reading week"}`)
+	if isError {
+		t.Fatalf("a note was refused over its date: %s", text)
+	}
+	if !strings.Contains(text, "the Friday after reading week") {
+		t.Errorf("what the student said about when was dropped:\n%s", text)
+	}
+	if !strings.Contains(text, "not a date") {
+		t.Errorf("the caller is not told the date could not be scheduled:\n%s", text)
+	}
+	if up := LoadNotes(dest, "Physics").Upcoming(time.Now()); len(up) != 0 {
+		t.Errorf("a date nobody could read was scheduled anyway: %v", up)
+	}
+}
+
+// A model that re-runs a workflow records what it recorded last time. Three
+// sessions must not leave three copies of one reminder.
+func TestTheSameNoteIsNotRecordedTwice(t *testing.T) {
+	dest := libraryForMCP(t)
+	const args = `{"course":"Physics","note":"Quiz on chapters 4 and 5","kind":"quiz"}`
+
+	if text, isError := recordNoteThrough(t, dest, args); isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+	text, isError := recordNoteThrough(t, dest, args)
+	if isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+	if !strings.Contains(text, "already") {
+		t.Errorf("the caller is not told it was a duplicate:\n%s", text)
+	}
+	if total, _ := LoadNotes(dest, "Physics").Counts(time.Now()); total != 1 {
+		t.Errorf("recording one thing twice left %d notes", total)
+	}
+}
+
+// Corrections are how a notebook stays true — a midterm moves, a quiz is
+// cancelled. They are appended, never written over: this is a term of notes
+// with no other copy, and one careless rewrite is the way to lose all of it.
+func TestACorrectedNoteIsSupersededRatherThanDestroyed(t *testing.T) {
+	dest := libraryForMCP(t)
+	now := time.Now()
+	first := now.AddDate(0, 0, 3)
+	moved := now.AddDate(0, 0, 10)
+
+	text, isError := recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Midterm","kind":"exam","when":"`+
+			first.Format("2006-01-02")+`"}`)
+	if isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+	// The id has to reach the caller, or a correction can never be aimed.
+	if !strings.Contains(text, "(id n1)") {
+		t.Fatalf("the reply gives no id to correct later:\n%s", text)
+	}
+
+	text, isError = recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Midterm moved a week","kind":"exam","when":"`+
+			moved.Format("2006-01-02")+`","replaces":"n1"}`)
+	if isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+
+	text, _ = courseNotesThrough(t, dest, `{"course":"Physics"}`)
+	if !strings.Contains(text, "Midterm moved a week") {
+		t.Errorf("the correction is not reported:\n%s", text)
+	}
+	if strings.Contains(text, first.Format("Mon 2 Jan 2006")) {
+		t.Errorf("the superseded date is still being reported as coming up:\n%s", text)
+	}
+	raw, err := os.ReadFile(notesPath(dest, "Physics"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"n1"`) {
+		t.Error("the corrected note was deleted rather than superseded")
+	}
+}
+
+// Every other cache here rebuilds itself from a corrupt file. This one holds
+// the only copy of what a lecturer said in a room, so the bytes stay put and
+// the caller is told — a fresh empty notebook written over the top is the
+// loss this refuses.
+func TestNotesThatWillNotParseAreNotOverwritten(t *testing.T) {
+	dest := t.TempDir()
+	nb := LoadNotes(dest, "Physics")
+	nb.Add(noteGeneral, "a whole term of these", "", "", "", time.Now())
+	if err := nb.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	path := notesPath(dest, "Physics")
+	if err := os.WriteFile(path, []byte("{ not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	text, isError := recordNoteThrough(t, dest, `{"course":"Physics","note":"Quiz on Friday"}`)
+	if !isError {
+		t.Errorf("a note was written over an unreadable notebook: %s", text)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "{ not json" {
+		t.Error("the unreadable notebook was overwritten instead of left alone")
+	}
+}
+
+// A tool argument is written by a model that may be acting on text somebody
+// else uploaded to a course page, so a path in a note is checked exactly as
+// one in read_material is.
+func TestANoteSourceOutsideTheLibraryIsRefused(t *testing.T) {
+	dest := libraryForMCP(t)
+	text, isError := recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"see this","source":"../../../../etc/passwd"}`)
+	if !isError {
+		t.Errorf("a note pointed outside the library: %s", text)
+	}
+}
+
+// An assistant that does not know the notebook exists answers from half a
+// course — and a course can be busy in the room and hold no files at all.
+func TestTheNotebookIsVisibleFromListCourses(t *testing.T) {
+	dest := libraryForMCP(t)
+	nb := LoadNotes(dest, "Seminar")
+	nb.Add(noteExam, "Oral exam, 20 minutes",
+		time.Now().AddDate(0, 0, 10).Format("2006-01-02"), "", "", time.Now())
+	if err := nb.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	replies := mcpExchange(t, dest,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_courses","arguments":{}}}`)
+	text, isError := toolTextOf(t, replies[1])
+	if isError {
+		t.Fatalf("list_courses failed: %s", text)
+	}
+	if !strings.Contains(text, "Seminar") {
+		t.Errorf("a course that exists only in the notebook was left off the list:\n%s", text)
+	}
+	if !strings.Contains(text, "coming up") {
+		t.Errorf("the list says nothing about what is coming up:\n%s", text)
+	}
+	if !strings.Contains(text, "course_notes") {
+		t.Errorf("nothing points a reader at the notebook:\n%s", text)
+	}
+}
+
+// Nine in the morning is still today's business at noon. Measuring against
+// the clock rather than the day drops an exam off the list while it is being
+// sat, which is the one moment it must not.
+func TestSomethingHappeningTodayIsStillComingUp(t *testing.T) {
+	now := time.Now()
+	nb := LoadNotes(t.TempDir(), "Physics")
+	nb.Add(noteExam, "Midterm, 9am", now.Format("2006-01-02"), "", "", now)
+
+	if up := nb.Upcoming(now); len(up) != 1 {
+		t.Fatalf("something happening today is not coming up: %v", up)
+	}
+	if up := nb.Upcoming(now.AddDate(0, 0, 1)); len(up) != 0 {
+		t.Errorf("yesterday's exam is still coming up: %v", up)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Waiting for a sync
+// ---------------------------------------------------------------------------
+
+func finishJob(j *syncJob) {
+	j.mu.Lock()
+	j.running, j.ended = false, time.Now()
+	j.mu.Unlock()
+	close(j.done)
+}
+
+// The wait is a ceiling, not a delay. A top-up that takes five seconds must
+// cost the caller five seconds — otherwise waiting is worse than polling.
+func TestAWaitingCallReturnsAsSoonAsTheSyncEnds(t *testing.T) {
+	j := &syncJob{running: true, started: time.Now(), done: make(chan struct{})}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		finishJob(j)
+	}()
+
+	start := time.Now()
+	if !j.await(context.Background(), 30*time.Second, nil) {
+		t.Fatal("await reported a finished sync as still running")
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Errorf("await sat for %s after the sync had already finished", waited)
+	}
+}
+
+// A client that times out is not a reason to abandon a crawl half way
+// through a course: the sync runs on the server's context, and the call is
+// only watching it.
+func TestGivingUpOnASyncCallDoesNotStopTheSync(t *testing.T) {
+	j := &syncJob{running: true, started: time.Now(), done: make(chan struct{})}
+	defer finishJob(j)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if j.await(ctx, time.Second, nil) {
+		t.Error("await claimed a running sync had finished")
+	}
+	if _, running := j.watch(); !running {
+		t.Error("the sync was stopped when the call stopped waiting for it")
+	}
+}
+
+// Progress is sent only for a request that asked for it, and never with an
+// id: an id would make it a request, and a client that reads it as one waits
+// for a reply that is never coming.
+func TestProgressIsOnlySentWhenAClientAsksAndIsNeverARequest(t *testing.T) {
+	s, out := mcpServerFor(t.TempDir())
+
+	if s.progressTo(nil) != nil || s.progressTo(json.RawMessage("null")) != nil {
+		t.Error("progress would be sent to a client that never asked for it")
+	}
+	report := s.progressTo(json.RawMessage(`"token-1"`))
+	if report == nil {
+		t.Fatal("a client that asked for progress would be sent none")
+	}
+	report(3, "  + Calculus/limits.pdf")
+
+	var msg map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out.String())), &msg); err != nil {
+		t.Fatalf("progress is not JSON: %s", out.String())
+	}
+	if _, hasID := msg["id"]; hasID {
+		t.Error("the progress notification carries an id, which makes it a request")
+	}
+	if msg["method"] != "notifications/progress" {
+		t.Errorf("method = %v", msg["method"])
+	}
+	params, ok := msg["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("no params: %v", msg)
+	}
+	if params["progressToken"] != "token-1" {
+		t.Errorf("progressToken = %v", params["progressToken"])
+	}
+	if params["progress"] != float64(3) {
+		t.Errorf("progress = %v", params["progress"])
+	}
+}
+
+// Two live notes disagreeing about when the midterm is makes the whole
+// notebook worthless, and whoever records the second one cannot see the
+// first. Which date is right is the student's to say, so the clash is
+// reported rather than resolved by guessing.
+func TestTwoDatesForTheSameThingAreReportedNotGuessedAt(t *testing.T) {
+	dest := libraryForMCP(t)
+	now := time.Now()
+
+	text, isError := recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Midterm","kind":"exam","when":"`+
+			now.AddDate(0, 0, 3).Format("2006-01-02")+`"}`)
+	if isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+	text, isError = recordNoteThrough(t, dest,
+		`{"course":"Physics","note":"Midterm","kind":"exam","when":"`+
+			now.AddDate(0, 0, 10).Format("2006-01-02")+`"}`)
+	if isError {
+		t.Fatalf("record_note failed: %s", text)
+	}
+
+	if !strings.Contains(text, "contradict") {
+		t.Errorf("the second date was recorded with no mention of the first:\n%s", text)
+	}
+	if !strings.Contains(text, "replaces") {
+		t.Errorf("the caller is not told how to resolve it:\n%s", text)
+	}
+	// Both are still there: neither was quietly dropped in favour of the
+	// other, and both dates are still what the student said at the time.
+	if total, ahead := LoadNotes(dest, "Physics").Counts(now); total != 2 || ahead != 2 {
+		t.Errorf("one of the two notes was resolved away: %d notes, %d ahead", total, ahead)
 	}
 }

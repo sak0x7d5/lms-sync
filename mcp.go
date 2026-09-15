@@ -309,6 +309,55 @@ func (s *mcpServer) fail(id json.RawMessage, code int, message string) {
 	}
 }
 
+// rpcNotification is a message that is told rather than asked. It must never
+// carry an id: an id makes it a request, and a client that reads it as one
+// waits for a reply that is never coming.
+type rpcNotification struct {
+	JSONRPC string `json:"jsonrpc"`
+	Method  string `json:"method"`
+	Params  any    `json:"params,omitempty"`
+}
+
+func (s *mcpServer) notify(method string, params any) {
+	s.outMu.Lock()
+	defer s.outMu.Unlock()
+	if err := s.out.Encode(rpcNotification{
+		JSONRPC: jsonRPCVersion, Method: method, Params: params,
+	}); err != nil {
+		mcpLog("write failed: %v", err)
+	}
+}
+
+// progressFunc says how far a long tool call has got.
+type progressFunc func(done int, message string)
+
+// progressTo builds the reporter for one call, or nil when the client did not
+// ask to be told.
+//
+// The token is the client's and the call is only sent when it supplied one:
+// that is what the specification requires, and a client with no handler for
+// notifications it never requested is entitled to treat them as noise.
+//
+// It is worth more than a progress bar here. A client puts its own timeout on
+// a tool call, and many extend it whenever progress arrives — so on a sync
+// that outruns the wait, these notifications are the difference between a
+// call that is allowed to finish and one that is cancelled underneath it.
+func (s *mcpServer) progressTo(token json.RawMessage) progressFunc {
+	if len(token) == 0 || string(token) == "null" {
+		return nil
+	}
+	return func(done int, message string) {
+		params := map[string]any{"progressToken": token, "progress": done}
+		if message != "" {
+			params["message"] = strings.TrimSpace(message)
+		}
+		// No "total": the number of files a crawl will find is not known
+		// until it has found them, and inventing one to fill a progress bar
+		// would have it run backwards.
+		s.notify("notifications/progress", params)
+	}
+}
+
 func (s *mcpServer) initialize(params json.RawMessage) map[string]any {
 	var req struct {
 		ProtocolVersion string `json:"protocolVersion"`
@@ -341,10 +390,17 @@ func (s *mcpServer) initialize(params json.RawMessage) map[string]any {
 			"pages, with the text already extracted from Office files and " +
 			"PDFs. Search it with find_material before answering questions " +
 			"about a course, and read a specific file with read_material. " +
+			"The mirror holds what an instructor uploaded, which is not a record " +
+			"of what was taught: what the student was told in class lives in the " +
+			"course notebook instead, so read course_notes before answering how a " +
+			"course is going, what is examinable or what is due, and write anything " +
+			"they tell you into it with record_note as soon as they say it. " +
 			"The mirror is only as current as the last sync; whats_new says " +
-			"when each course last changed, and sync_courses fetches new material. " +
+			"when each course last changed, and sync_courses fetches new material — " +
+			"it waits for the crawl to finish and returns what arrived, or reports " +
+			"progress if it is still going. " +
 			"The prompts offer ready-made study workflows: prep_for_class, quiz_me, " +
-			"explain_from_my_material and catch_up.",
+			"explain_from_my_material, after_class, catch_up and study_plan.",
 	}
 }
 
@@ -411,6 +467,51 @@ var mcpTools = []mcpTool{
 		}`),
 	},
 	{
+		Name:  "course_notes",
+		Title: "Read what the student said about a course",
+		Description: "Read the course notebook: tests and deadlines that are coming up, " +
+			"what class actually covered, and anything else the student has had recorded " +
+			"with record_note. Read this BEFORE answering how a course is going, what is " +
+			"examinable, what was covered or what is due — none of it is in the mirrored " +
+			"files, because the mirror holds only what an instructor uploaded, and a note " +
+			"from the student beats any guess made from filenames. Omit the course to see " +
+			"what is coming up across all of them.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"One course, by its folder name as list_courses reports it. Omit for every course that has notes."},
+				"limit":{"type":"integer","description":"Maximum notes per course (default 20)."}
+			},
+			"additionalProperties":false
+		}`),
+	},
+	{
+		Name:  "record_note",
+		Title: "Remember something about a course",
+		Description: "Write one thing into a course's notebook: a test or quiz announced " +
+			"in class, what a lecture actually covered, a deadline that moved, how the " +
+			"marking works — anything the student mentions that is not in a file. This is " +
+			"the only way something said out loud in a room survives into the next " +
+			"conversation, and it is the half of a course the LMS never has. Call it the " +
+			"moment something like that comes up, in the student's own words, rather than " +
+			"saving it for the end of a session. Notes are appended and never overwritten: " +
+			"to correct or cancel one, record the new note with the old one's id as " +
+			"`replaces`.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"Course folder name, as list_courses reports it."},
+				"note":{"type":"string","description":"What to remember, in the student's own words. One thing per note."},
+				"kind":{"type":"string","enum":["note","topic","exam","quiz","assignment","deadline"],"description":"What sort of thing it is. The dated kinds — exam, quiz, assignment, deadline — are what course_notes reports as coming up; topic is what a class actually covered. Defaults to note."},
+				"when":{"type":"string","description":"The date it happens, as YYYY-MM-DD. Only a real date can be scheduled: anything else is kept in the student's words but is not counted as coming up, so convert 'next Friday' to a date before passing it."},
+				"source":{"type":"string","description":"Library path this relates to, if there is one."},
+				"replaces":{"type":"string","description":"The id of an earlier note this corrects or cancels, as course_notes reports it. The old note is kept but stops being current."}
+			},
+			"required":["course","note"],
+			"additionalProperties":false
+		}`),
+	},
+	{
 		Name:  "record_answer",
 		Title: "Record how a quiz answer went",
 		Description: "Log one question the student was asked and how they did, so it " +
@@ -470,13 +571,21 @@ var mcpTools = []mcpTool{
 		Name:  "sync_courses",
 		Title: "Fetch new material from the LMS",
 		Description: "Download anything new from the university's LMS into the local " +
-			"mirror, then make it searchable. This is the only tool here that goes " +
-			"online. It returns immediately rather than waiting: a full sync takes " +
-			"minutes, so call it again after a minute to see progress and again until " +
-			"it reports finished. Use it when the student says material is missing or " +
-			"that something was uploaded recently, or when whats_new shows nothing for " +
-			"a period they expected material in.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			"mirror and make it searchable. This is the only tool here that goes online. " +
+			"It waits for the crawl to finish and then lists what arrived, so an ordinary " +
+			"top-up is one call with a real answer. A first sync of a whole semester takes " +
+			"minutes and will outlast the wait: the crawl keeps going in the background, " +
+			"the call comes back with progress, and calling again waits on the same run " +
+			"until it reports that it finished. Use it when the student says material is " +
+			"missing or that something was uploaded recently, or when whats_new shows " +
+			"nothing for a period they expected material in.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"wait_seconds":{"type":"integer","description":"How long to wait for the sync before answering (default 45, maximum 600). The call returns as soon as the sync finishes, so this is a ceiling and not a delay. Pass 0 to start a sync and return at once."}
+			},
+			"additionalProperties":false
+		}`),
 	},
 	{
 		Name:  "whats_new",
@@ -596,13 +705,19 @@ func (s *mcpServer) callTool(ctx context.Context, msg rpcMessage) {
 	var req struct {
 		Name      string          `json:"name"`
 		Arguments json.RawMessage `json:"arguments"`
+		// A client that wants to be told how a long call is getting on sends
+		// a token to report against. Only sync_courses is slow enough to use
+		// one, and only when the client asked.
+		Meta struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+		} `json:"_meta"`
 	}
 	if err := json.Unmarshal(msg.Params, &req); err != nil {
 		s.fail(msg.ID, codeInvalidParams, "could not read tool arguments")
 		return
 	}
 
-	text, err := s.runTool(ctx, req.Name, req.Arguments)
+	text, err := s.runTool(ctx, req.Name, req.Arguments, s.progressTo(req.Meta.ProgressToken))
 
 	// A client that has cancelled is not waiting for an answer, and the
 	// specification says not to send one. Replying anyway hands it a result
@@ -649,7 +764,7 @@ func toolText(text string, isError bool) map[string]any {
 	}
 }
 
-func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessage) (string, error) {
+func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessage, report progressFunc) (string, error) {
 	switch name {
 	case "list_courses":
 		return s.listCourses(ctx)
@@ -660,7 +775,11 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessa
 	case "whats_new":
 		return s.whatsNew(ctx, args)
 	case "sync_courses":
-		return s.syncCourses()
+		return s.syncCourses(ctx, args, report)
+	case "course_notes":
+		return s.courseNotes(args)
+	case "record_note":
+		return s.recordNote(args)
 	case "record_answer":
 		return s.recordAnswer(args)
 	case "due_reviews":
@@ -694,11 +813,19 @@ func (s *mcpServer) listCourses(ctx context.Context) (string, error) {
 		// indistinguishable from "pointed at the wrong folder entirely",
 		// which is the far more likely cause when a client starts this
 		// process from somewhere unexpected.
-		return "No course material found.\n\n" + s.cfg.WhereItLooked(s.dest) +
+		msg := "No course material found.\n\n" + s.cfg.WhereItLooked(s.dest) +
 			"\n\nIf that path is not where your courses are, the destination in " +
 			"that config file is wrong, or the config file is not the one you " +
 			"edited. A relative destination is resolved against the config " +
-			"file's own folder.", nil
+			"file's own folder."
+		// Notes live under the same destination, so an empty library still
+		// has something to say if any were ever recorded — and saying
+		// "nothing here" over the top of them would be a lie.
+		if noted := notedCourses(s.dest); len(noted) > 0 {
+			msg += "\n\nThere are notes for " + strings.Join(noted, ", ") +
+				" though; read them with course_notes."
+		}
+		return msg, nil
 	}
 
 	type courseStat struct {
@@ -721,12 +848,24 @@ func (s *mcpServer) listCourses(ctx context.Context) (string, error) {
 		}
 	}
 
+	// A course can be real and hold no files: one whose material is a
+	// textbook link, or one the student has so far only talked about. Leaving
+	// those off the list is how an assistant concludes a course does not
+	// exist when there is a notebook full of what it covered.
+	for _, n := range notedCourses(s.dest) {
+		if stats[n] == nil {
+			stats[n] = &courseStat{}
+		}
+	}
+
 	names := make([]string, 0, len(stats))
 	for n := range stats {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 
+	now := time.Now()
+	noted := 0
 	var b strings.Builder
 	fmt.Fprintf(&b, "%d course%s in %s\n\n", len(names), plural(len(names), "", "s"), s.dest)
 	for _, n := range names {
@@ -735,9 +874,33 @@ func (s *mcpServer) listCourses(ctx context.Context) (string, error) {
 		if label == "" {
 			label = "(loose files at the top level)"
 		}
-		fmt.Fprintf(&b, "- %s — %d file%s, %d searchable, newest %s\n",
-			label, c.files, plural(c.files, "", "s"), c.searchable,
-			c.newest.Format("2 Jan 2006"))
+		fmt.Fprintf(&b, "- %s — %d file%s, %d searchable",
+			label, c.files, plural(c.files, "", "s"), c.searchable)
+		if !c.newest.IsZero() {
+			fmt.Fprintf(&b, ", newest %s", c.newest.Format("2 Jan 2006"))
+		}
+		if total, ahead := LoadNotes(s.dest, n).Counts(now); total > 0 {
+			noted += total
+			fmt.Fprintf(&b, ", %d note%s", total, plural(total, "", "s"))
+			if ahead > 0 {
+				fmt.Fprintf(&b, " (%d coming up)", ahead)
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	// Which half of the picture is missing, said plainly. The files are what
+	// was uploaded; the notes are what the student was told, and an assistant
+	// that does not know the notebook exists answers from half a course.
+	if noted > 0 {
+		b.WriteString("\nRead course_notes for what the student has said about these — " +
+			"tests announced in class, what was actually covered, what is due. None of " +
+			"that is in the files.")
+	} else {
+		b.WriteString("\nNothing has been recorded about these courses yet. When the " +
+			"student mentions a test, a deadline or what a class covered, record it with " +
+			"record_note: the mirror holds only what an instructor uploaded, so that is " +
+			"the only place it survives.")
 	}
 	return b.String(), nil
 }
@@ -1012,19 +1175,223 @@ func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string,
 	return b.String(), nil
 }
 
-// syncCourses starts a sync, or reports the one already under way.
-func (s *mcpServer) syncCourses() (string, error) {
+// syncCourses starts a sync — or joins the one already under way — and waits
+// for it, within the deadline the caller allows.
+//
+// Waiting is the whole design. A call that returned the instant it had
+// started something left a model with nothing to do but guess how long to
+// leave it and call back, and a model with no way to see progress either
+// abandons the sync or spins on it; neither produces an answer about the
+// material that just arrived. So the common case — a top-up of a few files —
+// is now one call that comes back with what was downloaded.
+//
+// What it must not do is block past the client's own timeout, which is a
+// minute in most of them: that converts a useful progress report into a
+// cancelled call. Hence a bounded wait, a background crawl that outlives it,
+// and progress notifications on the way for clients that extend their
+// deadline when they see them.
+func (s *mcpServer) syncCourses(ctx context.Context, args json.RawMessage, report progressFunc) (string, error) {
+	var a struct {
+		WaitSeconds *int `json:"wait_seconds"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", errors.New("could not read the arguments")
+		}
+	}
 	if strings.TrimSpace(s.cfg.Username) == "" || strings.TrimSpace(s.cfg.Password) == "" {
 		return "", fmt.Errorf("no LMS credentials are configured, so a sync cannot log in. "+
 			"Set them in %s, or in the LMS_USER and LMS_PASS environment variables",
 			s.cfg.path)
 	}
 
-	if !s.sync.start(s.ctx, s.cfg) {
-		return "A sync is already running.\n\n" + s.sync.status(), nil
+	wait := syncWaitDefault
+	if a.WaitSeconds != nil {
+		wait = time.Duration(*a.WaitSeconds) * time.Second
+		switch {
+		case wait < 0:
+			wait = 0
+		case wait > syncWaitMax:
+			wait = syncWaitMax
+		}
 	}
-	return "Sync started. It runs in the background and takes minutes on a first " +
-		"run; call sync_courses again to see how far it has got.", nil
+
+	// The sync runs on the server's context, never the call's: a client that
+	// gives up on this call, or a wait that runs out, must not abandon a
+	// crawl part way through a course.
+	lead := "Sync started."
+	if !s.sync.start(s.ctx, s.cfg) {
+		lead = "A sync was already running; this call joined it."
+	}
+
+	if wait <= 0 {
+		return lead + " It runs in the background; call sync_courses again to wait " +
+			"for it.\n\n" + s.sync.status(), nil
+	}
+	if s.sync.await(ctx, wait, report) {
+		return s.sync.status(), nil
+	}
+	return fmt.Sprintf("Waited %s and the sync is still going, so here is where it "+
+		"has got to.\n\n%s", roundDuration(wait), s.sync.status()), nil
+}
+
+// ---------------------------------------------------------------------------
+// The course notebook
+// ---------------------------------------------------------------------------
+
+func (s *mcpServer) recordNote(args json.RawMessage) (string, error) {
+	var a struct {
+		Course   string `json:"course"`
+		Note     string `json:"note"`
+		Kind     string `json:"kind"`
+		When     string `json:"when"`
+		Source   string `json:"source"`
+		Replaces string `json:"replaces"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", errors.New("could not read the arguments")
+	}
+	if strings.TrimSpace(a.Course) == "" || strings.TrimSpace(a.Note) == "" {
+		return "", errors.New("course and note are both required")
+	}
+	// A source path is written into a file the student keeps; it has no
+	// business pointing anywhere but their own library.
+	if a.Source != "" {
+		if _, err := resolveInside(s.dest, filepath.ToSlash(a.Source)); err != nil {
+			return "", err
+		}
+	}
+
+	// An unknown kind is filed rather than refused. The student's words are
+	// the part that cannot be recovered; a label is not worth losing them
+	// over, and the caller is told what happened so it can correct it.
+	kind, knownKind := readNoteKind(a.Kind)
+
+	nb := LoadNotes(s.dest, a.Course)
+	replaces := strings.TrimSpace(a.Replaces)
+	danglingID := replaces != "" && !nb.Has(replaces)
+
+	now := time.Now()
+	e, added, dateRead := nb.Add(kind, a.Note, a.When, a.Source, replaces, now)
+	if err := nb.Save(); err != nil {
+		return "", err
+	}
+	total, upcoming := nb.Counts(now)
+
+	var b strings.Builder
+	if added {
+		fmt.Fprintf(&b, "Noted for %s.\n\n%s", a.Course, describeNote(e, now))
+	} else {
+		// Recording the same thing twice is what a model does when it runs
+		// the same workflow again; three sessions should not leave three
+		// copies of one reminder.
+		fmt.Fprintf(&b, "That was already in %s's notebook, as id %s — nothing was added.\n\n%s",
+			a.Course, e.ID, describeNote(e, now))
+	}
+	if !knownKind {
+		fmt.Fprintf(&b, "\nkind %q is not one this tool knows, so it was filed as a "+
+			"general note. The kinds are: %s.\n", a.Kind, noteKindList())
+	}
+	if strings.TrimSpace(a.When) != "" && !dateRead {
+		fmt.Fprintf(&b, "\n%q was kept as the student said it, but it is not a date "+
+			"this tool can read, so it will not appear as coming up. Work out the "+
+			"calendar date and record it again as YYYY-MM-DD if it matters.\n", a.When)
+	}
+	if danglingID {
+		fmt.Fprintf(&b, "\nThere is no note with id %q in this course, so nothing was "+
+			"superseded. Check course_notes for the right id.\n", replaces)
+	}
+	// Recorded, and then the contradiction pointed out. Deciding which of the
+	// two dates is right by guessing is how a notebook stops being worth
+	// trusting; the student knows, and can be asked.
+	if clash, ok := nb.Contradicting(e); ok {
+		if at, dated := clash.at(); dated {
+			fmt.Fprintf(&b, "\nNote %s already says this, on %s. Both are current, so "+
+				"they now contradict each other: if this one replaces it, record it "+
+				"again with replaces %q, or ask the student which date is right.\n",
+				clash.ID, at.Format("Mon 2 Jan 2006"), clash.ID)
+		}
+	}
+	fmt.Fprintf(&b, "\n%s now has %d note%s, %d still ahead.",
+		a.Course, total, plural(total, "", "s"), upcoming)
+	return b.String(), nil
+}
+
+func (s *mcpServer) courseNotes(args json.RawMessage) (string, error) {
+	var a struct {
+		Course string `json:"course"`
+		Limit  int    `json:"limit"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", errors.New("could not read the arguments")
+		}
+	}
+	limit := a.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	courses := []string{strings.TrimSpace(a.Course)}
+	if courses[0] == "" {
+		courses = notedCourses(s.dest)
+	}
+
+	now := time.Now()
+	var b strings.Builder
+	shown := 0
+	for _, course := range courses {
+		nb := LoadNotes(s.dest, course)
+		upcoming := nb.Upcoming(now)
+		recent := nb.Recent(limit)
+		if len(upcoming) == 0 && len(recent) == 0 {
+			continue
+		}
+		total, ahead := nb.Counts(now)
+		fmt.Fprintf(&b, "\n%s — %d note%s, %d coming up\n",
+			course, total, plural(total, "", "s"), ahead)
+
+		printed := map[string]bool{}
+		if len(upcoming) > 0 {
+			b.WriteString("\nComing up:\n")
+			for _, e := range upcoming {
+				b.WriteString(describeNote(e, now))
+				printed[e.ID] = true
+				shown++
+			}
+		}
+		var rest []noteEntry
+		for _, e := range recent {
+			if !printed[e.ID] {
+				rest = append(rest, e)
+			}
+		}
+		if len(rest) > 0 {
+			b.WriteString("\nNoted, most recent first:\n")
+			for _, e := range rest {
+				b.WriteString(describeNote(e, now))
+				shown++
+			}
+		}
+	}
+
+	if shown == 0 {
+		where := "No course notes have been recorded yet."
+		if c := strings.TrimSpace(a.Course); c != "" {
+			where = "Nothing has been recorded about " + c + " yet."
+		}
+		return where + "\n\nThis is where anything the student tells you about a " +
+			"course goes: a test announced in class, what a lecture actually covered, " +
+			"a deadline that moved, how the marking works. None of it is in the mirror, " +
+			"which holds only what an instructor uploaded — so if the student mentions " +
+			"something like that, record it with record_note as they say it, and the " +
+			"next conversation still knows it.", nil
+	}
+	return strings.TrimSpace(b.String()) +
+		"\n\nThese are the student's own words about the course, not anything the LMS " +
+		"holds — treat them as better evidence than the files about what is examinable, " +
+		"what was covered and what is due. Record anything new with record_note, and " +
+		"correct one by recording the new version with the old id as `replaces`.", nil
 }
 
 // ---------------------------------------------------------------------------
