@@ -181,6 +181,20 @@ These encode bugs that already cost someone real time — the comments in the so
   not be answered from the log the model is reading. On a phone, where the
   default destination is inside the app's private data, that is the first
   question an empty library raises.
+- **The environment's password never reaches the config file.** `LMS_USER` /
+  `LMS_PASS` exist so a run need not keep a password on disk, and `Save` wrote
+  them into `config.toml` anyway — on the first sync that discovered a course,
+  which on an MCP setup is the first sync there is. A student whose credentials
+  lived only in their client's own config quietly gained a second copy, in a
+  file they never created and do not know to protect. `ApplyEnv` remembers what
+  the file held and `writeCredential` writes *that* back, which is equally what
+  stops a single run with `LMS_PASS` set from **erasing** a password the file
+  has held for a year. A credential typed into the interface comes through
+  `SetPassword` and is saved as given, or the page would report settings saved
+  and write the old one.
+  `TestAnEnvironmentPasswordIsNeverWrittenToTheConfig`,
+  `TestAStoredPasswordSurvivesAnEnvironmentOverride`,
+  `TestAPasswordTypedIntoTheInterfaceIsSaved`.
 - **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
 - **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`. That is a rule about *replying*, not about ignoring: `notifications/cancelled` is acted on, and the invariant below is why it has to be.
 - **A tool call never blocks the read loop, and a cancelled one is dropped.** Handling messages strictly in turn meant a slow search also held up the client's notice that it had given up on it — so one timed-out call left every later call queued behind work nobody would read, which is what turned a single timeout into two. Calls still run one at a time **and in the order they arrived** (`prevTool`, a chain of channels linked on the read loop), since a client that pipelines a record and a read expects the read to see the record, and replies are serialised on `outMu` because interleaved ones are an unreadable stream rather than a slow one. The queue was a mutex first, which gave exclusion but not order: goroutines do not acquire a mutex in the order they were started, so `record_answer` and the `weak_spots` behind it ran backwards about a quarter of the time and the read reported nothing recorded. Order can only be captured on the read loop, which is why the baton is linked there and waited on inside the goroutine — and why the wait is never abandoned on cancellation, since closing the baton early would let the next call start beside one still running. A cancelled call writes no reply: the client is not waiting for one, and dropping it is what clears the queue. `TestMCPCancelledToolCallIsNotAnswered`, `TestMCPKeepsAnsweringWhileAToolWaits`, `TestMCPToolCallsAnswerInTheOrderTheyArrived`.
@@ -369,8 +383,10 @@ second HTTP path here is how those protections would quietly stop applying.
 
 Credentials reach it the same way they reach every other surface: `run()`
 applies `LMS_USER` / `LMS_PASS` over the loaded config *before* dispatching to
-`serveMCP`, so an `env` block in a client's `mcpServers` entry works with no
-code here knowing about MCP at all — which is the idiom every other MCP server
+`serveMCP` — through `ApplyEnv`, so that the first sync writing a config file
+does not put the client's password in a second place — and an `env` block in a
+client's `mcpServers` entry then works with no code here knowing about MCP at
+all — which is the idiom every other MCP server
 uses for its secrets, and what the README documents. An env-only setup has no
 config file to carry the destination, so `--dest` goes in `args`; without it
 the library resolves to `Courses` beside the binary. Tool descriptions carry
@@ -402,7 +418,7 @@ config-file path does. The password is never sent back to the browser. `handleSy
 
 ## Config and secrets
 
-`config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file.
+`config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file, and are never written back into it — `Save` emits a line saying where the credential comes from instead.
 
 `sections` picks which tabs to mirror (`resources`, `overview`, `syllabus`,
 `announcements`, `assignments`, `dropbox`);
