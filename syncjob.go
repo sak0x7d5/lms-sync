@@ -34,11 +34,20 @@ type syncJob struct {
 	lines   []string
 	res     Result
 	err     error
+	unread  bool // a run has finished and nobody has been told how it went
 }
 
 // keptLines is how much of the log a progress call reports. Enough to see
 // what is happening now, not so much that it crowds out a conversation.
 const keptLines = 15
+
+// settleGrace is how long the call that starts a sync waits to see whether
+// it fails outright. A rejected password or a destination that cannot be
+// created is decided in about a second — well inside a tool call — and
+// saying so now rather than on some later call the caller may never make is
+// the difference between an answer and a guess. A crawl that is genuinely
+// working takes minutes and is left to run.
+const settleGrace = 2 * time.Second
 
 func (j *syncJob) note(line string) {
 	j.mu.Lock()
@@ -49,24 +58,79 @@ func (j *syncJob) note(line string) {
 	}
 }
 
-// start launches a sync unless one is already running.
+// start launches a sync unless one is already running, or the last one
+// failed in a way that starting another cannot fix.
 func (j *syncJob) start(ctx context.Context, cfg *Config) (started bool) {
 	j.mu.Lock()
-	if j.running {
+	if j.running || terminal(j.err) {
 		j.mu.Unlock()
 		return false
 	}
 	j.running, j.started, j.ended = true, time.Now(), time.Time{}
-	j.lines, j.err, j.res = nil, nil, Result{}
+	j.lines, j.err, j.res, j.unread = nil, nil, Result{}, false
 	j.mu.Unlock()
 
 	go func() {
 		res, err := j.run(ctx, cfg)
 		j.mu.Lock()
 		j.running, j.ended, j.res, j.err = false, time.Now(), res, err
+		j.unread = true
 		j.mu.Unlock()
 	}()
 	return true
+}
+
+// terminal reports whether a failure would fail again identically.
+//
+// The credentials and the settings this server runs on are fixed when the
+// process starts, so a login the server rejected stays rejected and a config
+// it refused stays refused until somebody restarts it. Trying again buys
+// nothing and costs the one thing that actually hurts a student: repeated
+// failures on a login endpoint are how an account gets locked. Everything
+// else — an unreachable network, a destination that is not writable yet —
+// can come good without a restart, so it is reported and then retried.
+func terminal(err error) bool {
+	switch KindOf(err) {
+	case KindAuth, KindConfig:
+		return true
+	}
+	return false
+}
+
+// outcome is what a finished run owes its caller, and whether there is
+// anything owed.
+//
+// A terminal failure is reported on every call, because nothing this server
+// can do will change it and silence would read as work in progress. Any
+// other outcome is reported once and then cleared, so the call after that
+// starts a fresh sync rather than re-reading old news.
+func (j *syncJob) outcome() (string, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+
+	if j.running || j.started.IsZero() {
+		return "", false
+	}
+	if !j.unread && !terminal(j.err) {
+		return "", false
+	}
+	j.unread = false
+	return j.report(), true
+}
+
+// settled waits out settleGrace for a run that fails immediately, and
+// returns its outcome if it has one.
+func (j *syncJob) settled(limit time.Duration) (string, bool) {
+	deadline := time.Now().Add(limit)
+	for {
+		if out, ok := j.outcome(); ok {
+			return out, true
+		}
+		if !time.Now().Before(deadline) {
+			return "", false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func (j *syncJob) run(ctx context.Context, cfg *Config) (Result, error) {
@@ -107,6 +171,11 @@ func (j *syncJob) run(ctx context.Context, cfg *Config) (Result, error) {
 // describe renders one Event as a line of log.
 func describe(e Event) string {
 	switch e.Type {
+	case "start":
+		// Where the files are going. Without it a caller watching this log
+		// cannot answer the first question a missing library raises, which
+		// is whether anything was ever written and where.
+		return "writing into " + e.Path
 	case "course":
 		return e.Course
 	case "section":
@@ -130,7 +199,11 @@ func describe(e Event) string {
 func (j *syncJob) status() string {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.report()
+}
 
+// report is status with the lock already held.
+func (j *syncJob) report() string {
 	var b strings.Builder
 	switch {
 	case j.running:
@@ -142,6 +215,15 @@ func (j *syncJob) status() string {
 	case j.err != nil:
 		fmt.Fprintf(&b, "The last sync failed after %s: %s\n",
 			roundDuration(j.ended.Sub(j.started)), Explain(j.err))
+		if terminal(j.err) {
+			// Said to the caller rather than left implied, because the
+			// caller here is usually a model: without it, "it failed" and
+			// "call it again" are both true at once and calling again is
+			// the cheaper guess.
+			b.WriteString("\nThis cannot succeed until it is corrected and the server " +
+				"is restarted, so sync_courses will not try again. Tell the student " +
+				"what to fix rather than calling it in a loop.\n")
+		}
 	default:
 		fmt.Fprintf(&b, "The last sync finished in %s: %d new, %d already current, %d failed.\n",
 			roundDuration(j.ended.Sub(j.started)), j.res.New, j.res.Current, j.res.Failed)

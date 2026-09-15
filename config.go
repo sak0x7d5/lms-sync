@@ -30,6 +30,12 @@ type Config struct {
 	Courses     []Course // ordered; a map would shuffle the folder list
 	path        string
 	found       bool // whether path existed when this was loaded
+
+	// What the file itself holds, and whether the environment is standing
+	// in for it on this run. Save writes the file's own credentials back,
+	// never the environment's: see writeCredential.
+	fileUsername, filePassword string
+	userFromEnv, passFromEnv   bool
 }
 
 type Course struct {
@@ -388,6 +394,68 @@ func (c *Config) DestinationPath() (string, error) {
 	return full, nil
 }
 
+// ApplyEnv overlays LMS_USER / LMS_PASS on a loaded config, remembering
+// what the file held so Save can put it back.
+//
+// The environment exists so a run need not keep a password on disk — the
+// README says so and every other MCP server takes its secrets the same way.
+// Save then wrote the environment's password into config.toml on the first
+// sync that discovered a course, which is the one thing this route promises
+// not to do: the student puts the password in one place and ends up with it
+// in two, the second being a file they did not choose and do not know to
+// protect.
+func (c *Config) ApplyEnv(username, password string) {
+	if username != "" {
+		c.fileUsername, c.userFromEnv = c.Username, true
+		c.Username = username
+	}
+	if password != "" {
+		c.filePassword, c.passFromEnv = c.Password, true
+		c.Password = password
+	}
+}
+
+// SetUsername and SetPassword record a credential the user gave us
+// directly — typed into the interface, rather than inherited from the
+// environment — so Save writes it even on a run the environment supplied
+// one for. Without this the page would accept a new password, report it
+// saved, and write the old one.
+func (c *Config) SetUsername(v string) {
+	c.Username, c.userFromEnv, c.fileUsername = v, false, ""
+}
+
+func (c *Config) SetPassword(v string) {
+	c.Password, c.passFromEnv, c.filePassword = v, false, ""
+}
+
+// savedUsername and savedPassword are what Save writes: the file's own
+// values, which on a run driven by the environment are not the ones in use.
+func (c *Config) savedUsername() string {
+	if c.userFromEnv {
+		return c.fileUsername
+	}
+	return c.Username
+}
+
+func (c *Config) savedPassword() string {
+	if c.passFromEnv {
+		return c.filePassword
+	}
+	return c.Password
+}
+
+// writeCredential emits one credential line, or says where the credential
+// actually comes from when the file has none of its own. An empty password
+// line would read as "none configured" on a setup that works perfectly, and
+// would send someone looking for a fault that is not there.
+func writeCredential(b *strings.Builder, key, value, env string) {
+	if value == "" {
+		fmt.Fprintf(b, "# %s is not stored here — set %s in the environment\n", key, env)
+		return
+	}
+	fmt.Fprintf(b, "%-11s = %s\n", key, tomlQuote(value))
+}
+
 // Save writes the config atomically: a temp file then a rename, so an
 // interrupted write can never leave a truncated config behind.
 func (c *Config) Save() error {
@@ -400,8 +468,8 @@ func (c *Config) Save() error {
 	b.WriteString("# Personal file: your account, your courses, your password.\n")
 	b.WriteString("# Git-ignored by default. Never commit it or send it to anyone.\n\n")
 	fmt.Fprintf(&b, "base_url    = %s\n", tomlQuote(c.BaseURL))
-	fmt.Fprintf(&b, "username    = %s\n", tomlQuote(c.Username))
-	fmt.Fprintf(&b, "password    = %s\n", tomlQuote(c.Password))
+	writeCredential(&b, "username", c.savedUsername(), "LMS_USER")
+	writeCredential(&b, "password", c.savedPassword(), "LMS_PASS")
 	b.WriteString("\n# Where downloaded files are SAVED. Only course folders land here.\n")
 	b.WriteString("# Windows paths need single quotes so '\\' stays literal:\n")
 	b.WriteString("#   destination = 'D:\\University\\Courses'\n")

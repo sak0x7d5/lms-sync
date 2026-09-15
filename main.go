@@ -63,13 +63,8 @@ func run() int {
 		cfg.Destination = *destFlag
 	}
 	// Environment wins over the file, so a scheduled run can avoid storing
-	// a password on disk.
-	if v := os.Getenv("LMS_USER"); v != "" {
-		cfg.Username = v
-	}
-	if v := os.Getenv("LMS_PASS"); v != "" {
-		cfg.Password = v
-	}
+	// a password on disk — which means Save must not put it there either.
+	cfg.ApplyEnv(os.Getenv("LMS_USER"), os.Getenv("LMS_PASS"))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
