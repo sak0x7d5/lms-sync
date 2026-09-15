@@ -27,9 +27,19 @@ type Config struct {
 	Extensions  []string
 	Sections    []string // which LMS tabs to mirror; see sections.go
 	KeepPages   bool     // also save the captured page, not just the files a tab links to
-	Courses     []Course // ordered; a map would shuffle the folder list
-	path        string
-	found       bool // whether path existed when this was loaded
+
+	// Copying the finished library up to Google Drive. Off by default: it
+	// needs a Google sign-in that only --drive-login can perform, and a tool
+	// that silently started uploading a student's coursework would be a
+	// worse default than any amount of convenience is worth. See drive.go.
+	DrivePush         bool
+	DriveFolder       string // folder name in Drive; "" means lms-sync
+	DriveClientID     string
+	DriveClientSecret string
+
+	Courses []Course // ordered; a map would shuffle the folder list
+	path    string
+	found   bool // whether path existed when this was loaded
 }
 
 type Course struct {
@@ -163,6 +173,14 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		case "keep_pages":
 			cfg.KeepPages = boolOr(unquote(raw), cfg.KeepPages)
+		case "drive_push":
+			cfg.DrivePush = boolOr(unquote(raw), cfg.DrivePush)
+		case "drive_folder":
+			cfg.DriveFolder = unquote(raw)
+		case "drive_client_id":
+			cfg.DriveClientID = unquote(raw)
+		case "drive_client_secret":
+			cfg.DriveClientSecret = unquote(raw)
 		}
 	}
 	if err := scan.Err(); err != nil {
@@ -441,6 +459,34 @@ func (c *Config) Save() error {
 	b.WriteString("# A tab that links to no files always gets its page either way, and so\n")
 	b.WriteString("# do tabs whose text IS the material: " + textSectionList() + ".\n")
 	fmt.Fprintf(&b, "keep_pages  = %t\n", c.KeepPages)
+
+	b.WriteString("\n# --- Google Drive backup (optional) ---------------------------------\n")
+	b.WriteString("# Copies the finished library up to Drive after every sync. One way\n")
+	b.WriteString("# only: your disk stays the original, Drive is a copy, and nothing is\n")
+	b.WriteString("# ever read back down.\n#\n")
+	b.WriteString("# Sign in ONCE with:  lms-sync --drive-login\n")
+	b.WriteString("# Scheduled runs, the interface and any AI assistant then push on\n")
+	b.WriteString("# their own — none of them is able to ask you to sign in.\n#\n")
+	b.WriteString("# The client id and secret come from a Google Cloud project of your\n")
+	b.WriteString("# own; the README walks through it. LMS_DRIVE_CLIENT_ID and\n")
+	b.WriteString("# LMS_DRIVE_CLIENT_SECRET override what is written here.\n")
+	fmt.Fprintf(&b, "drive_push  = %t\n", c.DrivePush)
+	if c.DriveFolder != "" {
+		fmt.Fprintf(&b, "drive_folder = %s\n", tomlQuote(c.DriveFolder))
+	} else {
+		b.WriteString("# drive_folder = 'lms-sync'    # folder name in your Drive\n")
+	}
+	if c.DriveClientID != "" {
+		fmt.Fprintf(&b, "drive_client_id     = %s\n", tomlQuote(c.DriveClientID))
+	} else {
+		b.WriteString("# drive_client_id     = '....apps.googleusercontent.com'\n")
+	}
+	if c.DriveClientSecret != "" {
+		fmt.Fprintf(&b, "drive_client_secret = %s\n", tomlQuote(c.DriveClientSecret))
+	} else {
+		b.WriteString("# drive_client_secret = '...'\n")
+	}
+
 	b.WriteString("\n# Your courses. Rename folders freely; only the ids matter.\n[courses]\n")
 	for _, course := range c.Courses {
 		fmt.Fprintf(&b, "%s = %s\n", tomlQuote(course.ID), tomlQuote(course.Folder))

@@ -174,7 +174,7 @@ func RefreshCourses(ctx context.Context, c *Client, cfg *Config) ([]Course, erro
 // Event is one thing worth telling the user about. The CLI prints these; the
 // web UI streams them to the browser.
 type Event struct {
-	Type    string `json:"type"` // start | course | section | file | skip | warn | error | index | extract | done
+	Type    string `json:"type"` // start | course | section | file | skip | warn | error | index | extract | push | done
 	Course  string `json:"course,omitempty"`
 	Section string `json:"section,omitempty"`
 	Path    string `json:"path,omitempty"`
@@ -317,6 +317,33 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 			report(Event{Type: "warn", Message: "text index not updated: " + err.Error()})
 		default:
 			report(Event{Type: "extract", Message: stats.Summary()})
+		}
+	}
+
+	// Copying the finished library to Drive is the last thing a run does, and
+	// it lives here rather than in a handler for the usual reason: a
+	// scheduled --sync, the interface and an assistant's sync_courses call
+	// all get it without knowing it exists.
+	//
+	// It is never allowed to fail a run. The downloads are the point; a
+	// backup that could not be made is worth saying out loud and nothing
+	// more — most often it means nobody has run --drive-login yet, which is
+	// the one thing no unattended surface can do for itself.
+	if !dryRun && cfg.DrivePush {
+		// Push events carry the run's own counters, so a long upload does
+		// not blank the totals the interface is displaying.
+		pushReport := func(e Event) {
+			e.New, e.Current, e.Failed = r.res.New, r.res.Current, r.res.Failed
+			report(e)
+		}
+		stats, err := pushToDrive(ctx, dest, cfg, pushReport)
+		switch {
+		case KindOf(err) == KindCancelled:
+			return r.res, err
+		case err != nil:
+			report(Event{Type: "warn", Section: "drive", Message: Explain(err)})
+		default:
+			report(Event{Type: "push", Message: stats.Summary()})
 		}
 	}
 
