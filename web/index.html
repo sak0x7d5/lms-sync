@@ -117,6 +117,15 @@
       <div class="hint">Most Syllabus tabs are just a link to a PDF, so only the files are
         kept. Turn this on if your instructors type notes into the tab itself.</div>
     </div>
+    <div class="field hidden" id="drive-field">
+      <label>Google Drive backup</label>
+      <div class="picker">
+        <label class="check"><input type="checkbox" id="drive-push"> Copy my library to Drive after each sync</label>
+        <button type="button" id="drive-connect">Connect…</button>
+      </div>
+      <div class="hint" id="drive-hint">One way only — your disk stays the original and nothing is
+        ever read back down. lms-sync can only ever see the files it puts there itself.</div>
+    </div>
     <div class="row">
       <button id="save">Save</button>
       <button id="discover">Find my courses</button>
@@ -212,6 +221,7 @@ async function loadConfig() {
     $("browse").classList.toggle("hidden", !c.can_browse);
     showSections(c.all_sections || [], c.sections || []);
     $("keep").checked = !!c.keep_pages;
+    showDrive(c);
     showCourses(c.courses || []);
     // Configured already? Collapse settings and get out of the way.
     if (c.configured && (c.courses || []).length) $("settings").classList.add("hidden");
@@ -261,6 +271,7 @@ async function save(quiet) {
     destination: $("dest").value.trim(),
     sections: chosenSections(),
     keep_pages: $("keep").checked,
+    drive_push: $("drive-push").checked,
   });
   const r = await api("/api/config", { method: "POST", body });
   if (!r.ok) {
@@ -274,8 +285,71 @@ async function save(quiet) {
   // empty, so redraw from what it actually stored.
   showSections(c.all_sections || [], c.sections || []);
   $("keep").checked = !!c.keep_pages;
+  showDrive(c);
   if (!quiet) banner("Settings saved.", "ok");
 }
+
+// The whole Drive block is hidden unless this build can actually do it, the
+// same judgement the Browse button gets: a control that fails when pressed is
+// worse than one that was never offered.
+function showDrive(c) {
+  $("drive-field").classList.toggle("hidden", !c.can_drive);
+  if (!c.can_drive) return;
+
+  $("drive-push").checked = !!c.drive_push;
+  // Until an account is connected there is nothing to switch on, and ticking
+  // the box would promise a backup that every sync then reports it could not
+  // make.
+  $("drive-push").disabled = !c.drive_connected;
+  $("drive-connect").textContent = c.drive_connected ? "Reconnect…" : "Connect…";
+  $("drive-hint").textContent = c.drive_connected
+    ? "Connected. One way only — your disk stays the original and nothing is ever read back down."
+    : "Connect a Google account to switch this on. lms-sync will only ever see the files it puts there itself.";
+}
+
+$("drive-connect").onclick = async () => {
+  const btn = $("drive-connect"), label = btn.textContent;
+  // The tab is opened here, synchronously, while the click is still the
+  // reason anything is happening. Opening it after the await instead is what
+  // a popup blocker stops: by then the user gesture has been spent, and the
+  // sign-in silently never appears.
+  const tab = window.open("about:blank", "_blank");
+  btn.disabled = true;
+  btn.textContent = "Opening…";
+  try {
+    const r = await api("/api/drive/connect", { method: "POST" });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || "the Google sign-in could not be started");
+    if (tab) {
+      tab.opener = null;
+      tab.location.href = data.url;
+    } else {
+      // Popups blocked entirely. Better a link than a dead button.
+      banner("Your browser blocked the sign-in tab. Open this to continue: " + data.url, "");
+    }
+    banner("Finish signing in on the Google tab, then come back here.", "ok");
+  } catch (e) {
+    if (tab) tab.close();
+    fail(e);
+  }
+  btn.disabled = false;
+  btn.textContent = label;
+};
+
+// Google redirects into a tab of its own, so this page only learns the
+// sign-in worked when it next asks. Re-checking when the student switches
+// back is what makes the button update by itself.
+//
+// Deliberately not loadConfig(): that one refills every field and collapses
+// the panel, so alt-tabbing away mid-edit would throw away whatever had been
+// typed and not yet saved.
+window.addEventListener("focus", async () => {
+  try {
+    const r = await api("/api/config");
+    if (!r.ok) return;
+    showDrive(await r.json());
+  } catch (e) { /* a refresh that fails changes nothing on the page */ }
+});
 
 $("browse").onclick = async () => {
   const btn = $("browse"), label = btn.textContent;
@@ -352,6 +426,8 @@ es.onmessage = ev => {
     case "start":   line("Saving to " + e.path, "l-done"); break;
     case "index":   line("Index: " + e.path, "l-done"); break;
     case "extract": line(e.message, "l-done"); break;
+    // A push reports each file as it goes up, then one summary at the end.
+    case "push":    line(e.path ? "  ^ " + e.path : e.message, e.path ? "l-file" : "l-done"); break;
     case "course":  line(e.course, "l-course"); break;
     case "section": line("  [" + e.section + "]", "l-section"); break;
     case "file":    line("  + " + e.path, "l-file"); break;

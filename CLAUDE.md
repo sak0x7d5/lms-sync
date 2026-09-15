@@ -18,7 +18,7 @@ go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style 
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -53,6 +53,8 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [review.go](review.go) — what the student has been asked, how it went, and when it comes back.
 - [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
 - [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
+- [drive.go](drive.go) — the one-way copy of a finished library to Google Drive.
+- [driveauth.go](driveauth.go) — the Google sign-in, and the only part of the tool that waits on a human.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 ### One core, many tabs
@@ -252,6 +254,14 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A path component is never a Windows device name.** `NUL`, `AUX`, `COM1` and the rest are refused as filenames by Windows with or without an extension, and nothing rejects them elsewhere — so a course holding `aux.pdf` synced cleanly on the machine that built the library and failed on that one file, every run, for every Windows user. `SafeName` prefixes them; names that merely start with those letters are untouched. `TestSafeNameAvoidsWindowsDeviceNames`.
 - **Text is cut between characters, never inside one.** `read_material` hands back a byte offset for the caller to continue from, so a fixed-width cut splits a rune on any material that is not plain ASCII: the seam arrives as replacement glyphs and the next call resumes midway through a letter. `truncateBytes` and the chunking in `readMaterial` both snap to a boundary. `TestReadMaterialChunksOnCharacterBoundaries`.
 - **The saved config advertises every tab that exists.** The comment above `sections` is the only place a student learns what can be switched on, and spelling the list out by hand is how it came to name three tabs when the tool had grown to six. It is built from `sectionCatalogue()`. `TestSavedConfigListsEveryAvailableSection`.
+- **Nothing but `--drive-login` and the interface's Connect button may ask a human for anything.** The Drive push runs inside `Sync`, so a scheduled run, the web UI and an assistant's `sync_courses` call all reach it — and two of those three cannot show anyone a Google consent screen. stdout belongs to the MCP protocol and `mcpLog`'s stderr lands in a file nobody reads, so a prompt there is an invisible hang, not a prompt. A missing or revoked sign-in is therefore a `KindAuth` error carrying the command to run, which `Sync` reports as a `warn` and carries on. `TestASyncWithNoDriveSignInStillFinishesAndSaysWhatToRun`.
+- **A Drive push never fails a sync.** The downloads are the point; a backup that could not be made is worth one warning. Only cancellation propagates, exactly as with the text index.
+- **A file already in Drive is updated by id, never re-created.** Drive holds two files of the same name in one folder without complaint, so a lost id duplicates the library rather than erroring. `drive-push.json` maps path → id, and records the destination it belongs to so a different `--dest` starts fresh instead of claiming a new library is already backed up. `TestAChangedFileIsReplacedInDriveRatherThanDuplicated`, `TestAPushRecordFromADifferentLibraryIsIgnored`.
+- **The push keeps `.lms-study` and skips `.lms-index`.** It cannot use `scanLibrary`, which answers a different question and skips every dot-directory. The study log is the only part of the library that cannot be rebuilt by syncing again; the text index is derived from the files beside it and re-extracts in one command. `TestDrivePushKeepsTheStudyLogAndLeavesTheTextIndexBehind`.
+- **A dry run uploads nothing.** Sending somebody's coursework to a third party is the least undoable write in the tool. `TestDryRunPushesNothingToDrive`.
+- **A refresh reply does not repeat the refresh token.** Saving Google's answer verbatim blanks the only durable half of the credential, and the next run asks the student to sign in again for no reason. `TestAnExpiredDriveTokenIsRefreshedAndTheRefreshTokenKept`.
+- **The OAuth state is checked in `complete`, not at either call site**, so neither front end can forget it. Any page the student has open can reach a loopback port, so an unverified code could have the tool back up a stranger's Drive. `/api/drive/callback` is the one `/api/*` route outside `server.auth` — Google builds that request, so it cannot carry the session token — and the state is what guards it instead. `TestADriveSignInRejectsAMismatchedState`.
+- **`driveClient.do` takes a body factory, not a reader.** The Sakai client must refuse to retry a request with a body because its reader is already drained; here every body is a buffer or a file on disk, so a retry asks for a fresh one. Same rule, without giving up an upload to honour it.
 - **An external tool's output is capped as it arrives.** Everything else that reads a file goes through a `LimitReader`; `pdftotext`'s stdout was collected whole and trimmed only once the process had finished, so a PDF expanding to gigabytes of text was held entire in memory on the way to being cut to four megabytes. `cappedBuffer` accepts every write and keeps the first `maxExtractBytes` — a short count would reach the producer as an I/O error and fail the extraction. `TestPDFOutputBufferStopsAtItsLimit`.
 
 ### The study history
@@ -415,6 +425,37 @@ appears in the interface without being listed a second time. `handleConfig`
 takes them as pointers so "the field was not sent" stays distinguishable from
 "everything was unticked", and runs `sanitise()` over the result exactly as the
 config-file path does. The password is never sent back to the browser. `handleSync` guards a single run with `s.running` and copies the config (`cfg := *s.cfg`) before handing it to the goroutine. `broadcast` is non-blocking — a stalled tab drops lines rather than stalling the sync.
+
+`/api/drive/callback` is the one deliberate exception to `server.auth`: Google
+builds that request, so it cannot carry the session token, and a redirect URI
+holding a secret would end up in Google's logs besides. The OAuth state guards
+it instead — minted per sign-in, compared in constant time, and cleared the
+moment it is spent. The redirect URI is built from `s.addr`, the address
+actually bound, rather than from the request's `Host` header: otherwise
+whatever the browser happened to type would decide where an authorisation code
+gets sent.
+
+### The Google Drive backup
+
+One way only, and that is what keeps it small. `pushToDrive` copies the
+finished library up; nothing ever reads back down, so search, extraction, the
+lock file and the MCP server never learn Drive exists. The mirror stays a
+plain folder, which is why `pdftotext`, `filepath.WalkDir` and temp-then-rename
+all keep working untouched — see [drive.go](drive.go) for why a storage
+*backend* was rejected.
+
+It covers the case a cloud-synced destination cannot: a scheduled `--sync` on
+a machine with no Drive client installed, and an off-site copy of
+`.lms-study`.
+
+The scope is `drive.file` — files this tool created, nothing else in the
+student's Drive. That is not only proportionate, it is what lets the project
+ship without Google's OAuth verification review, which the broad `drive` scope
+would require. The OAuth client is compiled in (`builtinDriveClientID`) so a
+student never has to visit a cloud console; config and `LMS_DRIVE_CLIENT_ID`
+override it for anyone who would rather not share the project's API quota.
+Embedding the secret is sound here: Google classes an installed-app client as
+public, and it is useless without the per-sign-in PKCE verifier.
 
 ## Config and secrets
 
