@@ -196,9 +196,9 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if url := NormaliseBaseURL(in.BaseURL); url != "" {
 			s.cfg.BaseURL = url
 		}
-		s.cfg.Username = in.Username
+		s.cfg.SetUsername(in.Username)
 		if in.Password != "" {
-			s.cfg.Password = in.Password
+			s.cfg.SetPassword(in.Password)
 		}
 		if in.Destination != "" {
 			s.cfg.Destination = in.Destination

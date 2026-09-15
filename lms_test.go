@@ -132,6 +132,94 @@ func TestConfigRoundTripWindowsPath(t *testing.T) {
 	}
 }
 
+// The environment exists so a run need not keep a password on disk. Save
+// wrote it there anyway, so the first sync through an MCP client — where
+// the credentials arrive in the client's own config and nowhere else —
+// left a second copy in a config.toml the student never created.
+func TestAnEnvironmentPasswordIsNeverWrittenToTheConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.path = path
+	cfg.ApplyEnv("37103", "s3cret-from-env")
+	cfg.Courses = []Course{{ID: "abc-123", Folder: "Calculus"}}
+
+	if cfg.Password != "s3cret-from-env" {
+		t.Fatalf("the environment did not reach the run: %q", cfg.Password)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "s3cret-from-env") {
+		t.Error("the environment's password was written to config.toml")
+	}
+	// And it says where the credential actually comes from: a bare
+	// `password = ''` reads as "none configured" on a setup that works.
+	if !strings.Contains(string(body), "LMS_PASS") {
+		t.Errorf("the config does not say where the password comes from:\n%s", body)
+	}
+	// The rest of the file still has to load — the line is a comment, and
+	// the reader skips those.
+	back, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back.Courses) != 1 || back.Courses[0].Folder != "Calculus" {
+		t.Errorf("the saved config no longer round-trips: %v", back.Courses)
+	}
+}
+
+// The other half: overriding a stored password for one run must not erase
+// it. A sync saves the config whenever it finds a new course, so a single
+// run with LMS_PASS set would otherwise wipe the password out of a file the
+// student had been using for a year.
+func TestAStoredPasswordSurvivesAnEnvironmentOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.path = path
+	cfg.Username, cfg.Password = "37103", "from-the-file"
+	cfg.ApplyEnv("", "from-the-env")
+
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Password != "from-the-file" {
+		t.Errorf("the stored password is %q, want it untouched", back.Password)
+	}
+}
+
+// A password typed into the interface is the student telling us to keep it,
+// whatever the environment says. Silently writing the old one back while
+// reporting the settings saved is the worst of both.
+func TestAPasswordTypedIntoTheInterfaceIsSaved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+
+	cfg := DefaultConfig()
+	cfg.path = path
+	cfg.ApplyEnv("37103", "from-the-env")
+	cfg.SetPassword("typed-by-hand")
+
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	back, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Password != "typed-by-hand" {
+		t.Errorf("the typed password is %q, want it saved", back.Password)
+	}
+}
+
 // A hand-edited config with absurd values must be clamped, not obeyed.
 func TestConfigSanitise(t *testing.T) {
 	dir := t.TempDir()

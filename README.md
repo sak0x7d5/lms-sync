@@ -196,6 +196,11 @@ So if you would rather not put a password in a client's config file, leave
 `env` out. Keep `lms-sync --sync` on a schedule instead and the assistant
 still sees everything, just as of the last run.
 
+If you do fill it in, it stays there: a password that arrived in the
+environment is never written into `config.toml`, even when a sync saves that
+file to record newly discovered courses. The saved file names the variable
+instead, so one copy stays one copy.
+
 #### opencode
 
 opencode reads `opencode.json` — in the repository root, or
