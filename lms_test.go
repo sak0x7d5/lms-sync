@@ -183,14 +183,21 @@ func (f *fakeSakai) record(path string) {
 }
 
 func (f *fakeSakai) requested(substr string) bool {
+	return f.timesRequested(substr) > 0
+}
+
+// timesRequested is how often a path was asked for. Whether a login was
+// attempted again is a count, not a yes or no.
+func (f *fakeSakai) timesRequested(substr string) int {
 	f.pathMu.Lock()
 	defer f.pathMu.Unlock()
+	n := 0
 	for _, p := range f.paths {
 		if strings.Contains(p, substr) {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 const loginPage = `<html><form action="/access/login" method="post">
@@ -3252,6 +3259,183 @@ func TestASyncThroughTheServerNeverWritesToStdout(t *testing.T) {
 			t.Errorf("not a JSON-RPC message: %q", line)
 		}
 	}
+}
+
+// syncStartedAt is when the job's current run began. Whether a call started
+// a new sync is this moving, not the wording of the reply — a sync that
+// finishes inside the settle window answers with its outcome, not with
+// "Sync started".
+func syncStartedAt(j *syncJob) time.Time {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.started
+}
+
+// waitForSync blocks until the job stops, so a test reads a settled state
+// rather than racing the goroutine that produced it.
+func waitForSync(t *testing.T, j *syncJob) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		j.mu.Lock()
+		running := j.running
+		j.mu.Unlock()
+		if !running {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the sync did not finish in time")
+}
+
+// A sync that fails has to say so. It used to say nothing: start() reset the
+// job whenever one was not in flight, so the call after a failure began
+// another crawl and answered "Sync started" again. With a wrong password
+// that loop never terminated and never reported anything — no folder was
+// ever created, no error was ever surfaced, and the caller had no way to
+// tell a sync in progress from one that could never work.
+func TestAFailedSyncIsReportedToTheCaller(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Password = "wrong-password"
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
+
+	out, err := s.syncCourses()
+	if err != nil {
+		t.Fatalf("the call itself failed: %v", err)
+	}
+	waitForSync(t, &s.sync)
+	if !strings.Contains(out, "failed") {
+		// The first call waits out settleGrace precisely so a refused login
+		// is answered now rather than on a call that may never come.
+		out, _ = s.syncCourses()
+	}
+	if !strings.Contains(out, "failed") {
+		t.Fatalf("a rejected login was never reported:\n%s", out)
+	}
+	if !strings.Contains(strings.ToLower(out), "refused these details") {
+		t.Errorf("the reply does not explain what went wrong:\n%s", out)
+	}
+}
+
+// Repeated failures on a login endpoint are how an account gets locked,
+// which is why nothing else in this tool retries an auth failure. Calling
+// the tool again was the one path that did: each call was a fresh sync and
+// so a fresh sign-in attempt with the same rejected password.
+func TestARejectedLoginIsNotRetriedByCallingAgain(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Password = "wrong-password"
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
+
+	if _, err := s.syncCourses(); err != nil {
+		t.Fatal(err)
+	}
+	waitForSync(t, &s.sync)
+	attempts := srv.timesRequested("/access/login")
+	if attempts == 0 {
+		t.Fatal("the first sync never tried to log in")
+	}
+
+	for i := 0; i < 3; i++ {
+		out, err := s.syncCourses()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "failed") {
+			t.Fatalf("call %d stopped reporting the failure:\n%s", i+2, out)
+		}
+	}
+	if got := srv.timesRequested("/access/login"); got != attempts {
+		t.Errorf("logged in again after a rejection: %d attempts, want %d", got, attempts)
+	}
+	// And the destination is never silently created by a run that cannot
+	// log in, so "no Courses folder" is a symptom the report has to explain
+	// rather than one the caller is left to discover.
+	if _, err := os.Stat(cfg.Destination); err == nil {
+		t.Error("a sync that never logged in created the destination anyway")
+	}
+}
+
+// A destination that cannot be created is the other way a sync produces no
+// folder and no explanation. Unlike a rejected password it can come good
+// without a restart — on a phone, after the storage permission is granted —
+// so it is reported and then retried rather than refused for good.
+func TestAnUnwritableDestinationIsReportedAndCanBeRetried(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+
+	// A file where a parent folder should be. Refused for root too, which a
+	// mode-0500 folder is not.
+	blocked := filepath.Join(t.TempDir(), "not-a-folder")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Destination = filepath.Join(blocked, "Courses")
+	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
+
+	if _, err := s.syncCourses(); err != nil {
+		t.Fatal(err)
+	}
+	waitForSync(t, &s.sync)
+	out, _ := s.syncCourses()
+	if !strings.Contains(out, "failed") {
+		t.Fatalf("an unwritable destination was never reported:\n%s", out)
+	}
+	if !strings.Contains(out, cfg.Destination) {
+		t.Errorf("the report does not name the folder it could not create:\n%s", out)
+	}
+
+	// Reported once, then retried: this one is fixable while the server runs.
+	before := syncStartedAt(&s.sync)
+	if _, err := s.syncCourses(); err != nil {
+		t.Fatal(err)
+	}
+	if !syncStartedAt(&s.sync).After(before) {
+		t.Error("a fixable failure blocked every later sync")
+	}
+	waitForSync(t, &s.sync)
+}
+
+// "Call it again until it reports finished" was not true of a run that had
+// already finished: the next call started another crawl and reported
+// nothing, so the outcome existed but was never readable.
+func TestAFinishedSyncReportsItsOutcomeBeforeAnotherStarts(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
+
+	out, err := s.syncCourses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForSync(t, &s.sync)
+	if !strings.Contains(out, "finished") {
+		out, _ = s.syncCourses()
+	}
+	if !strings.Contains(out, "finished") {
+		t.Fatalf("a completed sync never reported its outcome:\n%s", out)
+	}
+	// Where the files went, in the log the caller is reading. Without it
+	// "did anything download, and where to?" cannot be answered at all.
+	if !strings.Contains(out, cfg.Destination) {
+		t.Errorf("the report never says where it wrote:\n%s", out)
+	}
+
+	// Read once, then out of the way: a later call is a request for new
+	// material, not for last run's summary again.
+	before := syncStartedAt(&s.sync)
+	if _, err := s.syncCourses(); err != nil {
+		t.Fatal(err)
+	}
+	if !syncStartedAt(&s.sync).After(before) {
+		t.Error("a finished outcome blocked the next sync")
+	}
+	waitForSync(t, &s.sync)
 }
 
 // ---------------------------------------------------------------------------

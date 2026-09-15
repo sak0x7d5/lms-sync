@@ -473,7 +473,9 @@ var mcpTools = []mcpTool{
 			"mirror, then make it searchable. This is the only tool here that goes " +
 			"online. It returns immediately rather than waiting: a full sync takes " +
 			"minutes, so call it again after a minute to see progress and again until " +
-			"it reports finished. Use it when the student says material is missing or " +
+			"it reports that it finished or failed — the call after a run ends is the " +
+			"one that reports how it went, including a refused login or a destination " +
+			"it could not write to. Use it when the student says material is missing or " +
 			"that something was uploaded recently, or when whats_new shows nothing for " +
 			"a period they expected material in.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
@@ -1020,11 +1022,26 @@ func (s *mcpServer) syncCourses() (string, error) {
 			s.cfg.path)
 	}
 
-	if !s.sync.start(s.ctx, s.cfg) {
-		return "A sync is already running.\n\n" + s.sync.status(), nil
+	// An outcome nobody has been told about is the answer to this call.
+	// Starting a fresh crawl over the top of one is what kept a rejected
+	// password invisible: every call said "sync started", none of them ever
+	// said why nothing arrived, and each one was another failed login
+	// against the endpoint that locks the account.
+	if out, ok := s.sync.outcome(); ok {
+		return out, nil
 	}
-	return "Sync started. It runs in the background and takes minutes on a first " +
-		"run; call sync_courses again to see how far it has got.", nil
+	if !s.sync.start(s.ctx, s.cfg) {
+		return s.sync.status(), nil
+	}
+	// A sync that cannot start at all — a refused login, a destination that
+	// cannot be created — is decided in about a second, so it is answered
+	// now rather than on a call that may never come.
+	if out, ok := s.sync.settled(settleGrace); ok {
+		return out, nil
+	}
+	return "Sync started, writing into " + s.dest + ". It runs in the background " +
+		"and takes minutes on a first run; call sync_courses again to see how far " +
+		"it has got, and again until it reports that it finished or failed.", nil
 }
 
 // ---------------------------------------------------------------------------

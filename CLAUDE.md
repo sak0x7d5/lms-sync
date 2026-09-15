@@ -157,6 +157,30 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A dry run writes nothing — the destination folder, the lock file and the text cache included.** `Sync` created the destination before any of the `dryRun` guards below it were consulted, so `--dry-run --dest <typo>` created the typo and then reported the files it would have put in it, which is most of what the flag is for. The cost is that an unwritable destination goes unreported until the real run — the run that needs to know — and every write below creates its own parent anyway. `TestDryRunWritesNoTextIndex`, `TestDryRunDoesNotCreateTheDestination`.
 - **`index.html` is rebuilt from disk, not from the run.** A course that needed no work this time must still appear in it. It is not written by a dry run. `TestIndexListsEverythingWithWorkingLinks`, `TestDryRunWritesNoIndex`.
 - **One sync at a time per library, across processes.** A scheduled `--sync`, the web UI and a tool call can all reach for one destination; two crawls duplicate every request and hammering a login endpoint is how an account gets locked. `takeLock` is inside `Sync`, so every surface inherits it; a dry run is exempt because a lock file is a write. A lock older than `lockStaleAfter` is treated as a corpse — refusing to sync ever again would be worse than the collision it guards. `TestOnlyOneSyncRunsAtATime`, `TestAStaleLockDoesNotBlockForever`, `TestDryRunTakesNoLock`.
+- **A sync started by a tool call reports how it ended.** `start` reset the job
+  whenever one was not in flight, so the call after a run *finished* began
+  another crawl and answered "Sync started" again — making the tool's own
+  "call it again until it reports finished" true only while it was still
+  running. A wrong password therefore produced an unbounded run of identical
+  replies, no destination folder, and the failure readable nowhere: `status`'s
+  failure branch was unreachable, since it is only consulted when a sync is in
+  flight. Each iteration was also a fresh sign-in attempt with the rejected
+  password, against the one endpoint that locks an account — **auth failures are
+  never retried**, defeated one level above the retry loop that enforces it. An unread outcome is now the answer to
+  the next call; `terminal` failures (`auth`, `config` — the credentials and
+  settings this process runs on cannot change while it is up) are reported on
+  every call and never retried, everything else is reported once and then
+  retried, and the call that starts a sync waits `settleGrace` so a failure
+  that is immediate is answered immediately. `TestAFailedSyncIsReportedToTheCaller`,
+  `TestARejectedLoginIsNotRetriedByCallingAgain`,
+  `TestAnUnwritableDestinationIsReportedAndCanBeRetried`,
+  `TestAFinishedSyncReportsItsOutcomeBeforeAnotherStarts`.
+- **The sync log says where it is writing.** `describe` rendered no line for
+  the `start` event, so the destination — the whole reason that event exists —
+  never reached a tool call, and "did anything download, and where to?" could
+  not be answered from the log the model is reading. On a phone, where the
+  default destination is inside the app's private data, that is the first
+  question an empty library raises.
 - **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
 - **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`. That is a rule about *replying*, not about ignoring: `notifications/cancelled` is acted on, and the invariant below is why it has to be.
 - **A tool call never blocks the read loop, and a cancelled one is dropped.** Handling messages strictly in turn meant a slow search also held up the client's notice that it had given up on it — so one timed-out call left every later call queued behind work nobody would read, which is what turned a single timeout into two. Calls still run one at a time **and in the order they arrived** (`prevTool`, a chain of channels linked on the read loop), since a client that pipelines a record and a read expects the read to see the record, and replies are serialised on `outMu` because interleaved ones are an unreadable stream rather than a slow one. The queue was a mutex first, which gave exclusion but not order: goroutines do not acquire a mutex in the order they were started, so `record_answer` and the `weak_spots` behind it ran backwards about a quarter of the time and the read reported nothing recorded. Order can only be captured on the read loop, which is why the baton is linked there and waited on inside the goroutine — and why the wait is never abandoned on cancellation, since closing the baton early would let the next call start beside one still running. A cancelled call writes no reply: the client is not waiting for one, and dropping it is what clears the queue. `TestMCPCancelledToolCallIsNotAnswered`, `TestMCPKeepsAnsweringWhileAToolWaits`, `TestMCPToolCallsAnswerInTheOrderTheyArrived`.
@@ -334,7 +358,10 @@ moved off the read loop is the *waiting*.
 
 `sync_courses` is the exception and the only thing here that goes online. It
 **starts** a sync and returns — a crawl is minutes and a tool call has seconds
-— so progress comes from calling it again. It logs in through the same
+— so progress comes from calling it again, and the call after a run ends is
+what reports the outcome: an outcome nobody has read is never replaced by a
+fresh crawl, and a failure that cannot come good while the process is up
+(`terminal`) is repeated rather than retried. It logs in through the same
 `Client` every other surface uses, which is the point: Samigo stays refused,
 `allowedContent` still holds, and auth failures are still never retried. A
 second HTTP path here is how those protections would quietly stop applying.

@@ -129,7 +129,9 @@ file differs.
 **Claude Desktop** — `claude_desktop_config.json`:
 `~/Library/Application Support/Claude/` on macOS,
 `%APPDATA%\Claude\` on Windows.
-Other clients (opencode, Cursor) use the same `mcpServers` block.
+Cursor uses the same `mcpServers` block. **opencode does not** — its keys are
+different enough that a copied block registers nothing at all; see
+[opencode](#opencode) below.
 
 If you have already run the tool once, `config.toml` sits beside the binary
 and holds your destination and credentials. Point at the binary and you are
@@ -191,6 +193,37 @@ conversation instead of dropping to a terminal.
 So if you would rather not put a password in a client's config file, leave
 `env` out. Keep `lms-sync --sync` on a schedule instead and the assistant
 still sees everything, just as of the last run.
+
+#### opencode
+
+opencode reads `opencode.json` — in the repository root, or
+`~/.config/opencode/opencode.json` — and three of its keys differ from the
+block above: servers live under `mcp` rather than `mcpServers`, `command` is a
+single array holding the binary *and* its arguments, and environment variables
+go in `environment`, not `env`. A block copied from a Claude config is not
+rejected, it is simply not read, so the server never appears and nothing says
+why.
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "lms": {
+      "type": "local",
+      "enabled": true,
+      "command": ["/full/path/to/lms-sync", "--mcp"],
+      "environment": {
+        "LMS_USER": "your-username",
+        "LMS_PASS": "your-password"
+      }
+    }
+  }
+}
+```
+
+Add `"--dest", "/full/path/to/your/Courses"` to `command` if there is no
+`config.toml` beside the binary. On Android that path matters more than
+anywhere else: see [On your phone](#on-your-phone-android).
 
 ### What it offers
 
@@ -382,6 +415,12 @@ password that had never been sent.
 - **One bad file doesn't end the run.** Instructors link resources students
   can't read; those are counted and skipped.
 - **Session expiry is its own error**, distinct from a bad password.
+- **A sync an assistant starts reports how it ended.** `sync_courses` returns
+  immediately, so the call after a run finishes is the one that says whether
+  it worked, where it wrote, and what failed. A refused login is reported on
+  every call and never attempted again — retrying a rejected password is how
+  accounts get locked, and a reply that just says "sync started" is how a
+  wrong password stays invisible.
 - **Downloads are atomic** — written to `.part`, then renamed. An interrupted
   run never leaves a truncated file that looks complete.
 - **Config and manifest writes are atomic too**, so a crash mid-write can't
