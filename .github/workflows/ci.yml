@@ -44,14 +44,20 @@ jobs:
               && echo "ok $target"
           done
 
-      # The installer is the only code here with no test suite behind it, so
-      # the checks that can be made are worth making: a parse error in it is
-      # a student whose very first command fails. --shell=sh rather than
+      # The installers are the only code here with no test suite behind them,
+      # so the checks that can be made are worth making: a parse error in one
+      # is a student whose very first command fails. --shell=sh rather than
       # reading the shebang, so a bashism is caught instead of tolerated, and
       # dash as well because that is what /bin/sh actually is on Debian and
-      # Ubuntu — where most of these installs happen.
+      # Ubuntu — where most of these installs happen. shellcheck, dash and
+      # pwsh all come preinstalled on the runner.
       - name: Installer
         run: |
           sh -n install.sh
           dash -n install.sh
           shellcheck --shell=sh install.sh
+          pwsh -NoProfile -Command '
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path ./install.ps1), [ref]$null, [ref]$errs)
+            if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }'
