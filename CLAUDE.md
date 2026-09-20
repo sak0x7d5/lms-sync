@@ -14,6 +14,9 @@ go vet ./...
 go test ./...               # ~7s; the cancellation test sleeps
 go test -run TestSyncEndToEnd -v .    # one test
 go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style build (GOOS/GOARCH to cross-compile)
+
+shellcheck --shell=sh install.sh   # what CI runs; dash -n install.sh too
+pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
 ```
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
@@ -335,17 +338,86 @@ A browser is never told the real path of a folder the user picks — the File Sy
 
 ### Which machines it builds for
 
-`windows/amd64`, `darwin/arm64`, `darwin/amd64`, `linux/amd64` and
-`linux/arm64`, in both [ci.yml](.github/workflows/ci.yml)'s cross-compile
-check and [release.yml](.github/workflows/release.yml)'s matrix — **keep those
-two lists the same**, or a target is released without ever having been
-compiled on a pull request.
+`windows/amd64`, `windows/arm64`, `darwin/arm64`, `darwin/amd64`,
+`linux/amd64` and `linux/arm64`.
+
+That list now appears in **five** places: [ci.yml](.github/workflows/ci.yml)'s
+cross-compile loop, [release.yml](.github/workflows/release.yml)'s build
+matrix, its `verify` matrix, both installers' architecture detection
+(`SUPPORTED` in [install.sh](install.sh), `$Supported` in
+[install.ps1](install.ps1)), and the README's download table — **keep them the
+same**, or a target is released without ever having been compiled on a pull
+request, or offered to a machine no file was built for.
+
+`windows/arm64` is the one target with no `verify` leg: there is no ARM
+Windows runner dependable enough to gate a release on, so it is covered by the
+cross-compile check alone. Windows 10 on ARM emulates 32-bit x86 only, which
+is why the amd64 build is not offered there instead.
 
 There is no Android build. `GOOS=android` exists and would need the NDK, while
 Termux runs the static `linux/arm64` binary as it is; a second artifact doing
 the same job would only make a student guess which one to download. That is
 also why `CGO_ENABLED=0` matters in the release job rather than being
 incidental — it is what makes the binary independent of Android's libc.
+
+### Installing it
+
+[install.sh](install.sh) and [install.ps1](install.ps1) are POSIX sh and
+Windows PowerShell 5.1 because they have to be: the stdlib-only rule means the
+installer cannot be a Go program, and a goreleaser config would be a build
+dependency in a project whose selling point is having none. They are published
+as release assets rather than served from a branch, so there is one host to
+reach on a locked-down campus network and the script cannot drift from the
+binaries beside it. `SHA256SUMS` covers them too.
+
+- **The real binary always gets a directory of its own**, because `exeDir()`
+  puts `config.toml`, `manifest.json`, `drive-token.json` and
+  `drive-push.json` beside it — and `DestinationPath()` resolves a relative
+  `destination` against it. What goes on PATH is a *symlink*, which `exeDir()`
+  resolves back through `filepath.EvalSymlinks`. Installing the real binary
+  into `~/.local/bin` would fill a shared bin directory with a password file
+  and a course library. Windows has no symlinks without administrator rights,
+  so there the folder itself goes on PATH. Pinned by the `--extract`
+  assertion in release.yml's `verify` job, which is the only place any of this
+  runs against a real release.
+  (The lock file is *not* in that list — [synclock.go](synclock.go) puts
+  `.lms-sync.lock` in the destination on purpose.)
+- **An existing install is adopted, not sidestepped.** A folder holding
+  `config.toml` or `manifest.json` is an install, and the new binary goes into
+  it. main.go says why: "a manifest the sync cannot find means every file in
+  the library looks new and is fetched again" — a whole library re-downloaded,
+  from a tool whose retry policy exists to avoid hammering a university.
+- **`config.toml` is never copied**, for the same reason `Save` will not write
+  an environment password: a second copy of a credential, in a file the
+  student never made.
+- **Uninstall uses `rmdir`, never `rm -rf`** (and `Remove-Item` without
+  `-Recurse`). Failing on a non-empty directory is the feature — it makes the
+  uninstaller incapable of deleting settings or a synced library. What is left
+  is listed, and removing it stays the student's decision.
+- **The installer extracts its own line from `SHA256SUMS` rather than running
+  `-c`**, because it downloaded one of the files that release lists and `-c`
+  fails on the six it did not; `--ignore-missing` is not old enough to assume
+  on a Mac. A release with no `SHA256SUMS` fails closed rather than installing
+  unverified.
+- **Never HEAD a release asset.** The redirect ends at a presigned URL signed
+  for GET, so a HEAD comes back 401 whether the file is there or not.
+- **The newest tag comes from the `/releases/latest` redirect, not the API.**
+  Sixty unauthenticated calls an hour, per address, is not much for a
+  university behind one address.
+- **Nothing prompts.** Under `curl | sh` there is no terminal: `read` returns
+  non-zero at EOF, which `set -e` turns into an abort, and `/dev/tty` is not
+  always there. Every choice is a flag or an environment variable.
+- The PATH-editing and checksum-parsing logic in install.ps1 is written as
+  **pure functions** (`Add-DirToPathValue`, `Remove-DirFromPathValue`,
+  `Get-ExpectedHash`) so it can be tested without a Windows registry — the
+  same reason `interpretPicker` is pure and tested without a display.
+  Windows PATH is read and written through `Microsoft.Win32.Registry`, not
+  `[Environment]::SetEnvironmentVariable`: that writes a plain string and
+  destroys the `REG_EXPAND_SZ` type a `%USERPROFILE%` entry needs, `GetValue`
+  expands those names unless told not to, and `$env:Path` is the machine and
+  user paths already joined — writing it back copies every machine entry into
+  the user's permanently. `setx` truncates at 1024 characters and is never the
+  answer.
 
 ### The MCP server
 
@@ -458,6 +530,8 @@ Embedding the secret is sound here: Google classes an installed-app client as
 public, and it is useless without the per-sign-in PKCE verifier.
 
 ## Config and secrets
+
+An installed copy keeps `config.toml` in `~/.local/share/lms-sync/` (macOS, Linux, Termux) or `%LOCALAPPDATA%\Programs\lms-sync\` (Windows) — wherever the installer put the binary, since that is what `exeDir()` answers.
 
 `config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file, and are never written back into it — `Save` emits a line saying where the credential comes from instead.
 
