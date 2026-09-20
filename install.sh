@@ -29,7 +29,8 @@ BIN_NAME='lms-sync'
 
 # The targets release.yml builds. Keep this list and that matrix the same, or
 # this script offers a machine a file that was never compiled for it.
-SUPPORTED='linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64'
+SUPPORTED='linux/amd64, linux/arm64, darwin/amd64, darwin/arm64,
+windows/amd64, windows/arm64'
 
 # Releases before this one were published without a SHA256SUMS asset, so
 # pinning to one of them cannot be verified. Named in the error rather than

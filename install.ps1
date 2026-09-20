@@ -47,7 +47,10 @@ $Repo = 'sak0x7d5/lms-sync'
 $BinName = 'lms-sync'
 
 # The targets release.yml builds. Keep this list and that matrix the same.
-$Supported = 'linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64'
+$Supported = @'
+linux/amd64, linux/arm64, darwin/amd64, darwin/arm64,
+windows/amd64, windows/arm64
+'@
 
 # Releases before this one were published without a SHA256SUMS asset.
 $FirstChecksummed = 'v1.3.0'
@@ -279,18 +282,12 @@ function Install-LmsSync {
 	Write-Host 'lms-sync installer'
 	Write-Host ''
 
+	# An ARM PC gets the ARM build. Emulating the Intel one would work on
+	# Windows 11 and not on Windows 10, whose ARM emulation is 32-bit x86
+	# only — so the native build is the one that always starts.
 	$arch = Get-ArchFromName (Get-OsArchitecture)
-	$note = ''
-	if ($arch -eq 'arm64') {
-		# There is no windows/arm64 build. Windows 11 on ARM runs an x64
-		# program under emulation; Windows 10 on ARM emulates 32-bit x86
-		# only and genuinely cannot, which is worth saying rather than
-		# leaving someone with a file that will not start.
-		$arch = 'amd64'
-		$note = 'this is an ARM PC, so the Intel build is installed — it needs Windows 11'
-	}
-	if ($arch -ne 'amd64') {
-		Fail 'config' "lms-sync has no build for Windows on this processor." @"
+	if ($arch -ne 'amd64' -and $arch -ne 'arm64') {
+		Fail 'config' 'lms-sync has no build for Windows on this processor.' @"
 lms-sync is built for: $Supported
 Anything else Go targets builds from source in one command:
 https://github.com/$Repo#build-from-source
@@ -306,7 +303,6 @@ https://github.com/$Repo#build-from-source
 	$tag = Resolve-Tag
 	Write-Step 'target' ('windows/' + $arch)
 	Write-Step 'version' $(if ($tag) { $tag } else { 'latest' })
-	if ($note) { Write-Step '' $note }
 
 	$assetBase = if ($tag) { "$BaseUrl/download/$tag" } else { "$BaseUrl/latest/download" }
 

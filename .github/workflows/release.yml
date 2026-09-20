@@ -25,6 +25,10 @@ jobs:
       matrix:
         include:
           - { goos: windows, goarch: amd64, ext: .exe }
+          # Windows 10 on ARM emulates 32-bit x86 only, so the amd64 build
+          # genuinely will not start there. CGO is off below, so this costs
+          # nothing but a matrix line.
+          - { goos: windows, goarch: arm64, ext: .exe }
           - { goos: darwin,  goarch: arm64, ext: '' }
           - { goos: darwin,  goarch: amd64, ext: '' }
           - { goos: linux,   goarch: amd64, ext: '' }

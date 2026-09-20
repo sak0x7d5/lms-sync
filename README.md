@@ -24,6 +24,7 @@ small window opens in your browser. Fill in four fields once and press Sync.
    | Your machine | File |
    |---|---|
    | Windows | `lms-sync-windows-amd64.exe` |
+   | Windows on ARM | `lms-sync-windows-arm64.exe` |
    | Mac (Apple silicon) | `lms-sync-darwin-arm64` |
    | Mac (Intel) | `lms-sync-darwin-amd64` |
    | Linux, PC | `lms-sync-linux-amd64` |

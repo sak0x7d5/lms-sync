@@ -39,7 +39,7 @@ jobs:
       # or a target is released without ever having been compiled here.
       - name: Cross-compile
         run: |
-          for target in windows/amd64 darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+          for target in windows/amd64 windows/arm64 darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
             GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null . \
               && echo "ok $target"
           done
