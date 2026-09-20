@@ -63,8 +63,20 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      # Checked out into a subdirectory on purpose: actions/checkout cleans
+      # the path it is given, and at the repository root that would delete
+      # the dist/ the artifacts land in.
+      - uses: actions/checkout@v4
+        with: { path: repo }
+
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+
+      # The installer ships with the release it installs, rather than being
+      # fetched from a branch: one host to reach on a locked-down campus
+      # network, and a copy that cannot drift from the binaries beside it.
+      - name: Add the installer
+        run: cp repo/install.sh dist/
 
       # Named after what reads it: `sha256sum -c` on Linux and
       # `shasum -a 256 -c` on a Mac take the same format. Generated from
@@ -73,7 +85,7 @@ jobs:
       # SHA256SUMS can never end up listing itself.
       - name: Checksums
         working-directory: dist
-        run: sha256sum lms-sync-* > SHA256SUMS
+        run: sha256sum lms-sync-* install.sh > SHA256SUMS
 
       - uses: softprops/action-gh-release@v2
         with:
