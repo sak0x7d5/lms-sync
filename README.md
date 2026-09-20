@@ -18,29 +18,114 @@ small window opens in your browser. Fill in four fields once and press Sync.
 
 ## Use it
 
-1. Download the binary for your system from
-   [Releases](https://github.com/sak0x7d5/lms-sync/releases):
+**macOS, Linux, Android (Termux)**
 
-   | Your machine | File |
-   |---|---|
-   | Windows | `lms-sync-windows-amd64.exe` |
-   | Windows on ARM | `lms-sync-windows-arm64.exe` |
-   | Mac (Apple silicon) | `lms-sync-darwin-arm64` |
-   | Mac (Intel) | `lms-sync-darwin-amd64` |
-   | Linux, PC | `lms-sync-linux-amd64` |
-   | Linux on ARM — Raspberry Pi, ARM server | `lms-sync-linux-arm64` |
-   | Android, in [Termux](#on-your-phone-android) | `lms-sync-linux-arm64` |
+```bash
+curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
+```
 
-2. Put it in a folder of its own — it keeps `config.toml` and `manifest.json`
-   beside itself.
-3. Run it. Your browser opens.
-4. Fill in the LMS address, username, password and where to save. Press
-   **Find my courses**, then **Sync**.
+**Windows** — in PowerShell:
 
+```powershell
+irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | iex
+```
+
+Then run `lms-sync`. Your browser opens; fill in the LMS address, username,
+password and where to save, then press **Find my courses** and **Sync**.
 Reopening skips straight to the sync screen — settings are remembered.
 
-Only course folders go to your destination; the program and its files stay
-where you put the binary.
+The installer works out which machine you are on, downloads the one binary
+that matches, checks it against the release's `SHA256SUMS`, puts it in a
+folder of its own and puts `lms-sync` on your PATH. It is a shell script and
+does nothing else — read it first if you would rather:
+[install.sh](install.sh), [install.ps1](install.ps1).
+
+### Where it goes
+
+| | Binary and settings | On your PATH |
+|---|---|---|
+| Linux, macOS | `~/.local/share/lms-sync/` | `~/.local/bin/lms-sync`, a symlink |
+| Android (Termux) | `~/.local/share/lms-sync/` | `$PREFIX/bin/lms-sync`, a symlink |
+| Windows | `%LOCALAPPDATA%\Programs\lms-sync\` | that folder |
+
+It gets a folder of its own because `config.toml` and `manifest.json` live
+beside the binary, not in your destination. Only course folders go to the
+destination.
+
+> **Set a destination in the interface.** Until you do, courses land in a
+> `Courses` folder inside that same directory — which on Windows and in a
+> hidden `~/.local/share` is not where you want to go looking for them.
+
+Upgrading is the same command again: an install that already exists is
+upgraded in place, so your settings and your download history stay put.
+
+To pass an option, fetch the script and run it:
+
+```bash
+curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh -o install.sh
+sh install.sh --version v1.3.0        # a particular release
+sh install.sh --install-dir ~/lms-sync
+sh install.sh --no-modify-path        # leave your shell profile alone
+sh install.sh --uninstall
+```
+
+PowerShell needs the script as a block before it will take a parameter:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1))) -Uninstall
+```
+
+Uninstalling removes the binary, the PATH entry and the symlink. It leaves
+`config.toml` and anything else in the folder alone, and tells you what is
+still there — it cannot delete your settings or a synced library.
+
+### Or download it yourself
+
+Every build is on the [Releases](https://github.com/sak0x7d5/lms-sync/releases)
+page:
+
+| Your machine | File |
+|---|---|
+| Windows | `lms-sync-windows-amd64.exe` |
+| Windows on ARM | `lms-sync-windows-arm64.exe` |
+| Mac (Apple silicon) | `lms-sync-darwin-arm64` |
+| Mac (Intel) | `lms-sync-darwin-amd64` |
+| Linux, PC | `lms-sync-linux-amd64` |
+| Linux on ARM — Raspberry Pi, ARM server | `lms-sync-linux-arm64` |
+| Android, in [Termux](#on-your-phone-android) | `lms-sync-linux-arm64` |
+
+Put it in a folder of its own — it keeps `config.toml` and `manifest.json`
+beside itself — and on macOS or Linux `chmod +x` it first.
+
+Every release also publishes `SHA256SUMS`, covering the binaries and both
+installer scripts. To check a download against it:
+
+```bash
+curl -fsSLO https://github.com/sak0x7d5/lms-sync/releases/latest/download/SHA256SUMS
+sha256sum --ignore-missing -c SHA256SUMS
+```
+
+On a Mac that is `shasum -a 256`. If yours is too old for `--ignore-missing`,
+run `shasum -a 256 lms-sync-darwin-arm64` and compare the line by eye.
+
+### Unsigned downloads
+
+The binaries are not code-signed, so a browser download warns about them.
+`SHA256SUMS` is what to check instead.
+
+The one-liners above avoid this entirely — a file fetched by `curl` carries no
+`com.apple.quarantine` attribute, and the PowerShell path does not go through
+SmartScreen. It only comes up when you download from the Releases page.
+
+**macOS** — *"cannot be opened because the developer cannot be verified"*.
+Right-click the file and choose **Open**, or:
+
+```bash
+xattr -d com.apple.quarantine ./lms-sync-darwin-arm64
+```
+
+**Windows** — SmartScreen says *"Windows protected your PC"*. Choose
+**More info**, then **Run anyway**.
 
 ### On your phone (Android)
 
@@ -50,20 +135,23 @@ phone. Install [Termux](https://termux.dev) (the F-Droid build; the Play
 Store one is unmaintained), then:
 
 ```bash
-pkg install wget
+pkg install curl
 termux-setup-storage        # once — Android asks for the storage permission
 
-mkdir -p ~/lms-sync && cd ~/lms-sync
-wget https://github.com/sak0x7d5/lms-sync/releases/latest/download/lms-sync-linux-arm64
-chmod +x lms-sync-linux-arm64
-./lms-sync-linux-arm64
+curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
+lms-sync
 ```
+
+The installer recognises Termux and links into `$PREFIX/bin`, which is already
+on your PATH, so nothing is written to a shell profile here.
 
 The interface opens in your phone's browser, the same as on a laptop.
 
 **Set the destination to somewhere under `~/storage/shared`** — say
 `/storage/emulated/0/Courses`, which is what the picker on your phone calls
-*Internal storage ▸ Courses*. Termux's own home directory is inside the app's
+*Internal storage ▸ Courses*. This matters more on a phone than anywhere
+else, because the folder courses would otherwise go to is inside Termux's own
+private data. Termux's own home directory is inside the app's
 private data, which nothing else on the phone is allowed to read: slides
 synced there cannot be opened by a PDF reader, a file manager, or anything
 you might share them to.
@@ -100,10 +188,16 @@ lms-sync --version       print the version and exit
 Exit codes: `0` success, `1` some files failed, `2` bad credentials or
 configuration, `130` interrupted. Enough for a scheduler to act on.
 
-**Windows** — Task Scheduler → Daily → Program `lms-sync.exe`, arguments
-`--sync`, "Start in" set to its folder.
+**Windows** — Task Scheduler → Daily → Program
+`%LOCALAPPDATA%\Programs\lms-sync\lms-sync.exe`, arguments `--sync`,
+"Start in" set to that folder.
 
-**macOS / Linux** — `0 19 * * * cd ~/lms-sync && ./lms-sync --sync`
+**macOS / Linux** — `0 19 * * * $HOME/.local/bin/lms-sync --sync`
+
+Spell the path out: cron runs with a PATH of little more than `/usr/bin:/bin`,
+so `lms-sync` on its own is not found there even though it works in your
+shell. No `cd` is needed — the tool finds its config beside its own binary,
+not in the working directory.
 
 ## Use it with an AI assistant
 
@@ -154,6 +248,12 @@ done:
 Use an absolute path. A client starts this binary from its own working
 directory, not from yours — the destination is resolved against the config
 file beside the binary, never against wherever the client happened to be.
+
+If you used the installer, that path is
+`~/.local/share/lms-sync/lms-sync` on macOS and Linux, or
+`%LOCALAPPDATA%\Programs\lms-sync\lms-sync.exe` on Windows. Point at the
+real binary rather than the `~/.local/bin` symlink: both work, but the real
+one is the folder this section keeps talking about.
 
 **Prefer this form if you have a `config.toml`.** The alternative below
 repeats settings that already exist in it, and repeated settings drift: change
@@ -283,6 +383,13 @@ which is why the `linux/arm64` one runs under Termux as well as on a Raspberry
 Pi: it depends on no libc at all, Android's included. Any other architecture Go
 targets builds the same way — `linux/arm` for a 32-bit phone or an older Pi.
 
+**`go install` is deliberately not offered**, even though the module path
+would allow it. It puts the binary in `~/go/bin`, a folder shared with every
+other Go program you have — and this tool writes `config.toml`, with your LMS
+password in it, beside its own executable. It would also report its version as
+`1.0.0-dev`, because `go install` cannot stamp one. Build it here, or use the
+installer.
+
 ---
 
 ## Will this work at my university?
@@ -318,7 +425,9 @@ person.
 ## Configuration
 
 `config.toml` sits beside the binary and is written by the interface, so you
-rarely touch it.
+rarely touch it. If you used the installer that is
+`~/.local/share/lms-sync/` on macOS, Linux and Termux, or
+`%LOCALAPPDATA%\Programs\lms-sync\` on Windows.
 
 ```toml
 base_url    = 'https://lms.example.edu'
