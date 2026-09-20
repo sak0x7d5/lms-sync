@@ -65,6 +65,16 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
+
+      # Named after what reads it: `sha256sum -c` on Linux and
+      # `shasum -a 256 -c` on a Mac take the same format. Generated from
+      # inside dist/ so every name in it is bare, the way the asset is
+      # actually downloaded. The files are listed rather than globbed so
+      # SHA256SUMS can never end up listing itself.
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum lms-sync-* > SHA256SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
