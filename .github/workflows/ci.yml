@@ -34,10 +34,30 @@ jobs:
       - run: go test ./...
 
       # The tool ships as a single binary for people who never install Go, so
-      # a break on one platform matters even when Linux is fine.
+      # a break on one platform matters even when Linux is fine. This list is
+      # release.yml's build matrix, in the same order — keep the two the same,
+      # or a target is released without ever having been compiled here.
       - name: Cross-compile
         run: |
-          for target in windows/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+          for target in windows/amd64 windows/arm64 darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
             GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null . \
               && echo "ok $target"
           done
+
+      # The installers are the only code here with no test suite behind them,
+      # so the checks that can be made are worth making: a parse error in one
+      # is a student whose very first command fails. --shell=sh rather than
+      # reading the shebang, so a bashism is caught instead of tolerated, and
+      # dash as well because that is what /bin/sh actually is on Debian and
+      # Ubuntu — where most of these installs happen. shellcheck, dash and
+      # pwsh all come preinstalled on the runner.
+      - name: Installer
+        run: |
+          sh -n install.sh
+          dash -n install.sh
+          shellcheck --shell=sh install.sh
+          pwsh -NoProfile -Command '
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path ./install.ps1), [ref]$null, [ref]$errs)
+            if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }'
