@@ -92,10 +92,16 @@ jobs:
         working-directory: dist
         run: sha256sum lms-sync-* install.sh install.ps1 > SHA256SUMS
 
+      # A tag with a hyphen in it — v1.3.0-rc1, -beta, -alpha — is marked a
+      # prerelease, which is what keeps it out of /releases/latest. Without
+      # this, cutting a release candidate quietly repoints every install
+      # one-liner in the README at it, and the first thing anyone testing an
+      # rc would install is the rc.
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
 
   # Runs the installer that was just published, on one runner per target it
   # claims to support. Nothing else ever executes these scripts against a real
