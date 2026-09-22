@@ -142,7 +142,12 @@ jobs:
           # must not quietly test a different release than the one just built.
           curl -fsSL "$base/install.sh" -o install.sh
 
-          sh install.sh
+          # --version pins the tag being verified. Without it the installer
+          # resolves /releases/latest, which is a different release than this
+          # one whenever this tag is a prerelease — so an rc would verify the
+          # last stable build and report success without ever having run the
+          # thing being released.
+          sh install.sh --version "$TAG"
           export PATH="$HOME/.local/bin:$PATH"
 
           got=$(lms-sync --version)
@@ -169,7 +174,7 @@ jobs:
                 "$HOME/.zshrc" 2>/dev/null | grep -c 'lms-sync installer' || true
           }
           before=$(marks)
-          sh install.sh
+          sh install.sh --version "$TAG"
           if [ "$(marks)" != "$before" ]; then
             echo "a second run changed the profiles: $before then $(marks)"; exit 1
           fi
@@ -194,7 +199,10 @@ jobs:
         run: |
           $url = "https://github.com/$env:REPO/releases/download/$env:TAG/install.ps1"
           # The documented form, so what is tested is what the README says.
-          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content))
+          # -Version pins the tag under test: without it the installer resolves
+          # /releases/latest, which is never this tag when this tag is a
+          # prerelease.
+          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Version $env:TAG
 
           # Rebuilt from the registry rather than trusted from the session:
           # this is the real check that the *user* PATH got the entry.
@@ -211,7 +219,7 @@ jobs:
             throw "config did not resolve to the install dir: $out"
           }
 
-          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content))
+          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Version $env:TAG
 
           Set-Content -Path (Join-Path $dir 'config.toml') -Value "password = 'x'"
           & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Uninstall
