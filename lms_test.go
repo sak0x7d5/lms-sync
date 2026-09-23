@@ -371,6 +371,24 @@ func portalChrome(active, body string) string {
 	  </div></body></html>`
 }
 
+// brokerAnnouncements is site-broker's Announcements tab, newest first, with
+// each notice's age in days — which is what Sakai's default filter reads.
+var brokerAnnouncements = []struct {
+	age  int
+	json string
+}{
+	{1, `{"announcementId":"a1","title":"Room change for Thursday",
+	   "createdByDisplayName":"Dr Ayesha Khan","createdOn":1789430400000,
+	   "body":"<p>Thursday's lecture moves to LT-4.</p>","attachments":[]}`},
+	{3, `{"announcementId":"a2","title":"Lab 3 marks are out","createdOn":"1789257600000",
+	   "body":"<p>See the gradebook.</p>","attachments":[]}`},
+	{5, `{"announcementId":"a3","title":"Office hours moved",
+	   "body":"<p>Now on Wednesdays.</p>","attachments":[]}`},
+	{16, `{"announcementId":"a4","title":"Quiz 2 on Monday",
+	   "createdByDisplayName":"Dr Ayesha Khan",
+	   "body":"<p>Quiz 2 covers loops and arrays, in class.</p>","attachments":[]}`},
+}
+
 func newFakeSakai(t *testing.T, password string) *fakeSakai {
 	t.Helper()
 	f := &fakeSakai{}
@@ -424,12 +442,25 @@ func newFakeSakai(t *testing.T, password string) *fakeSakai {
 		case "/direct/announcement/site/site-broker.json":
 			// The body is the announcement. On the rendered tab it is behind
 			// a per-item link and the list carries only this title.
-			io.WriteString(w, `{"entityPrefix":"announcement","announcement_collection":[
-			  {"announcementId":"a1","title":"Room change for Thursday",
-			   "createdByDisplayName":"Dr Ayesha Khan",
-			   "body":"<p>Thursday's lecture moves to LT-4.</p>",
-			   "attachments":[]}
-			]}`)
+			// Sakai's provider answers with the three newest notices of the
+			// last ten days unless asked for more by n and d — reproduced
+			// here, because that default is how a quiz announced a fortnight
+			// earlier was missing from the library.
+			n, d := 3, 10
+			if v, err := strconv.Atoi(r.URL.Query().Get("n")); err == nil {
+				n = v
+			}
+			if v, err := strconv.Atoi(r.URL.Query().Get("d")); err == nil {
+				d = v
+			}
+			var kept []string
+			for _, a := range brokerAnnouncements {
+				if a.age <= d && len(kept) < n {
+					kept = append(kept, a.json)
+				}
+			}
+			io.WriteString(w, `{"entityPrefix":"announcement","announcement_collection":[`+
+				strings.Join(kept, ",")+`]}`)
 		case "/direct/assignment/site/site-broker.json":
 			// The brief is an attachment of a detail page the rendered list
 			// only links to, so this URL appears nowhere a crawl can see it.
@@ -3264,10 +3295,10 @@ func TestSyncToolIsOfferedAndDescribesItsCost(t *testing.T) {
 			continue
 		}
 		desc := strings.ToLower(tool["description"].(string))
-		// A model that waits on this tool, or calls it in a loop expecting it
-		// to block, will look broken. The description is the only place that
-		// can say so.
-		for _, want := range []string{"minutes", "immediately", "again"} {
+		// A model that gives up on a sync still running answers from a
+		// library that has not got the new material yet. The description is
+		// the only place that can say to wait, and to narrow it to a course.
+		for _, want := range []string{"minutes", "course", "still running", "again"} {
 			if !strings.Contains(desc, want) {
 				t.Errorf("description does not mention %q: %s", want, desc)
 			}
@@ -3283,7 +3314,7 @@ func TestSyncToolFetchesAndLeavesTheLibrarySearchable(t *testing.T) {
 	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
 
 	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
-	if _, err := s.syncCourses(); err != nil {
+	if _, err := s.syncCourses(context.Background(), nil); err != nil {
 		t.Fatalf("starting the sync: %v", err)
 	}
 
@@ -3392,15 +3423,15 @@ func TestAFailedSyncIsReportedToTheCaller(t *testing.T) {
 	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
 	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
 
-	out, err := s.syncCourses()
+	out, err := s.syncCourses(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("the call itself failed: %v", err)
 	}
 	waitForSync(t, &s.sync)
 	if !strings.Contains(out, "failed") {
-		// The first call waits out settleGrace precisely so a refused login
+		// The first call waits out syncWait precisely so a refused login
 		// is answered now rather than on a call that may never come.
-		out, _ = s.syncCourses()
+		out, _ = s.syncCourses(context.Background(), nil)
 	}
 	if !strings.Contains(out, "failed") {
 		t.Fatalf("a rejected login was never reported:\n%s", out)
@@ -3421,7 +3452,7 @@ func TestARejectedLoginIsNotRetriedByCallingAgain(t *testing.T) {
 	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
 	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
 
-	if _, err := s.syncCourses(); err != nil {
+	if _, err := s.syncCourses(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	waitForSync(t, &s.sync)
@@ -3431,7 +3462,7 @@ func TestARejectedLoginIsNotRetriedByCallingAgain(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		out, err := s.syncCourses()
+		out, err := s.syncCourses(context.Background(), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3468,11 +3499,11 @@ func TestAnUnwritableDestinationIsReportedAndCanBeRetried(t *testing.T) {
 	cfg.Destination = filepath.Join(blocked, "Courses")
 	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
 
-	if _, err := s.syncCourses(); err != nil {
+	if _, err := s.syncCourses(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	waitForSync(t, &s.sync)
-	out, _ := s.syncCourses()
+	out, _ := s.syncCourses(context.Background(), nil)
 	if !strings.Contains(out, "failed") {
 		t.Fatalf("an unwritable destination was never reported:\n%s", out)
 	}
@@ -3482,7 +3513,7 @@ func TestAnUnwritableDestinationIsReportedAndCanBeRetried(t *testing.T) {
 
 	// Reported once, then retried: this one is fixable while the server runs.
 	before := syncStartedAt(&s.sync)
-	if _, err := s.syncCourses(); err != nil {
+	if _, err := s.syncCourses(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if !syncStartedAt(&s.sync).After(before) {
@@ -3500,13 +3531,13 @@ func TestAFinishedSyncReportsItsOutcomeBeforeAnotherStarts(t *testing.T) {
 	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
 	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
 
-	out, err := s.syncCourses()
+	out, err := s.syncCourses(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitForSync(t, &s.sync)
 	if !strings.Contains(out, "finished") {
-		out, _ = s.syncCourses()
+		out, _ = s.syncCourses(context.Background(), nil)
 	}
 	if !strings.Contains(out, "finished") {
 		t.Fatalf("a completed sync never reported its outcome:\n%s", out)
@@ -3520,13 +3551,99 @@ func TestAFinishedSyncReportsItsOutcomeBeforeAnotherStarts(t *testing.T) {
 	// Read once, then out of the way: a later call is a request for new
 	// material, not for last run's summary again.
 	before := syncStartedAt(&s.sync)
-	if _, err := s.syncCourses(); err != nil {
+	if _, err := s.syncCourses(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if !syncStartedAt(&s.sync).After(before) {
 		t.Error("a finished outcome blocked the next sync")
 	}
 	waitForSync(t, &s.sync)
+}
+
+// "We got a new quiz on ITC" is how a student asks. A sync of every course
+// outlasted the model's patience, so the new announcement was never read:
+// naming the course has to be enough to sync just that one, and the reply
+// has to say what changed rather than leave it to be inferred from a log.
+func TestSyncToolCanSyncOneCourseAndSaysWhatChanged(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Sections = []string{"resources", "announcements"}
+	cfg.Courses = []Course{
+		{ID: "site-calc", Folder: "Calculus - I _ 102002"},
+		{ID: "site-broker", Folder: "Introduction to Computing _ 101971"},
+	}
+	s := &mcpServer{cfg: cfg, dest: cfg.Destination, ctx: context.Background()}
+
+	out, err := s.syncCourses(context.Background(), json.RawMessage(`{"course":"ITC"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One course is seconds, so the call that starts it answers with it.
+	if !strings.Contains(out, "finished") {
+		t.Fatalf("a one-course sync did not report its outcome in the same call:\n%s", out)
+	}
+	if !strings.Contains(out, filepath.Join("Introduction to Computing _ 101971",
+		"Announcements", "Announcements.html")) {
+		t.Errorf("the reply does not name the changed announcements page:\n%s", out)
+	}
+	if n := srv.timesRequested("/access/content/group/site-calc/"); n != 0 {
+		t.Errorf("a sync of one course crawled another %d time(s)", n)
+	}
+	// Only the crawl is narrowed: the config keeps every course.
+	if len(cfg.Courses) < 2 || cfg.Courses[0].ID != "site-calc" {
+		t.Errorf("the config lost courses: %v", cfg.Courses)
+	}
+
+	// Nothing new the second time, said in words.
+	out, _ = s.syncCourses(context.Background(), json.RawMessage(`{"course":"ITC"}`))
+	if !strings.Contains(out, "Nothing new or changed") {
+		t.Errorf("a sync that found nothing did not say so:\n%s", out)
+	}
+}
+
+func TestMatchCoursesTheWayAStudentNamesThem(t *testing.T) {
+	courses := []Course{
+		{ID: "s1", Folder: "Introduction to Computing _ 101971"},
+		{ID: "s2", Folder: "Calculus - I _ 102002"},
+		{ID: "s3", Folder: "Switching Theory"},
+		{ID: "s4", Folder: "Calculus - II"},
+	}
+	for q, want := range map[string]string{
+		"ITC":                       "s1",
+		"introduction to computing": "s1",
+		"switching":                 "s3",
+		"s2":                        "s2",
+	} {
+		got, err := matchCourses(courses, q)
+		if err != nil || len(got) != 1 || got[0].ID != want {
+			t.Errorf("%q matched %v (%v), want %s", q, got, err, want)
+		}
+	}
+	// Ambiguous and absent are both errors that name the courses.
+	if _, err := matchCourses(courses, "calculus"); err == nil ||
+		!strings.Contains(err.Error(), "more than one") {
+		t.Errorf("an ambiguous name was not refused: %v", err)
+	}
+	if _, err := matchCourses(courses, "physics"); err == nil ||
+		!strings.Contains(err.Error(), "Switching Theory") {
+		t.Errorf("an unknown course did not list the real ones: %v", err)
+	}
+}
+
+// Answering from a library a sync is still filling is how "nothing arrived"
+// was reported about a quiz announced that morning.
+func TestWhatsNewSaysWhenASyncIsStillRunning(t *testing.T) {
+	dest := libraryForMCP(t)
+	s := &mcpServer{cfg: DefaultConfig(), dest: dest, ctx: context.Background()}
+	s.sync.running, s.sync.started, s.sync.scope = true, time.Now(), "Calculus"
+
+	out, err := s.whatsNew(context.Background(), json.RawMessage(`{"days":1,"course":"nothing-here"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "has not finished") {
+		t.Errorf("whats_new did not warn that a sync is still running:\n%s", out)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -4043,6 +4160,30 @@ func TestAnnouncementBodiesComeFromTheEntityBroker(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "Dr Ayesha Khan") {
 		t.Errorf("who posted it was dropped:\n%s", body)
+	}
+}
+
+// Left to its defaults, Sakai's announcement provider returns the three
+// newest notices of the last ten days. A quiz announced a fortnight ago was
+// therefore not in the library at all, and every older notice fell off the
+// page the next time it was synced.
+func TestAnnouncementsAreNotLimitedToTheServersDefaultFew(t *testing.T) {
+	dest := syncBroker(t, "announcements")
+
+	body, err := os.ReadFile(filepath.Join(dest, "Broker", "Announcements", "Announcements.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Room change", "Lab 3 marks", "Office hours", "Quiz 2 covers loops"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("announcement %q is missing:\n%s", want, body)
+		}
+	}
+	// When it was posted, in either shape the server sends it.
+	for _, want := range []string{"on Tue 15 Sep 2026", "Posted on Sun 13 Sep 2026"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("posting date %q is missing:\n%s", want, body)
+		}
 	}
 }
 

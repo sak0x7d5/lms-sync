@@ -35,19 +35,31 @@ type syncJob struct {
 	res     Result
 	err     error
 	unread  bool // a run has finished and nobody has been told how it went
+
+	// scope is the course a run was limited to, empty for every course.
+	scope string
+	// changed is every file the run wrote, which is the actual answer to
+	// "did we get anything?". The log keeps only its tail, and on a real
+	// library the tail is the text extractor's summary, so a new
+	// announcement page scrolled out of it before anyone could read it.
+	changed []string
 }
 
 // keptLines is how much of the log a progress call reports. Enough to see
 // what is happening now, not so much that it crowds out a conversation.
 const keptLines = 15
 
-// settleGrace is how long the call that starts a sync waits to see whether
-// it fails outright. A rejected password or a destination that cannot be
-// created is decided in about a second — well inside a tool call — and
-// saying so now rather than on some later call the caller may never make is
-// the difference between an answer and a guess. A crawl that is genuinely
-// working takes minutes and is left to run.
-const settleGrace = 2 * time.Second
+// syncWait is how long a sync_courses call waits for the run to end before
+// answering with progress instead.
+//
+// Returning at once made every caller poll, and a model polling a job it
+// cannot see into gives up long before a crawl ends: asked about a quiz
+// posted that morning, one called the tool twice, read a library the sync
+// had not reached yet, and told the student nothing had arrived. A sync
+// limited to one course finishes well inside this, so the call that starts
+// it is the call that answers. It stays well short of the minute most
+// clients allow a tool call.
+const syncWait = 20 * time.Second
 
 func (j *syncJob) note(line string) {
 	j.mu.Lock()
@@ -60,7 +72,9 @@ func (j *syncJob) note(line string) {
 
 // start launches a sync unless one is already running, or the last one
 // failed in a way that starting another cannot fix.
-func (j *syncJob) start(ctx context.Context, cfg *Config) (started bool) {
+//
+// only limits the run to those courses; nil means every course.
+func (j *syncJob) start(ctx context.Context, cfg *Config, only []Course) (started bool) {
 	j.mu.Lock()
 	if j.running || terminal(j.err) {
 		j.mu.Unlock()
@@ -68,10 +82,18 @@ func (j *syncJob) start(ctx context.Context, cfg *Config) (started bool) {
 	}
 	j.running, j.started, j.ended = true, time.Now(), time.Time{}
 	j.lines, j.err, j.res, j.unread = nil, nil, Result{}, false
+	j.changed, j.scope = nil, ""
+	if len(only) > 0 {
+		names := make([]string, 0, len(only))
+		for _, c := range only {
+			names = append(names, c.Folder)
+		}
+		j.scope = strings.Join(names, ", ")
+	}
 	j.mu.Unlock()
 
 	go func() {
-		res, err := j.run(ctx, cfg)
+		res, err := j.run(ctx, cfg, only)
 		j.mu.Lock()
 		j.running, j.ended, j.res, j.err = false, time.Now(), res, err
 		j.unread = true
@@ -118,22 +140,30 @@ func (j *syncJob) outcome() (string, bool) {
 	return j.report(), true
 }
 
-// settled waits out settleGrace for a run that fails immediately, and
-// returns its outcome if it has one.
-func (j *syncJob) settled(limit time.Duration) (string, bool) {
+// settled waits up to limit for the run to end, and returns its outcome if
+// it has one. A cancelled call stops waiting; the sync itself carries on.
+func (j *syncJob) settled(ctx context.Context, limit time.Duration) (string, bool) {
 	deadline := time.Now().Add(limit)
 	for {
 		if out, ok := j.outcome(); ok {
 			return out, true
 		}
-		if !time.Now().Before(deadline) {
+		if !time.Now().Before(deadline) || ctx.Err() != nil {
 			return "", false
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-func (j *syncJob) run(ctx context.Context, cfg *Config) (Result, error) {
+// inFlight reports a running sync and what it covers, for the tools that
+// answer from the library while it is still being filled.
+func (j *syncJob) inFlight() (running bool, scope string, since time.Duration) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.running, j.scope, time.Since(j.started)
+}
+
+func (j *syncJob) run(ctx context.Context, cfg *Config, only []Course) (Result, error) {
 	client, err := connectQuiet(ctx, cfg, false)
 	if err != nil {
 		return Result{}, err
@@ -156,8 +186,22 @@ func (j *syncJob) run(ctx context.Context, cfg *Config) (Result, error) {
 		}
 	}
 
+	// The course list above is refreshed and saved in full whatever the
+	// scope: only the crawl is limited, never the config it writes back.
+	run := cfg
+	if len(only) > 0 {
+		scoped := *cfg
+		scoped.Courses = only
+		run = &scoped
+	}
+
 	manifest := LoadManifest(manifestPath())
-	res, err := Sync(ctx, client, cfg, manifest, false, func(e Event) {
+	res, err := Sync(ctx, client, run, manifest, false, func(e Event) {
+		if e.Type == "file" {
+			j.mu.Lock()
+			j.changed = append(j.changed, e.Path)
+			j.mu.Unlock()
+		}
 		if line := describe(e); line != "" {
 			j.note(line)
 		}
@@ -194,6 +238,44 @@ func describe(e Event) string {
 	return ""
 }
 
+// maxChangedListed bounds the list of changed files in one reply. A first
+// sync writes the whole library, and listing all of it crowds out the
+// conversation for a list nobody reads.
+const maxChangedListed = 40
+
+// changedReport says what a finished run actually brought in.
+func changedReport(changed []string) string {
+	if len(changed) == 0 {
+		// Said outright: without it a caller cannot tell "nothing new" from
+		// "not finished", and keeps waiting for material that is not coming.
+		return "Nothing new or changed was found on the LMS; the library " +
+			"already matched it.\n"
+	}
+	var b strings.Builder
+	b.WriteString("\nNew or changed:\n")
+	shown := changed
+	if len(shown) > maxChangedListed {
+		shown = shown[:maxChangedListed]
+	}
+	pages := false
+	for _, p := range shown {
+		b.WriteString("- " + p + "\n")
+		pages = pages || strings.HasSuffix(strings.ToLower(p), ".html")
+	}
+	if len(changed) > len(shown) {
+		fmt.Fprintf(&b, "... and %d more; whats_new lists them.\n", len(changed)-len(shown))
+	}
+	if pages {
+		// A tab's page holds every notice on the tab, so "changed" means
+		// something in it was posted or edited — but which one only the
+		// page itself says.
+		b.WriteString("\nA changed .html page is a whole tab (Announcements, Assignments, " +
+			"Overview, Syllabus): something on it was posted or edited. Read it with " +
+			"read_material to see what; each notice says when it was posted.\n")
+	}
+	return b.String()
+}
+
 // status describes the job in the terms the caller needs: whether to wait,
 // and what has happened so far.
 func (j *syncJob) status() string {
@@ -205,10 +287,16 @@ func (j *syncJob) status() string {
 // report is status with the lock already held.
 func (j *syncJob) report() string {
 	var b strings.Builder
+	of := "every course"
+	if j.scope != "" {
+		of = j.scope
+	}
 	switch {
 	case j.running:
-		fmt.Fprintf(&b, "A sync has been running for %s.\n", roundDuration(time.Since(j.started)))
-		b.WriteString("Call sync_courses again in a minute or so for progress; " +
+		fmt.Fprintf(&b, "A sync of %s has been running for %s and has not finished yet, "+
+			"so the library may not have what it is fetching.\n",
+			of, roundDuration(time.Since(j.started)))
+		b.WriteString("Call sync_courses again to wait for it; " +
 			"a first sync of a whole semester can take several minutes.\n")
 	case j.started.IsZero():
 		return "No sync has run in this session."
@@ -224,9 +312,14 @@ func (j *syncJob) report() string {
 				"is restarted, so sync_courses will not try again. Tell the student " +
 				"what to fix rather than calling it in a loop.\n")
 		}
+		if len(j.changed) > 0 {
+			b.WriteString(changedReport(j.changed))
+		}
 	default:
-		fmt.Fprintf(&b, "The last sync finished in %s: %d new, %d already current, %d failed.\n",
-			roundDuration(j.ended.Sub(j.started)), j.res.New, j.res.Current, j.res.Failed)
+		fmt.Fprintf(&b, "The last sync of %s finished in %s: %d new or changed, "+
+			"%d already current, %d failed.\n",
+			of, roundDuration(j.ended.Sub(j.started)), j.res.New, j.res.Current, j.res.Failed)
+		b.WriteString(changedReport(j.changed))
 	}
 
 	if len(j.lines) > 0 {

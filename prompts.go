@@ -40,7 +40,11 @@ How to answer this:
   or nothing.
 - Anything you add from general knowledge must be marked as such, separately
   from what came out of their material.
-- If a course looks empty or out of date, offer to run sync_courses.`
+- If a course looks empty or out of date, or the student says something was just
+  posted, run sync_courses for that course and wait for it to report finished.
+- Quizzes and tests themselves are never mirrored (opening one can start a timed
+  attempt). What the library knows about a quiz is what was announced: read the
+  course's Announcements, Assignments and Overview pages.`
 
 type promptArgument struct {
 	Name        string `json:"name"`

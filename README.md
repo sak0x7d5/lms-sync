@@ -623,9 +623,12 @@ password that had never been sent.
 - **One bad file doesn't end the run.** Instructors link resources students
   can't read; those are counted and skipped.
 - **Session expiry is its own error**, distinct from a bad password.
-- **A sync an assistant starts reports how it ended.** `sync_courses` returns
-  immediately, so the call after a run finishes is the one that says whether
-  it worked, where it wrote, and what failed. A refused login is reported on
+- **A sync an assistant starts reports how it ended.** `sync_courses` can be
+  limited to one course ("ITC" works — initials, part of the name, or the
+  folder), waits up to 20 seconds for the run to finish, and then lists exactly
+  which files are new or changed. A run still going after that is reported as
+  still going, and the next call waits for it; the call after a run finishes is
+  the one that says whether it worked, where it wrote, and what failed. A refused login is reported on
   every call and never attempted again — retrying a rejected password is how
   accounts get locked, and a reply that just says "sync started" is how a
   wrong password stays invisible.
