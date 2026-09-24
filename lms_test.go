@@ -4212,7 +4212,7 @@ func TestAssignmentBriefsComeFromTheEntityBroker(t *testing.T) {
 	// A due date is half of what an assignment is. The server's is UTC, and
 	// written as that it was read as local time: a deadline five hours
 	// earlier than the real one, to a student in Pakistan.
-	if !strings.Contains(string(body), "Sun 20 Sep 2026, 00:25 PKT (UTC+05:00)") {
+	if !strings.Contains(string(body), "Sun 20 Sep 2026, 12:25 AM PKT (UTC+05:00)") {
 		t.Errorf("the due date is not in the student's zone:\n%s", body)
 	}
 }
@@ -4223,7 +4223,7 @@ func TestDatesAreWrittenInTheStudentsZoneAndSaySo(t *testing.T) {
 		t.Fatal(err)
 	}
 	for in, want := range map[string]string{
-		"2026-09-25T18:55:00Z": "Fri 25 Sep 2026, 23:55 PKT (UTC+05:00)",
+		"2026-09-25T18:55:00Z": "Fri 25 Sep 2026, 11:55 PM PKT (UTC+05:00)",
 		// Not a timestamp this can read: kept, never guessed at.
 		"25 Sep 2026 6:55 pm": "25 Sep 2026 6:55 pm",
 	} {
@@ -4231,10 +4231,10 @@ func TestDatesAreWrittenInTheStudentsZoneAndSaySo(t *testing.T) {
 			t.Errorf("dueOn(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if got := dueOn("2026-09-25T18:55:00Z", time.UTC); got != "Fri 25 Sep 2026, 18:55 UTC" {
+	if got := dueOn("2026-09-25T18:55:00Z", time.UTC); got != "Fri 25 Sep 2026, 6:55 PM UTC" {
 		t.Errorf("UTC is labelled %q", got)
 	}
-	if got := postedOn(json.RawMessage(`1789430400000`), karachi); got != "Tue 15 Sep 2026, 05:00 PKT (UTC+05:00)" {
+	if got := postedOn(json.RawMessage(`1789430400000`), karachi); got != "Tue 15 Sep 2026, 5:00 AM PKT (UTC+05:00)" {
 		t.Errorf("postedOn = %q", got)
 	}
 }

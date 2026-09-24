@@ -205,7 +205,7 @@ These encode bugs that already cost someone real time — the comments in the so
   Broker's due dates are UTC; written verbatim, `2026-09-25T18:55:00Z` was read
   by an assistant as 18:55 — five hours before a Karachi deadline actually
   closed. `dueOn` and `postedOn` convert through `Config.location()` (the
-  `timezone` setting, else the machine's) and `formatWhen` always prints the
+  `timezone` setting, else the machine's) and `formatWhen` prints twelve-hour time and always the
   zone and offset. Pages stay byte-stable because the zone is fixed per
   machine. `time/tzdata` is compiled in because Windows and Termux have no zone
   database to load a name from — and Termux has no local zone at all, which is

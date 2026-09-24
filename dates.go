@@ -42,14 +42,15 @@ func (c *Config) location() *time.Location {
 }
 
 // formatWhen renders a moment in loc, labelled so it cannot be misread:
-// "Fri 25 Sep 2026, 23:55 PKT (UTC+05:00)".
+// "Fri 25 Sep 2026, 11:55 PM PKT (UTC+05:00)". Twelve-hour, because that is
+// how a student reads a deadline.
 func formatWhen(t time.Time, loc *time.Location) string {
 	if loc == nil {
 		loc = time.UTC
 	}
 	t = t.In(loc)
 	name, offset := t.Zone()
-	s := t.Format("Mon 2 Jan 2006, 15:04")
+	s := t.Format("Mon 2 Jan 2006, 3:04 PM")
 	if offset == 0 && (name == "UTC" || name == "GMT" || name == "") {
 		return s + " UTC"
 	}
