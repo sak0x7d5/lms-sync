@@ -199,8 +199,19 @@ These encode bugs that already cost someone real time — the comments in the so
   page held whatever was recent on the day of the sync and a quiz announced a
   fortnight earlier was not in the library at all. `announcementsFromAPI`
   passes `n` and `d`, and writes each notice's posting date — the server's own
-  timestamp, formatted in UTC, so the page stays byte-stable.
+  timestamp, in the zone the rule below describes.
   `TestAnnouncementsAreNotLimitedToTheServersDefaultFew`.
+- **Dates are written in the student's zone, and labelled.** The Entity
+  Broker's due dates are UTC; written verbatim, `2026-09-25T18:55:00Z` was read
+  by an assistant as 18:55 — five hours before a Karachi deadline actually
+  closed. `dueOn` and `postedOn` convert through `Config.location()` (the
+  `timezone` setting, else the machine's) and `formatWhen` always prints the
+  zone and offset. Pages stay byte-stable because the zone is fixed per
+  machine. `time/tzdata` is compiled in because Windows and Termux have no zone
+  database to load a name from — and Termux has no local zone at all, which is
+  why the setting exists. A string that is not RFC 3339 is kept verbatim, never
+  guessed at. `TestDatesAreWrittenInTheStudentsZoneAndSaySo`,
+  `TestTheTimezoneSettingIsReadSavedAndChecked`.
 - **The sync log says where it is writing.** `describe` rendered no line for
   the `start` event, so the destination — the whole reason that event exists —
   never reached a tool call, and "did anything download, and where to?" could
@@ -561,6 +572,9 @@ An installed copy keeps `config.toml` in `~/.local/share/lms-sync/` (macOS, Linu
 `announcements`, `assignments`, `dropbox`);
 unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
 never end up empty.
+
+`timezone` (default: the machine's) is the IANA zone dates in saved pages are
+written in; an unknown one is dropped by `sanitise()`.
 
 `keep_pages` (default **false**) decides whether a rendered page is written
 beside the files its tab links to. Most syllabus tabs are a wrapper around a

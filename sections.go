@@ -9,9 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -592,10 +590,10 @@ func (c *Client) announcementsFromAPI(ctx context.Context, siteID string) ([]cap
 		// page is hashed to decide freshness, so anything varying between
 		// runs would rewrite the file and report it as new every time.
 		// When it was posted is the server's own timestamp, so it is as
-		// stable as the rest — and "is this the new one?" is the first
+		// stable as the rest (see dates.go for the zone) — and "is this the new one?" is the first
 		// question anybody asks of an announcement.
 		by := strings.TrimSpace(e.Author)
-		on := postedOn(e.Created)
+		on := postedOn(e.Created, c.loc)
 		switch {
 		case by != "" && on != "":
 			item.Body = "<p><em>Posted by " + html.EscapeString(by) + " on " +
@@ -616,28 +614,6 @@ const (
 	announcementLimit = 500
 	announcementDays  = 400
 )
-
-// postedOn renders an announcement's createdOn, which Sakai versions report
-// either as epoch milliseconds or as a string. It is formatted in UTC so the
-// page is the same bytes whichever machine synced it.
-func postedOn(raw json.RawMessage) string {
-	var ms int64
-	if err := json.Unmarshal(raw, &ms); err != nil {
-		var s string
-		if json.Unmarshal(raw, &s) != nil {
-			return ""
-		}
-		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
-		if err != nil {
-			return strings.TrimSpace(s) // already a date; keep the server's own
-		}
-		ms = n
-	}
-	if ms <= 0 {
-		return ""
-	}
-	return time.UnixMilli(ms).UTC().Format("Mon 2 Jan 2006, 15:04 UTC")
-}
 
 // assignmentsFromAPI reads the Assignments tab through the Entity Broker.
 //
@@ -667,10 +643,10 @@ func (c *Client) assignmentsFromAPI(ctx context.Context, siteID string) ([]captu
 		if isEmptyItem(item) {
 			continue
 		}
-		// The server's own absolute timestamp, verbatim. A due date is half
-		// of what an assignment is, and this string is identical on every
-		// run — unlike anything worked out from the clock.
-		if due := strings.TrimSpace(e.Due); due != "" {
+		// The server's own absolute timestamp, in the student's zone. A due
+		// date is half of what an assignment is, and this is identical on
+		// every run — unlike anything worked out from the clock.
+		if due := dueOn(e.Due, c.loc); due != "" {
 			item.Body = "<p><strong>Due:</strong> " + html.EscapeString(due) + "</p>\n" + item.Body
 		}
 		out = append(out, item)

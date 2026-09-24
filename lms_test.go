@@ -4130,8 +4130,17 @@ func TestTheWrittenConfigNamesEveryTabThatCanBeEnabled(t *testing.T) {
 // syncBroker mirrors the one course whose Entity Broker answers.
 func syncBroker(t *testing.T, sections ...string) string {
 	t.Helper()
+	return syncBrokerIn(t, "UTC", sections...)
+}
+
+// syncBrokerIn is syncBroker with dates written in the named zone. Tests pin
+// one rather than inherit the machine's, or they would pass in one country
+// and fail in the next.
+func syncBrokerIn(t *testing.T, zone string, sections ...string) string {
+	t.Helper()
 	srv := newFakeSakai(t, "correct-horse")
 	cfg := testConfig(t, srv)
+	cfg.Timezone = zone
 	cfg.Sections = sections
 	cfg.Courses = []Course{{ID: "site-broker", Folder: "Broker"}}
 	client := loggedInClient(t, cfg)
@@ -4191,7 +4200,7 @@ func TestAnnouncementsAreNotLimitedToTheServersDefaultFew(t *testing.T) {
 // list only links to that page — so on the crawl route the PDF a student
 // actually needs has no URL anywhere. Through the API it is an ordinary file.
 func TestAssignmentBriefsComeFromTheEntityBroker(t *testing.T) {
-	dest := syncBroker(t, "assignments")
+	dest := syncBrokerIn(t, "Asia/Karachi", "assignments")
 
 	if _, err := os.Stat(filepath.Join(dest, "Broker", "Assignments", "Homework_1.pdf")); err != nil {
 		t.Errorf("the assignment brief was not downloaded: %v", err)
@@ -4200,10 +4209,64 @@ func TestAssignmentBriefsComeFromTheEntityBroker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the Assignments tab produced no page: %v", err)
 	}
-	// A due date is half of what an assignment is, and the server's own
-	// absolute string is the same on every run — which a hashed page needs.
-	if !strings.Contains(string(body), "2026-09-19T19:25:00Z") {
-		t.Errorf("the due date was dropped:\n%s", body)
+	// A due date is half of what an assignment is. The server's is UTC, and
+	// written as that it was read as local time: a deadline five hours
+	// earlier than the real one, to a student in Pakistan.
+	if !strings.Contains(string(body), "Sun 20 Sep 2026, 00:25 PKT (UTC+05:00)") {
+		t.Errorf("the due date is not in the student's zone:\n%s", body)
+	}
+}
+
+func TestDatesAreWrittenInTheStudentsZoneAndSaySo(t *testing.T) {
+	karachi, err := time.LoadLocation("Asia/Karachi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for in, want := range map[string]string{
+		"2026-09-25T18:55:00Z": "Fri 25 Sep 2026, 23:55 PKT (UTC+05:00)",
+		// Not a timestamp this can read: kept, never guessed at.
+		"25 Sep 2026 6:55 pm": "25 Sep 2026 6:55 pm",
+	} {
+		if got := dueOn(in, karachi); got != want {
+			t.Errorf("dueOn(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := dueOn("2026-09-25T18:55:00Z", time.UTC); got != "Fri 25 Sep 2026, 18:55 UTC" {
+		t.Errorf("UTC is labelled %q", got)
+	}
+	if got := postedOn(json.RawMessage(`1789430400000`), karachi); got != "Tue 15 Sep 2026, 05:00 PKT (UTC+05:00)" {
+		t.Errorf("postedOn = %q", got)
+	}
+}
+
+// The zone is a setting because a phone cannot supply one: Termux runs this
+// binary with no zone of its own, so every date would be UTC. A misspelt one
+// falls back to the machine's rather than failing every run.
+func TestTheTimezoneSettingIsReadSavedAndChecked(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("timezone = 'Asia/Karachi'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.location().String() != "Asia/Karachi" {
+		t.Errorf("zone = %s, want Asia/Karachi", cfg.location())
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := os.ReadFile(path)
+	if !strings.Contains(string(saved), "timezone    = 'Asia/Karachi'") {
+		t.Errorf("the zone was not saved:\n%s", saved)
+	}
+
+	cfg.Timezone = "Asia/Karach"
+	cfg.sanitise()
+	if cfg.Timezone != "" || cfg.location() != time.Local {
+		t.Errorf("a misspelt zone was kept: %q", cfg.Timezone)
 	}
 }
 

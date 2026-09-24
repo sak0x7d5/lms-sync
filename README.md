@@ -449,6 +449,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `extensions` | common types | which files to download |
 | `sections` | all six below | which tabs to mirror |
 | `keep_pages` | `false` | also save the captured page, not just the files a tab links to |
+| `timezone` | this computer's | zone for due dates and posting times, e.g. `'Asia/Karachi'`; set it on a phone, where Termux has none and dates would be UTC |
 | `drive_push` | `false` | copy the library to Google Drive after each sync |
 | `drive_folder` | `lms-sync` | folder name in your Drive |
 | `drive_client_id` | built in | only if you want to use your own Google project |
