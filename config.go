@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // DefaultLMS is pre-filled in the UI. Forking for another university means
@@ -27,6 +28,7 @@ type Config struct {
 	Extensions  []string
 	Sections    []string // which LMS tabs to mirror; see sections.go
 	KeepPages   bool     // also save the captured page, not just the files a tab links to
+	Timezone    string   // IANA zone for dates in saved pages; "" = this machine's
 
 	// Copying the finished library up to Google Drive. Off by default: it
 	// needs a Google sign-in that only --drive-login can perform, and a tool
@@ -177,6 +179,8 @@ func LoadConfig(path string) (*Config, error) {
 			if list := parseArray(raw); len(list) > 0 {
 				cfg.Sections = list
 			}
+		case "timezone":
+			cfg.Timezone = unquote(raw)
 		case "keep_pages":
 			cfg.KeepPages = boolOr(unquote(raw), cfg.KeepPages)
 		case "drive_push":
@@ -223,6 +227,15 @@ func (c *Config) sanitise() {
 	}
 	if strings.TrimSpace(c.Destination) == "" {
 		c.Destination = "Courses"
+	}
+
+	// A zone that does not exist is dropped rather than obeyed, like a
+	// misspelt section: the machine's own zone is a better answer than
+	// failing every run over a typo.
+	if tz := strings.TrimSpace(c.Timezone); tz != "" {
+		if _, err := time.LoadLocation(tz); err != nil {
+			c.Timezone = ""
+		}
 	}
 
 	// A misspelt section would otherwise be obeyed silently and simply never
@@ -527,6 +540,15 @@ func (c *Config) Save() error {
 	b.WriteString("# A tab that links to no files always gets its page either way, and so\n")
 	b.WriteString("# do tabs whose text IS the material: " + textSectionList() + ".\n")
 	fmt.Fprintf(&b, "keep_pages  = %t\n", c.KeepPages)
+
+	b.WriteString("\n# The time zone due dates and posting times are written in. Left out,\n")
+	b.WriteString("# it is this computer's own. Set it on a phone: Android does not tell\n")
+	b.WriteString("# Termux its zone, so there every date would otherwise be in UTC.\n")
+	if c.Timezone != "" {
+		fmt.Fprintf(&b, "timezone    = %s\n", tomlQuote(c.Timezone))
+	} else {
+		b.WriteString("# timezone    = 'Asia/Karachi'\n")
+	}
 
 	b.WriteString("\n# --- Google Drive backup (optional) ---------------------------------\n")
 	b.WriteString("# Copies the finished library up to Drive after every sync. One way\n")

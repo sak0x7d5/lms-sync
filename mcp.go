@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -342,7 +343,11 @@ func (s *mcpServer) initialize(params json.RawMessage) map[string]any {
 			"PDFs. Search it with find_material before answering questions " +
 			"about a course, and read a specific file with read_material. " +
 			"The mirror is only as current as the last sync; whats_new says " +
-			"when each course last changed, and sync_courses fetches new material. " +
+			"when each course last changed, and sync_courses fetches new material — " +
+			"run it for the course in question whenever the student says something " +
+			"was just posted. Quizzes and tests themselves are never mirrored, since " +
+			"opening one can start a timed attempt: what is known about a quiz is what " +
+			"the course's Announcements, Assignments and Overview pages say. " +
 			"The prompts offer ready-made study workflows: prep_for_class, quiz_me, " +
 			"explain_from_my_material and catch_up.",
 	}
@@ -470,15 +475,23 @@ var mcpTools = []mcpTool{
 		Name:  "sync_courses",
 		Title: "Fetch new material from the LMS",
 		Description: "Download anything new from the university's LMS into the local " +
-			"mirror, then make it searchable. This is the only tool here that goes " +
-			"online. It returns immediately rather than waiting: a full sync takes " +
-			"minutes, so call it again after a minute to see progress and again until " +
-			"it reports that it finished or failed — the call after a run ends is the " +
-			"one that reports how it went, including a refused login or a destination " +
-			"it could not write to. Use it when the student says material is missing or " +
-			"that something was uploaded recently, or when whats_new shows nothing for " +
-			"a period they expected material in.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+			"mirror — files, and the text of the Announcements, Assignments, Overview " +
+			"and Syllabus tabs — then make it searchable. This is the only tool here " +
+			"that goes online. Pass `course` whenever the student names one (\"we got " +
+			"a new quiz on ITC\"): one course syncs in seconds, and the reply lists " +
+			"exactly which files are new or changed. Every course at once can take " +
+			"minutes. The call waits up to 20 seconds for the sync to finish; if it is " +
+			"still running, the reply says so and calling again waits again — never " +
+			"answer from the library while a sync of that course is still running. " +
+			"Use it whenever the student says something was posted recently, before " +
+			"telling them it is not there.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"Sync only this course: its folder name as list_courses reports it, part of it, or its initials (\"ITC\"). Omit for every course."}
+			},
+			"additionalProperties":false
+		}`),
 	},
 	{
 		Name:  "whats_new",
@@ -486,7 +499,10 @@ var mcpTools = []mcpTool{
 		Description: "List files that appeared or changed in the mirror recently, newest " +
 			"first. Useful for 'what did we get in class this week'. Note this reports when " +
 			"a file was downloaded, which is not the same as when it was taught — an " +
-			"instructor who uploads nothing leaves nothing here.",
+			"instructor who uploads nothing leaves nothing here. It only knows what the " +
+			"last sync fetched: when the student says something was just posted, run " +
+			"sync_courses for that course first. A changed Announcements.html or " +
+			"Assignments.html means something was posted on that tab; read it.",
 		InputSchema: json.RawMessage(`{
 			"type":"object",
 			"properties":{
@@ -662,7 +678,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessa
 	case "whats_new":
 		return s.whatsNew(ctx, args)
 	case "sync_courses":
-		return s.syncCourses()
+		return s.syncCourses(ctx, args)
 	case "record_answer":
 		return s.recordAnswer(args)
 	case "due_reviews":
@@ -993,9 +1009,22 @@ func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string,
 			recent = append(recent, e)
 		}
 	}
+	// Answering from a library a sync is still filling is how "nothing
+	// arrived" got reported about a quiz announced that morning.
+	var note string
+	if running, scope, since := s.sync.inFlight(); running {
+		if scope == "" {
+			scope = "every course"
+		}
+		note = fmt.Sprintf("A sync of %s started %s ago and has not finished, so this "+
+			"may be missing what it is fetching. Call sync_courses to wait for it.\n\n",
+			scope, roundDuration(since))
+	}
+
 	if len(recent) == 0 {
-		return fmt.Sprintf("Nothing has arrived in the last %d day%s. "+
-			"The mirror is only as current as the last sync.",
+		return note + fmt.Sprintf("Nothing has arrived in the last %d day%s. "+
+			"The mirror is only as current as the last sync; if the student says "+
+			"something was posted, run sync_courses for that course.",
 			days, plural(days, "", "s")), nil
 	}
 
@@ -1005,6 +1034,7 @@ func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string,
 	}
 
 	var b strings.Builder
+	b.WriteString(note)
 	fmt.Fprintf(&b, "%d file%s in the last %d day%s\n\n",
 		len(recent), plural(len(recent), "", "s"), days, plural(days, "", "s"))
 	for _, e := range recent {
@@ -1014,8 +1044,17 @@ func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string,
 	return b.String(), nil
 }
 
-// syncCourses starts a sync, or reports the one already under way.
-func (s *mcpServer) syncCourses() (string, error) {
+// syncCourses starts a sync, or reports the one already under way, waiting
+// up to syncWait for it to end either way.
+func (s *mcpServer) syncCourses(ctx context.Context, args json.RawMessage) (string, error) {
+	var a struct {
+		Course string `json:"course"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &a); err != nil {
+			return "", errors.New("could not read the arguments")
+		}
+	}
 	if strings.TrimSpace(s.cfg.Username) == "" || strings.TrimSpace(s.cfg.Password) == "" {
 		return "", fmt.Errorf("no LMS credentials are configured, so a sync cannot log in. "+
 			"Set them in %s, or in the LMS_USER and LMS_PASS environment variables",
@@ -1030,18 +1069,102 @@ func (s *mcpServer) syncCourses() (string, error) {
 	if out, ok := s.sync.outcome(); ok {
 		return out, nil
 	}
-	if !s.sync.start(s.ctx, s.cfg) {
+
+	// Resolved before anything starts, so a course that does not exist is
+	// an answer now rather than a crawl of every course instead.
+	var only []Course
+	if strings.TrimSpace(a.Course) != "" {
+		got, err := matchCourses(s.cfg.Courses, a.Course)
+		if err != nil {
+			return "", err
+		}
+		only = got
+	}
+
+	if !s.sync.start(s.ctx, s.cfg, only) {
+		if running, _, _ := s.sync.inFlight(); !running {
+			return s.sync.status(), nil // a terminal failure, said again
+		}
+		// Already running: wait for it here rather than hand the caller a
+		// progress line it will read as "nothing yet" and stop.
+		if out, ok := s.sync.settled(ctx, syncWait); ok {
+			return out, nil
+		}
 		return s.sync.status(), nil
 	}
-	// A sync that cannot start at all — a refused login, a destination that
-	// cannot be created — is decided in about a second, so it is answered
-	// now rather than on a call that may never come.
-	if out, ok := s.sync.settled(settleGrace); ok {
+	// A refused login is decided in about a second, and one course in a few
+	// more, so the call that starts a sync is usually the one that reports it.
+	if out, ok := s.sync.settled(ctx, syncWait); ok {
 		return out, nil
 	}
-	return "Sync started, writing into " + s.dest + ". It runs in the background " +
-		"and takes minutes on a first run; call sync_courses again to see how far " +
-		"it has got, and again until it reports that it finished or failed.", nil
+	return "Sync started, writing into " + s.dest + ". It is still running; " +
+		"call sync_courses again to wait for it, and do not tell the student " +
+		"something is missing until it reports that it finished.\n\n" +
+		s.sync.status(), nil
+}
+
+// matchCourses finds the course a caller named, the way a student names one:
+// by its folder, by part of it, or by its initials — "ITC" for Introduction
+// to Computing is how the course is actually spoken of, and is what a model
+// passes on.
+func matchCourses(courses []Course, q string) ([]Course, error) {
+	want := strings.ToLower(strings.TrimSpace(q))
+	var exact, partial, initials []Course
+	for _, c := range courses {
+		folder := strings.ToLower(c.Folder)
+		switch {
+		case folder == want || strings.ToLower(c.ID) == want:
+			exact = append(exact, c)
+		case lettersOnly(want) != "" && courseInitials(c.Folder) == lettersOnly(want):
+			initials = append(initials, c)
+		case strings.Contains(folder, want):
+			partial = append(partial, c)
+		}
+	}
+	// Initials before substrings: "itc" is inside "Switching Theory" too.
+	for _, found := range [][]Course{exact, initials, partial} {
+		if len(found) == 1 {
+			return found, nil
+		}
+		if len(found) > 1 {
+			return nil, fmt.Errorf("%q matches more than one course (%s); "+
+				"pass the folder name of the one you mean", q, courseNames(found))
+		}
+	}
+	return nil, fmt.Errorf("no course matches %q. The courses are: %s. "+
+		"A course added this semester appears after a sync of every course "+
+		"(call sync_courses with no course)", q, courseNames(courses))
+}
+
+// courseInitials is the first letter of each word of a folder name, numbers
+// and punctuation left out: "Introduction to Computing _ 101971" is "itc".
+func courseInitials(folder string) string {
+	var b strings.Builder
+	for _, w := range strings.FieldsFunc(strings.ToLower(folder), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if r := []rune(w)[0]; unicode.IsLetter(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+func lettersOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
+func courseNames(courses []Course) string {
+	names := make([]string, 0, len(courses))
+	for _, c := range courses {
+		names = append(names, c.Folder)
+	}
+	return strings.Join(names, "; ")
 }
 
 // ---------------------------------------------------------------------------

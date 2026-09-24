@@ -30,6 +30,7 @@ type Client struct {
 	delay      time.Duration
 	retries    int
 	loginPaths []string
+	loc        *time.Location // the zone captured pages write dates in
 }
 
 func NewClient(cfg *Config, insecure bool) (*Client, error) {
@@ -58,6 +59,7 @@ func NewClient(cfg *Config, insecure bool) (*Client, error) {
 		delay:      time.Duration(cfg.Delay) * time.Millisecond,
 		retries:    cfg.Retries,
 		loginPaths: paths,
+		loc:        cfg.location(),
 	}, nil
 }
 

@@ -474,8 +474,17 @@ func firstJSONArray(body string) (json.RawMessage, bool) {
 
 // entityList reads one of the Entity Broker's per-site collections into v.
 func (c *Client) entityList(ctx context.Context, prefix, siteID string, v any) error {
-	body, err := c.getText(ctx,
-		c.base+"/direct/"+prefix+"/site/"+url.PathEscape(siteID)+".json")
+	return c.entityListQuery(ctx, prefix, siteID, "", v)
+}
+
+// entityListQuery is entityList with a query string, for the collections
+// whose defaults are not "everything".
+func (c *Client) entityListQuery(ctx context.Context, prefix, siteID, query string, v any) error {
+	u := c.base + "/direct/" + prefix + "/site/" + url.PathEscape(siteID) + ".json"
+	if query != "" {
+		u += "?" + query
+	}
+	body, err := c.getText(ctx, u)
 	if err != nil {
 		return err
 	}
@@ -546,14 +555,23 @@ func (c *Client) syllabusFromAPI(ctx context.Context, siteID string) ([]captured
 // The rendered tab is a list of headlines: the body of a notice sits behind a
 // per-item link, so capturing that page gets a student the title of the
 // announcement about the room change and never the room.
+//
+// The collection is asked for explicitly by count and age. Left to its
+// defaults, Sakai's announcement provider answers with the three newest
+// notices of the last ten days — so the page held whatever happened to be
+// recent on the day of the sync, older notices silently fell off it on the
+// next run, and a quiz announced a fortnight ago was simply not in the
+// library.
 func (c *Client) announcementsFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
 	var entries []struct {
 		Title       string          `json:"title"`
 		Body        string          `json:"body"`
 		Author      string          `json:"createdByDisplayName"`
+		Created     json.RawMessage `json:"createdOn"`
 		Attachments []apiAttachment `json:"attachments"`
 	}
-	if err := c.entityList(ctx, "announcement", siteID, &entries); err != nil {
+	query := fmt.Sprintf("n=%d&d=%d", announcementLimit, announcementDays)
+	if err := c.entityListQuery(ctx, "announcement", siteID, query, &entries); err != nil {
 		return nil, err
 	}
 
@@ -571,13 +589,31 @@ func (c *Client) announcementsFromAPI(ctx context.Context, siteID string) ([]cap
 		// Who posted it, and nothing at all about when this ran: a rendered
 		// page is hashed to decide freshness, so anything varying between
 		// runs would rewrite the file and report it as new every time.
-		if by := strings.TrimSpace(e.Author); by != "" {
+		// When it was posted is the server's own timestamp, so it is as
+		// stable as the rest (see dates.go for the zone) — and "is this the new one?" is the first
+		// question anybody asks of an announcement.
+		by := strings.TrimSpace(e.Author)
+		on := postedOn(e.Created, c.loc)
+		switch {
+		case by != "" && on != "":
+			item.Body = "<p><em>Posted by " + html.EscapeString(by) + " on " +
+				html.EscapeString(on) + "</em></p>\n" + item.Body
+		case by != "":
 			item.Body = "<p><em>Posted by " + html.EscapeString(by) + "</em></p>\n" + item.Body
+		case on != "":
+			item.Body = "<p><em>Posted on " + html.EscapeString(on) + "</em></p>\n" + item.Body
 		}
 		out = append(out, item)
 	}
 	return out, nil
 }
+
+// How much of the Announcements tab to ask for: a whole academic year, and
+// more notices than any course posts in one.
+const (
+	announcementLimit = 500
+	announcementDays  = 400
+)
 
 // assignmentsFromAPI reads the Assignments tab through the Entity Broker.
 //
@@ -607,10 +643,10 @@ func (c *Client) assignmentsFromAPI(ctx context.Context, siteID string) ([]captu
 		if isEmptyItem(item) {
 			continue
 		}
-		// The server's own absolute timestamp, verbatim. A due date is half
-		// of what an assignment is, and this string is identical on every
-		// run — unlike anything worked out from the clock.
-		if due := strings.TrimSpace(e.Due); due != "" {
+		// The server's own absolute timestamp, in the student's zone. A due
+		// date is half of what an assignment is, and this is identical on
+		// every run — unlike anything worked out from the clock.
+		if due := dueOn(e.Due, c.loc); due != "" {
 			item.Body = "<p><strong>Due:</strong> " + html.EscapeString(due) + "</p>\n" + item.Body
 		}
 		out = append(out, item)

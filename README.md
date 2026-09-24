@@ -449,6 +449,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `extensions` | common types | which files to download |
 | `sections` | all six below | which tabs to mirror |
 | `keep_pages` | `false` | also save the captured page, not just the files a tab links to |
+| `timezone` | this computer's | zone for due dates and posting times, e.g. `'Asia/Karachi'`; set it on a phone, where Termux has none and dates would be UTC |
 | `drive_push` | `false` | copy the library to Google Drive after each sync |
 | `drive_folder` | `lms-sync` | folder name in your Drive |
 | `drive_client_id` | built in | only if you want to use your own Google project |
@@ -623,9 +624,12 @@ password that had never been sent.
 - **One bad file doesn't end the run.** Instructors link resources students
   can't read; those are counted and skipped.
 - **Session expiry is its own error**, distinct from a bad password.
-- **A sync an assistant starts reports how it ended.** `sync_courses` returns
-  immediately, so the call after a run finishes is the one that says whether
-  it worked, where it wrote, and what failed. A refused login is reported on
+- **A sync an assistant starts reports how it ended.** `sync_courses` can be
+  limited to one course ("ITC" works — initials, part of the name, or the
+  folder), waits up to 20 seconds for the run to finish, and then lists exactly
+  which files are new or changed. A run still going after that is reported as
+  still going, and the next call waits for it; the call after a run finishes is
+  the one that says whether it worked, where it wrote, and what failed. A refused login is reported on
   every call and never attempted again — retrying a rejected password is how
   accounts get locked, and a reply that just says "sync started" is how a
   wrong password stays invisible.

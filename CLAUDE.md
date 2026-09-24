@@ -175,11 +175,43 @@ These encode bugs that already cost someone real time — the comments in the so
   the next call; `terminal` failures (`auth`, `config` — the credentials and
   settings this process runs on cannot change while it is up) are reported on
   every call and never retried, everything else is reported once and then
-  retried, and the call that starts a sync waits `settleGrace` so a failure
+  retried, and the call that starts a sync waits `syncWait` so a failure
   that is immediate is answered immediately. `TestAFailedSyncIsReportedToTheCaller`,
   `TestARejectedLoginIsNotRetriedByCallingAgain`,
   `TestAnUnwritableDestinationIsReportedAndCanBeRetried`,
   `TestAFinishedSyncReportsItsOutcomeBeforeAnotherStarts`.
+- **A tool-driven sync waits, can be narrowed, and says what changed.**
+  Returning at once made every caller poll a job it could not see into: asked
+  about a quiz announced that morning, a model called `sync_courses` twice, read
+  `whats_new` from a library the crawl had not reached, and told the student
+  nothing had arrived. The call now waits up to `syncWait` for the run to end
+  (and a call during a run waits on it rather than reporting "running"), a
+  `course` argument — folder, part of it, or initials via `matchCourses` —
+  limits the crawl to that course so it ends inside one call, and a finished
+  run lists every file it wrote, or says outright that nothing changed.
+  `whats_new` says when a sync is still in flight. Only the crawl is narrowed:
+  `RefreshCourses` still runs over, and saves, the full config.
+  `TestSyncToolCanSyncOneCourseAndSaysWhatChanged`,
+  `TestMatchCoursesTheWayAStudentNamesThem`,
+  `TestWhatsNewSaysWhenASyncIsStillRunning`.
+- **Announcements are asked for by count and age.** Sakai's announcement
+  provider defaults to the three newest notices of the last ten days, so the
+  page held whatever was recent on the day of the sync and a quiz announced a
+  fortnight earlier was not in the library at all. `announcementsFromAPI`
+  passes `n` and `d`, and writes each notice's posting date — the server's own
+  timestamp, in the zone the rule below describes.
+  `TestAnnouncementsAreNotLimitedToTheServersDefaultFew`.
+- **Dates are written in the student's zone, and labelled.** The Entity
+  Broker's due dates are UTC; written verbatim, `2026-09-25T18:55:00Z` was read
+  by an assistant as 18:55 — five hours before a Karachi deadline actually
+  closed. `dueOn` and `postedOn` convert through `Config.location()` (the
+  `timezone` setting, else the machine's) and `formatWhen` prints twelve-hour time and always the
+  zone and offset. Pages stay byte-stable because the zone is fixed per
+  machine. `time/tzdata` is compiled in because Windows and Termux have no zone
+  database to load a name from — and Termux has no local zone at all, which is
+  why the setting exists. A string that is not RFC 3339 is kept verbatim, never
+  guessed at. `TestDatesAreWrittenInTheStudentsZoneAndSaySo`,
+  `TestTheTimezoneSettingIsReadSavedAndChecked`.
 - **The sync log says where it is writing.** `describe` rendered no line for
   the `start` event, so the destination — the whole reason that event exists —
   never reached a tool call, and "did anything download, and where to?" could
@@ -453,8 +485,9 @@ serialised on `prevTool`, because two of them can write to the library; what
 moved off the read loop is the *waiting*.
 
 `sync_courses` is the exception and the only thing here that goes online. It
-**starts** a sync and returns — a crawl is minutes and a tool call has seconds
-— so progress comes from calling it again, and the call after a run ends is
+starts a sync and waits at most `syncWait` — a full crawl is minutes and a tool
+call has well under one, which is why `course` exists: one course finishes in
+seconds. Progress on a longer run comes from calling it again, and the call after a run ends is
 what reports the outcome: an outcome nobody has read is never replaced by a
 fresh crawl, and a failure that cannot come good while the process is up
 (`terminal`) is repeated rather than retried. It logs in through the same
@@ -539,6 +572,9 @@ An installed copy keeps `config.toml` in `~/.local/share/lms-sync/` (macOS, Linu
 `announcements`, `assignments`, `dropbox`);
 unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
 never end up empty.
+
+`timezone` (default: the machine's) is the IANA zone dates in saved pages are
+written in; an unknown one is dropped by `sanitise()`.
 
 `keep_pages` (default **false**) decides whether a rendered page is written
 beside the files its tab links to. Most syllabus tabs are a wrapper around a
