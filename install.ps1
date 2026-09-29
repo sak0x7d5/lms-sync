@@ -1,4 +1,4 @@
-# Install lms-sync — https://github.com/sak0x7d5/lms-sync
+# Install lms-sync -- https://github.com/sak0x7d5/lms-sync
 #
 #   irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | iex
 #
@@ -16,8 +16,18 @@
 # symlinks without administrator rights, so here the folder itself goes on
 # PATH rather than a link to it.
 #
+# It also keeps a verified copy of itself in that folder and registers a
+# Task Scheduler task that runs the copy with -Update once a day, so nobody
+# has to come back to GitHub for a fix. -NoAutoUpdate turns that off.
+#
 # Nothing here asks a question. Run as `irm | iex` there is nothing to read an
 # answer from, so every choice is a parameter.
+#
+# This file is ASCII on purpose, and CI holds it to that. The daily task runs
+# it with `powershell.exe -File`, and Windows PowerShell 5.1 reads a file with
+# no byte-order mark in the ANSI code page: the last byte of a UTF-8 em dash
+# is then a curly closing quote, which PowerShell honours as one, and a
+# string holding one ends in the middle.
 
 param(
 	# A release tag, e.g. v1.3.0. The newest release is used when omitted.
@@ -29,10 +39,17 @@ param(
 	# Leave PATH alone.
 	[switch] $NoModifyPath,
 
+	# Do not register the daily update task.
+	[switch] $NoAutoUpdate,
+
 	# Install without checking the download against SHA256SUMS.
 	[switch] $SkipChecksum,
 
-	# Remove what a previous run installed.
+	# Bring an existing install up to the newest release. This is what the
+	# daily task runs.
+	[switch] $Update,
+
+	# Remove what a previous run installed, the daily task included.
 	[switch] $Uninstall
 )
 
@@ -55,6 +72,10 @@ windows/amd64, windows/arm64
 # Releases before this one were published without a SHA256SUMS asset.
 $FirstChecksummed = 'v1.3.0'
 
+# What the daily update is registered as, so a second install replaces it and
+# -Uninstall can find it.
+$TaskName = 'lms-sync update'
+
 # Overridable so the tests can serve a release from a local origin.
 $BaseUrl = if ($env:LMS_SYNC_BASE_URL) { $env:LMS_SYNC_BASE_URL }
 	else { "https://github.com/$Repo/releases" }
@@ -73,7 +94,7 @@ function Write-Step {
 # lms-sync's own, from errors.go.
 #
 # It throws rather than calling exit. Under `irm | iex` there is no script to
-# exit from — a bare exit closes the student's console over something as small
+# exit from -- a bare exit closes the student's console over something as small
 # as a mistyped option, where a terminating error returns them to the prompt
 # and still leaves a non-zero exit code for a non-interactive run.
 function Fail {
@@ -94,7 +115,7 @@ function Fail {
 # Pure helpers
 #
 # These take strings and return strings, so they can be tested without a
-# Windows registry to write to — the same reason interpretPicker in browse.go
+# Windows registry to write to -- the same reason interpretPicker in browse.go
 # is a pure function tested without a display.
 # ---------------------------------------------------------------------------
 
@@ -277,6 +298,148 @@ then run this again.
 	}
 }
 
+# Save-Installer leaves a verified copy of this script beside the binary, which
+# is what the daily task runs. It is downloaded from the release rather than
+# copied, because under `irm | iex` there is no file to copy -- and a copy that
+# went through SHA256SUMS is one an unattended run can trust exactly as far as
+# the binary beside it.
+#
+# It never fails the install: the binary is in place by now, and a release
+# that predates the installers being checksummed simply leaves no copy and no
+# task. Returns whether a copy was kept.
+function Save-Installer {
+	param([string] $AssetBase, [string] $Tmp, [string] $Dir)
+	$sumsFile = Join-Path $Tmp 'SHA256SUMS'
+	if (-not (Test-Path $sumsFile)) {
+		if (-not (Get-Url "$AssetBase/SHA256SUMS" $sumsFile -Quiet)) { return $false }
+	}
+	$want = Get-ExpectedHash (Get-Content $sumsFile -Raw) 'install.ps1'
+	if (-not $want) { return $false }
+	$dl = Join-Path $Tmp 'install.ps1'
+	if (-not (Get-Url "$AssetBase/install.ps1" $dl -Quiet)) { return $false }
+	$got = (Get-FileHash -Path $dl -Algorithm SHA256).Hash.ToLowerInvariant()
+	if ($want -ne $got) { return $false }
+	try {
+		Move-Item -Path $dl -Destination (Join-Path $Dir 'install.ps1') -Force
+	} catch {
+		return $false
+	}
+	return $true
+}
+
+# Set-ExeFile puts a new lms-sync.exe in place even while the old one runs.
+#
+# Windows will not overwrite a program that is running, but it will rename
+# one: the process keeps running from the renamed file, and the new one takes
+# the name. That matters here and not at install, because an MCP server lives
+# as long as the assistant that started it, and an update that waited for it
+# to exit might wait for weeks. The renamed file is deleted as soon as nothing
+# holds it, which for a running one is the next update.
+function Set-ExeFile {
+	param([string] $New, [string] $Exe)
+	$old = "$Exe.old"
+	if (Test-Path $old) { Remove-Item -Force $old -ErrorAction SilentlyContinue }
+	if (Test-Path $old) { $old = "$Exe.old-$PID" }
+	if (Test-Path $Exe) { Move-Item -Path $Exe -Destination $old -Force }
+	try {
+		Move-Item -Path $New -Destination $Exe -Force
+	} catch {
+		if (Test-Path $old) { Move-Item -Path $old -Destination $Exe -Force }
+		throw
+	}
+	Remove-Item -Force $old -ErrorAction SilentlyContinue
+}
+
+function Remove-OldExe {
+	param([string] $Dir)
+	Get-ChildItem -Path $Dir -Filter "$BinName.exe.old*" -Force -ErrorAction SilentlyContinue |
+		Remove-Item -Force -ErrorAction SilentlyContinue
+}
+
+# Get-TaskArgument quotes a path for powershell.exe's command line, where a
+# backslash before a closing quote escapes it: "C:\dir\" is read as C:\dir"
+# and the rest of the line with it.
+function Get-TaskArgument {
+	param([string] $Path)
+	$p = $Path.TrimEnd('\')
+	if ($p.EndsWith(':')) { $p += '\.' }
+	return '"' + $p + '"'
+}
+
+# Register-UpdateTask runs the kept copy with -Update once a day, at a random
+# time in the day: random so a campus of installs behind one address does not
+# reach github.com in the same minute, in the day because a laptop is shut at
+# night. StartWhenAvailable makes up a day the machine was off.
+#
+# It runs as the student, only while they are signed in, and needs no
+# administrator rights. A task that cannot be registered is not an install
+# failure: the tool works as before, and the summary says how to update.
+function Register-UpdateTask {
+	param([string] $Dir)
+	$script = Join-Path $Dir 'install.ps1'
+	if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
+		Write-Step 'updates' 'not scheduled: this PowerShell has no Task Scheduler cmdlets'
+		Write-Step '' "to update by hand: & '$script' -Update"
+		return
+	}
+	$ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+	# -ExecutionPolicy Bypass because the default policy on a Windows client
+	# refuses to run any script file at all; it applies to this one process.
+	$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden ' +
+		'-File ' + (Get-TaskArgument $script) + ' -Update -InstallDir ' + (Get-TaskArgument $Dir)
+	$at = (Get-Date).Date.AddHours(10 + (Get-Random -Maximum 8)).AddMinutes((Get-Random -Maximum 60))
+	try {
+		$action = New-ScheduledTaskAction -Execute $ps -Argument $arguments -WorkingDirectory $Dir
+		$trigger = New-ScheduledTaskTrigger -Daily -At $at
+		$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
+			-DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
+			-ExecutionTimeLimit (New-TimeSpan -Minutes 30)
+		Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+			-Settings $settings -Force -ErrorAction Stop `
+			-Description 'Updates lms-sync to the newest release. Remove with the installer''s -Uninstall.' |
+			Out-Null
+		Write-Step 'updates' "checked daily (Task Scheduler: $TaskName)"
+	} catch {
+		Write-Step 'updates' ('not scheduled: ' + $_.Exception.Message.Trim())
+		Write-Step '' "to update by hand: & '$script' -Update"
+	}
+}
+
+function Unregister-UpdateTask {
+	param([switch] $Quiet)
+	if (-not (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)) { return }
+	$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+	if (-not $task) { return }
+	try {
+		Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+		if (-not $Quiet) { Write-Step 'removed' "the daily update ($TaskName)" }
+	} catch {
+		Write-Step 'kept' ("the task '$TaskName' could not be removed: " + $_.Exception.Message.Trim())
+	}
+}
+
+function Set-UpdateSchedule {
+	param([string] $Dir, [bool] $Kept)
+	if ($NoAutoUpdate -or $env:LMS_SYNC_NO_AUTO_UPDATE) {
+		Unregister-UpdateTask -Quiet
+		Write-Step 'updates' 'not scheduled, because -NoAutoUpdate was passed'
+		return
+	}
+	# A pinned release is a request for that release. Updating it tomorrow
+	# would quietly undo the one choice made on purpose, so an earlier
+	# install's task is taken out rather than left to do exactly that.
+	if ($Version) {
+		Unregister-UpdateTask -Quiet
+		Write-Step 'updates' "not scheduled, because -Version pinned $Version"
+		return
+	}
+	if (-not $Kept) {
+		Write-Step 'updates' 'not scheduled: that release has no verifiable install.ps1'
+		return
+	}
+	Register-UpdateTask $Dir
+}
+
 function Install-LmsSync {
 	Write-Host ''
 	Write-Host 'lms-sync installer'
@@ -284,7 +447,7 @@ function Install-LmsSync {
 
 	# An ARM PC gets the ARM build. Emulating the Intel one would work on
 	# Windows 11 and not on Windows 10, whose ARM emulation is 32-bit x86
-	# only — so the native build is the one that always starts.
+	# only -- so the native build is the one that always starts.
 	$arch = Get-ArchFromName (Get-OsArchitecture)
 	if ($arch -ne 'amd64' -and $arch -ne 'arm64') {
 		Fail 'config' 'lms-sync has no build for Windows on this processor.' @"
@@ -309,6 +472,8 @@ https://github.com/$Repo#build-from-source
 	New-Item -ItemType Directory -Force -Path $dir | Out-Null
 	$tmp = Join-Path $dir (".install-" + $PID)
 	New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+	Remove-OldExe $dir
+	$kept = $false
 
 	try {
 		Write-Step 'downloading' $asset
@@ -363,6 +528,7 @@ then run this again.
 '@
 		}
 		Write-Step 'installed' $exe
+		$kept = Save-Installer $assetBase $tmp $dir
 	} finally {
 		Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
 	}
@@ -381,6 +547,8 @@ then run this again.
 		$env:Path = "$dir;$env:Path"
 	}
 
+	Set-UpdateSchedule $dir $kept
+
 	Write-Host ''
 	& $exe --version
 	Write-Host ''
@@ -389,14 +557,116 @@ then run this again.
 	# The tool resolves a relative destination against the folder its config
 	# is in, and ships with the relative default "Courses", so until a
 	# destination is set the coursework lands inside the install folder.
-	Write-Host "Settings live in $dir. Set a destination in the interface —"
+	Write-Host "Settings live in $dir. Set a destination in the interface;"
 	Write-Host "until you do, courses land in $dir\Courses."
 	Write-Host ''
 }
 
+# Update-LmsSync brings an existing install up to the newest release, and
+# changes nothing when it is already there.
+#
+# "Already there" is decided by hash rather than version string: the installed
+# exe is a release asset byte for byte, so comparing it with its SHA256SUMS
+# line needs no version parsing and costs one small download a day.
+#
+# It never touches PATH or the task. Those were settled at install.
+function Update-LmsSync {
+	$dir = Get-InstallDir
+	$exe = Join-Path $dir "$BinName.exe"
+	if (-not (Test-Path $exe)) {
+		Fail 'filesystem' "There is no lms-sync in $dir to update." `
+			'Install it first, or pass the folder it is in with -InstallDir.'
+	}
+
+	# Run by the task, nobody sees the output, so it goes to a file holding
+	# the last run, where "why has it not updated?" can be answered.
+	$transcript = $false
+	try {
+		Start-Transcript -Path (Join-Path $dir 'update.log') -Force | Out-Null
+		$transcript = $true
+	} catch { }
+
+	try {
+		Write-Host ''
+		Write-Host ('lms-sync update, ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'))
+		Write-Host ''
+
+		Remove-OldExe $dir
+		$arch = Get-ArchFromName (Get-OsArchitecture)
+		$asset = "$BinName-windows-$arch.exe"
+
+		# The tag pins the checksum file and the exe to one release, so a
+		# release published between the two downloads cannot pair them wrongly.
+		$tag = Resolve-Tag
+		Write-Step 'target' ('windows/' + $arch)
+		Write-Step 'newest' $(if ($tag) { $tag } else { 'latest' })
+		$assetBase = if ($tag) { "$BaseUrl/download/$tag" } else { "$BaseUrl/latest/download" }
+
+		$tmp = Join-Path $dir (".update-" + $PID)
+		New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+		try {
+			$sumsFile = Join-Path $tmp 'SHA256SUMS'
+			if (-not (Get-Url "$assetBase/SHA256SUMS" $sumsFile -Quiet)) {
+				Fail 'network' 'Could not download SHA256SUMS.' `
+					'Nothing was changed. The update is tried again tomorrow.'
+			}
+			$sums = Get-Content $sumsFile -Raw
+			$want = Get-ExpectedHash $sums $asset
+			if (-not $want) {
+				Fail 'config' "The newest release lists no build for windows/$arch." `
+					'Nothing was changed. The update is tried again tomorrow.'
+			}
+			$have = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+
+			if ($want -eq $have) {
+				Write-Step 'binary' 'up to date'
+			} else {
+				Write-Step 'downloading' $asset
+				$dl = Join-Path $tmp $asset
+				if (-not (Get-Url "$assetBase/$asset" $dl)) {
+					Fail 'network' "Could not download $asset." `
+						'Nothing was changed. The update is tried again tomorrow.'
+				}
+				$got = (Get-FileHash -Path $dl -Algorithm SHA256).Hash.ToLowerInvariant()
+				if ($want -ne $got) {
+					Fail 'config' "$asset does not match the checksum the release published." @"
+Nothing was changed.
+
+  expected  $want
+  got       $got
+"@
+				}
+				Write-Step 'checksum' 'ok'
+				Set-ExeFile $dl $exe
+				Write-Step 'updated' $exe
+				try { & $exe --version } catch { Write-Step 'kept' 'the new exe did not report its version' }
+			}
+
+			$script = Join-Path $dir 'install.ps1'
+			$iwant = Get-ExpectedHash $sums 'install.ps1'
+			$ihave = ''
+			if (Test-Path $script) {
+				$ihave = (Get-FileHash -Path $script -Algorithm SHA256).Hash.ToLowerInvariant()
+			}
+			if ($iwant -and $iwant -ne $ihave) {
+				if (Save-Installer $assetBase $tmp $dir) {
+					Write-Step 'updated' $script
+				} else {
+					Write-Step 'kept' 'the installer copy could not be refreshed; the exe is unaffected'
+				}
+			}
+			Write-Host ''
+		} finally {
+			Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+		}
+	} finally {
+		if ($transcript) { Stop-Transcript | Out-Null }
+	}
+}
+
 function Uninstall-LmsSync {
 	Write-Host ''
-	Write-Host 'lms-sync installer — removing'
+	Write-Host 'lms-sync installer: removing'
 	Write-Host ''
 
 	$dir = Get-InstallDir
@@ -412,6 +682,22 @@ function Uninstall-LmsSync {
 	if ($null -ne $new) {
 		Write-UserPath $new
 		Write-Step 'path' "removed $dir"
+	}
+
+	Unregister-UpdateTask
+
+	# The copy the task ran, its log, and an exe renamed aside by an update
+	# are the installer's own files, not the student's, so they go too;
+	# otherwise they alone would keep the folder of an unused install alive.
+	if (Test-Path $dir) {
+		Remove-OldExe $dir
+		foreach ($own in @('install.ps1', 'update.log')) {
+			$path = Join-Path $dir $own
+			if (Test-Path $path) {
+				Remove-Item -Force $path
+				Write-Step 'removed' $path
+			}
+		}
 	}
 
 	if (-not (Test-Path $dir)) {
@@ -493,7 +779,15 @@ On Linux, macOS or Termux, run this instead:
 			[Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 	} catch { }
 
-	if ($Uninstall) { Uninstall-LmsSync } else { Install-LmsSync }
+	# An unattended run replacing a program is the one place where skipping
+	# the check can never be what was meant.
+	if ($Update -and $SkipChecksum) {
+		Fail 'config' '-Update always verifies what it installs.' 'Drop -SkipChecksum.'
+	}
+
+	if ($Uninstall) { Uninstall-LmsSync }
+	elseif ($Update) { Update-LmsSync }
+	else { Install-LmsSync }
 }
 
 # Only run when this is the script being executed, so that a test can dot-source

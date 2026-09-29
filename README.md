@@ -36,8 +36,9 @@ Reopening skips straight to the sync screen — settings are remembered.
 
 The installer works out which machine you are on, downloads the one binary
 that matches, checks it against the release's `SHA256SUMS`, puts it in a
-folder of its own and puts `lms-sync` on your PATH. It is a shell script and
-does nothing else — read it first if you would rather:
+folder of its own, puts `lms-sync` on your PATH and schedules a daily
+[update check](#updates). It is a shell script and does nothing else — read it
+first if you would rather:
 [install.sh](install.sh), [install.ps1](install.ps1).
 
 ### Where it goes
@@ -56,16 +57,37 @@ destination.
 > `Courses` folder inside that same directory — which on Windows and in a
 > hidden `~/.local/share` is not where you want to go looking for them.
 
-Upgrading is the same command again: an install that already exists is
-upgraded in place, so your settings and your download history stay put.
+### Updates
+
+It keeps itself up to date. The installer registers a daily check with the
+machine's own scheduler: Task Scheduler on Windows, launchd on a Mac, and a
+systemd user timer on Linux (or cron where there is no systemd). Once a day it
+compares the installed binary against the newest release's `SHA256SUMS`, and
+downloads and verifies a new one only when they differ. Your settings and
+download history stay where they are, and a sync or assistant that is running
+keeps going on the old binary until it next starts.
+
+- Each check writes its result to `update.log` in the install folder.
+- To update by hand, run the command the schedule runs:
+  `sh ~/.local/share/lms-sync/install.sh --update`, or on Windows
+  `& "$env:LOCALAPPDATA\Programs\lms-sync\install.ps1" -Update`.
+- `--no-auto-update` (`-NoAutoUpdate`) installs without the daily check.
+  Pinning a release with `--version` also turns it off, because a pinned
+  release that updates itself is no longer pinned.
+- On Termux the check uses cron, which only runs while `crond` does:
+  `pkg install cronie termux-services && sv-enable crond`.
+
+Running the install command again also upgrades in place, and adds the daily
+check to an install made before it existed.
 
 To pass an option, fetch the script and run it:
 
 ```bash
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh -o install.sh
-sh install.sh --version v1.3.0        # a particular release
+sh install.sh --version v1.3.0        # a particular release, never auto-updated
 sh install.sh --install-dir ~/lms-sync
 sh install.sh --no-modify-path        # leave your shell profile alone
+sh install.sh --no-auto-update        # no daily update check
 sh install.sh --uninstall
 ```
 
@@ -75,7 +97,8 @@ PowerShell needs the script as a block before it will take a parameter:
 & ([scriptblock]::Create((irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1))) -Uninstall
 ```
 
-Uninstalling removes the binary, the PATH entry and the symlink. It leaves
+Uninstalling removes the binary, the PATH entry, the symlink and the daily
+update check. It leaves
 `config.toml` and anything else in the folder alone, and tells you what is
 still there — it cannot delete your settings or a synced library.
 
