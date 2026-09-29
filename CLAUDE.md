@@ -467,6 +467,10 @@ binaries beside it. `SHA256SUMS` covers them too.
     5.1's `-File`, which reads a BOM-less file in the ANSI code page. In that
     code page a UTF-8 em dash ends in `”`, which PowerShell treats as a
     closing quote. CI enforces this.
+  - **Hashing is `Get-Sha256` (.NET), never `Get-FileHash`.** In 5.1 that
+    cmdlet comes from a module file, and a 5.1 started from PowerShell 7
+    inherits 7's module path and cannot load it. The v1.3.0 `verify` job
+    failed exactly so: the scheduled command exited on its first hash.
   - `--uninstall` removes the schedule, the installer copy and `update.log`.
     It still uses `rmdir`, so the student's files are never touched.
   release.yml's `verify` job registers a real schedule on each OS, runs the
