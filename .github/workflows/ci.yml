@@ -56,6 +56,12 @@ jobs:
           sh -n install.sh
           dash -n install.sh
           shellcheck --shell=sh install.sh
+          # The daily update task runs install.ps1 through Windows PowerShell
+          # 5.1's -File, which reads a BOM-less script in the ANSI code page;
+          # there a UTF-8 em dash ends in a curly quote that closes a string.
+          if LC_ALL=C grep -n '[^[:print:][:space:]]' install.ps1; then
+            echo "install.ps1 must stay ASCII (see the note at its top)"; exit 1
+          fi
           pwsh -NoProfile -Command '
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile(

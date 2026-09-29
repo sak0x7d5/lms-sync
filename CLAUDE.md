@@ -436,6 +436,42 @@ binaries beside it. `SHA256SUMS` covers them too.
 - **The newest tag comes from the `/releases/latest` redirect, not the API.**
   Sixty unauthenticated calls an hour, per address, is not much for a
   university behind one address.
+- **Updates are the OS scheduler running the installer, not the binary
+  updating itself.** Install keeps a copy of the installer beside the binary,
+  downloaded from the release and verified against `SHA256SUMS` (under
+  `curl | sh` there is no `$0` to copy). It then registers a daily
+  `--update` / `-Update` run: Task Scheduler, launchd, a systemd user timer,
+  or cron. That keeps the Go side stdlib-only and free of self-replacement
+  logic, and uses the same verification path as a fresh install. The rules:
+  - **Up to date is decided by hash, not version.** The installed binary is
+    the release asset byte for byte, so it is compared against its
+    `SHA256SUMS` line. That needs no version parsing, works under wget, and
+    costs one small download a day.
+  - **`--update` touches only the binary and the installer copy**, never PATH,
+    profiles, the symlink or the schedule. It always verifies, and refuses
+    `--skip-checksum`.
+  - **A pinned `--version` is never auto-updated**, and pinning removes an
+    earlier install's schedule. Otherwise tomorrow's run would quietly undo
+    the one deliberate choice.
+  - **Every replacement is a rename.** On Unix a running sync or MCP server
+    keeps its old inode, and the shell running the installer copy keeps
+    reading the old file. Windows will not overwrite a running exe but will
+    rename one, so `Set-ExeFile` moves it aside to `.old` rather than waiting
+    for an MCP server that may live for weeks. The interactive install still
+    refuses while it runs.
+  - **A scheduler that cannot be reached is not an install failure.** The
+    summary says how to update by hand. Run times are random within the day,
+    so a campus behind one address does not reach github.com in the same
+    minute. Output goes to `update.log` (last run only).
+  - **`install.ps1` is ASCII.** The task runs it through Windows PowerShell
+    5.1's `-File`, which reads a BOM-less file in the ANSI code page. In that
+    code page a UTF-8 em dash ends in `”`, which PowerShell treats as a
+    closing quote. CI enforces this.
+  - `--uninstall` removes the schedule, the installer copy and `update.log`.
+    It still uses `rmdir`, so the student's files are never touched.
+  release.yml's `verify` job registers a real schedule on each OS, runs the
+  scheduled command, and expects "up to date". It does this on stable tags
+  only, because `--update` follows `/releases/latest`.
 - **Nothing prompts.** Under `curl | sh` there is no terminal: `read` returns
   non-zero at EOF, which `set -e` turns into an abort, and `/dev/tty` is not
   always there. Every choice is a flag or an environment variable.
@@ -597,6 +633,10 @@ its page.
 The TOML reader is deliberately partial: top-level keys, one `[courses]` table, single/double-quoted strings, ints, string arrays. Unrecognised lines are skipped rather than treated as fatal. The writer emits single-quoted literal strings so Windows paths (`'D:\Uni\Courses'`) survive.
 
 `DefaultLMS` in config.go is the one line to change when forking for another university.
+
+## Commits and pull requests
+
+Do not add `Claude-Session:` or `Co-Authored-By:` trailers to commit messages, and no session links or "Generated with Claude Code" footers in PR descriptions. The repository is public and those lines are not wanted in its history.
 
 ## Tests
 

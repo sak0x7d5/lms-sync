@@ -188,6 +188,43 @@ jobs:
           if [ -e "$HOME/.local/bin/lms-sync" ]; then
             echo "uninstall left the symlink"; exit 1
           fi
+
+          # The daily update. Only on a stable tag: the unpinned install and
+          # --update both follow /releases/latest, which a prerelease is not.
+          case "$TAG" in
+          *-*) echo "prerelease: the update path follows /releases/latest, so it is not checked" ;;
+          *)
+            dir="$HOME/.local/share/lms-sync"
+            sh install.sh
+            if [ "$(uname -s)" = Darwin ]; then
+              test -f "$HOME/Library/LaunchAgents/io.github.sak0x7d5.lms-sync.update.plist" ||
+                { echo "no launchd agent was registered"; exit 1; }
+            elif [ ! -f "$HOME/.config/systemd/user/lms-sync-update.timer" ] &&
+                 ! { crontab -l 2>/dev/null | grep -qF 'lms-sync auto-update'; }; then
+              if command -v crontab >/dev/null 2>&1; then
+                echo "no systemd timer or cron line was registered"; exit 1
+              fi
+              echo "neither systemd --user nor crontab on this runner; schedule not checked"
+            fi
+
+            # Run the way the scheduler runs it: from the kept copy, with no
+            # terminal, so the result lands in update.log. The binary is this
+            # release, so the only right answer is that nothing changes.
+            sh "$dir/install.sh" --update --install-dir "$dir" </dev/null >/dev/null 2>&1
+            cat "$dir/update.log"
+            grep -q 'up to date' "$dir/update.log" || { echo "--update did not recognise the current release"; exit 1; }
+
+            sh install.sh --uninstall
+            if [ -f "$HOME/Library/LaunchAgents/io.github.sak0x7d5.lms-sync.update.plist" ] ||
+               [ -f "$HOME/.config/systemd/user/lms-sync-update.timer" ] ||
+               { crontab -l 2>/dev/null | grep -qF 'lms-sync auto-update'; }; then
+              echo "uninstall left the daily update behind"; exit 1
+            fi
+            if [ -e "$dir/install.sh" ]; then
+              echo "uninstall left the installer copy"; exit 1
+            fi
+            ;;
+          esac
           echo "ok ${{ matrix.target }}"
 
       - name: Install and check (${{ matrix.target }})
@@ -228,5 +265,34 @@ jobs:
           $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
           if ($userPath -and $userPath.ToLower().Contains($dir.ToLower())) {
             throw 'uninstall left the PATH entry'
+          }
+
+          # The daily update, on a stable tag only: the unpinned install and
+          # -Update both follow /releases/latest, which a prerelease is not.
+          if (-not $env:TAG.Contains('-')) {
+            & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content))
+            if (-not (Get-ScheduledTask -TaskName 'lms-sync update' -ErrorAction SilentlyContinue)) {
+              throw 'no update task was registered'
+            }
+            # Exactly what the task runs: Windows PowerShell 5.1 with -File,
+            # which reads a BOM-less script in the ANSI code page. The exe is
+            # this release, so the only right answer is that nothing changes.
+            $action = (Get-ScheduledTask -TaskName 'lms-sync update').Actions[0]
+            $p = Start-Process -FilePath $action.Execute -ArgumentList $action.Arguments `
+                   -WorkingDirectory $action.WorkingDirectory -Wait -PassThru -NoNewWindow
+            $log = Join-Path $dir 'update.log'
+            Get-Content $log
+            if ($p.ExitCode -ne 0) { throw "the update task's command exited $($p.ExitCode)" }
+            if (-not (Select-String -Path $log -Pattern 'up to date' -Quiet)) {
+              throw '-Update did not recognise the current release'
+            }
+
+            & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Uninstall
+            if (Get-ScheduledTask -TaskName 'lms-sync update' -ErrorAction SilentlyContinue) {
+              throw 'uninstall left the update task'
+            }
+            if (Test-Path (Join-Path $dir 'install.ps1')) { throw 'uninstall left the installer copy' }
+          } else {
+            Write-Host 'prerelease: the update path follows /releases/latest, so it is not checked'
           }
           Write-Host "ok ${{ matrix.target }}"

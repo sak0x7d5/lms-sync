@@ -8,6 +8,11 @@
 # GitHub release, checks it against that release's SHA256SUMS, and puts
 # `lms-sync` on your PATH.
 #
+# It also leaves a verified copy of itself beside the binary and asks the
+# machine's own scheduler — launchd, a systemd user timer, or cron — to run
+# that copy with --update once a day, so nobody has to come back to GitHub for
+# a fix. --no-auto-update turns that off.
+#
 # The binary gets a directory of its own, and that is not tidiness: lms-sync
 # keeps config.toml, manifest.json and its Google token *beside its own
 # executable*. What goes on PATH is a symlink, which the tool resolves back to
@@ -42,6 +47,13 @@ FIRST_CHECKSUMMED='v1.3.0'
 MARK_BEGIN='# >>> lms-sync installer >>>'
 MARK_END='# <<< lms-sync installer <<<'
 
+# The names the daily update is registered under, one per scheduler, so that
+# a second install replaces the first entry and --uninstall can find it. The
+# cron mark is a trailing comment on the line it identifies.
+LAUNCHD_LABEL='io.github.sak0x7d5.lms-sync.update'
+SYSTEMD_UNIT='lms-sync-update'
+CRON_MARK='# lms-sync auto-update'
+
 # Overridable so the tests can serve a release from a local origin. Nothing
 # else has a reason to set it.
 BASE_URL="${LMS_SYNC_BASE_URL:-https://github.com/$REPO/releases}"
@@ -54,11 +66,18 @@ ACTION=install
 TMP_DIR=''
 TAG=''
 ADOPTED=no
+KEPT_INSTALLER=no
 
 if [ -n "${LMS_SYNC_NO_MODIFY_PATH:-}" ]; then
 	MODIFY_PATH=no
 else
 	MODIFY_PATH=yes
+fi
+
+if [ -n "${LMS_SYNC_NO_AUTO_UPDATE:-}" ]; then
+	AUTO_UPDATE=no
+else
+	AUTO_UPDATE=yes
 fi
 
 # ---------------------------------------------------------------------------
@@ -98,15 +117,21 @@ install.sh — install lms-sync and put it on your PATH
 Options (pass them after `| sh -s --`):
 
   --version TAG        install a particular release, e.g. --version v1.3.0
+                       (a pinned release is never updated automatically)
   --install-dir DIR    where the binary and its settings live
   --bin-dir DIR        where the symlink that puts it on PATH goes
   --no-modify-path     do not touch any shell profile
+  --no-auto-update     do not schedule the daily update check
   --skip-checksum      install without verifying SHA256SUMS
-  --uninstall          remove the binary, the symlink and the PATH line
+  --update             bring an existing install up to the newest release;
+                       this is what the daily schedule runs
+  --uninstall          remove the binary, the symlink, the PATH line and
+                       the daily update
   -h, --help           this
 
 Each has an environment variable: LMS_SYNC_VERSION, LMS_SYNC_INSTALL_DIR,
-LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH. A flag wins over the variable.
+LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH, LMS_SYNC_NO_AUTO_UPDATE. A flag
+wins over the variable.
 
   curl -fsSL .../install.sh | sh -s -- --version v1.3.0
 USAGE
@@ -473,15 +498,22 @@ asset_base() {
 	fi
 }
 
-verify_checksum() {
-	# The release lists every asset and we downloaded one of them, so
-	# `sha256sum -c` would call the other six missing and fail. Its
-	# --ignore-missing is not old enough to rely on where a Mac's shasum is
-	# concerned, so pull out the one line that matters instead.
-	verify_want=$(awk -v name="$ASSET" '
+# sums_lookup prints the hash SHA256SUMS ($1) lists for one file ($2), and
+# nothing when it lists none.
+#
+# The release lists every asset and we downloaded one or two of them, so
+# `sha256sum -c` would call the rest missing and fail. Its --ignore-missing is
+# not old enough to rely on where a Mac's shasum is concerned, so pull out the
+# one line that matters instead.
+sums_lookup() {
+	awk -v name="$2" '
 		$2 == name || $2 == "*" name { print $1; found = 1; exit }
 		END { if (!found) exit 1 }
-	' "$1") || verify_want=''
+	' "$1" 2>/dev/null || true
+}
+
+verify_checksum() {
+	verify_want=$(sums_lookup "$1" "$ASSET")
 
 	if [ -z "$verify_want" ]; then
 		die config "SHA256SUMS does not list $ASSET." \
@@ -546,6 +578,237 @@ download unverified."
 	fi
 	verify_checksum "$TMP_DIR/SHA256SUMS" "$TMP_DIR/$ASSET"
 	step checksum ok
+}
+
+# keep_installer leaves a verified copy of this script beside the binary,
+# which is what the daily schedule runs. It is downloaded from the release
+# rather than copied from $0, because under `curl | sh` there is no file to
+# copy — and a copy that went through SHA256SUMS is one an unattended run can
+# trust exactly as far as the binary beside it.
+#
+# It never dies: the binary is already in place by now, and a release that
+# predates the installers being checksummed simply leaves no copy and no
+# schedule. Returns non-zero when no copy was kept.
+keep_installer() {
+	KEPT_INSTALLER=no
+	if [ ! -f "$TMP_DIR/SHA256SUMS" ]; then
+		http_get "$(asset_base)/SHA256SUMS" "$TMP_DIR/SHA256SUMS" quiet || return 1
+	fi
+	keep_want=$(sums_lookup "$TMP_DIR/SHA256SUMS" install.sh)
+	if [ -z "$keep_want" ]; then
+		return 1
+	fi
+	http_get "$(asset_base)/install.sh" "$TMP_DIR/install.sh" quiet || return 1
+	keep_got=$(sha256_of "$TMP_DIR/install.sh") || return 1
+	if [ "$keep_want" != "$keep_got" ]; then
+		return 1
+	fi
+	chmod 644 "$TMP_DIR/install.sh"
+	# A rename, never a write in place: when this is the daily run replacing
+	# the very copy it is being read from, the shell carries on reading the
+	# old file through the descriptor it already holds.
+	mv -f "$TMP_DIR/install.sh" "$INSTALL_DIR/install.sh" || return 1
+	KEPT_INSTALLER=yes
+}
+
+# ---------------------------------------------------------------------------
+# The daily update
+#
+# Each scheduler runs `sh <install dir>/install.sh --update` once a day, at a
+# random time in the day. Random so that a campus full of installs behind one
+# address does not reach github.com in the same minute; in the day because a
+# laptop is shut at night, and a cron run that was missed is never made up.
+#
+# A scheduler that cannot be reached is not an install failure: the tool
+# works exactly as before, and the summary says how to update by hand.
+# ---------------------------------------------------------------------------
+
+random_below() {
+	awk -v n="$1" -v s="$$" 'BEGIN { srand(); srand(srand() + s); print int(rand() * n) }'
+}
+
+# sh_quote wraps $1 in single quotes, for a line cron hands to sh.
+sh_quote() {
+	printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# update_sh names the shell a scheduler should run the copy with. Not always
+# /bin/sh: Termux has none.
+update_sh() {
+	command -v sh 2>/dev/null || printf '/bin/sh\n'
+}
+
+xml_escape() {
+	printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
+schedule_launchd() {
+	launchd_dir="$HOME/Library/LaunchAgents"
+	launchd_plist="$launchd_dir/$LAUNCHD_LABEL.plist"
+	mkdir -p "$launchd_dir" || return 1
+	launchd_tmp="$launchd_plist.tmp.$$"
+	# The install dir is passed explicitly: a scheduled job has none of the
+	# student's PATH to find the tool on.
+	{
+		printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+		printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+		printf '%s\n' '<plist version="1.0">' '<dict>'
+		printf '\t<key>Label</key><string>%s</string>\n' "$LAUNCHD_LABEL"
+		printf '\t<key>ProgramArguments</key>\n\t<array>\n'
+		printf '\t\t<string>/bin/sh</string>\n'
+		printf '\t\t<string>%s</string>\n' "$(xml_escape "$INSTALL_DIR/install.sh")"
+		printf '\t\t<string>--update</string>\n'
+		printf '\t\t<string>--install-dir</string>\n'
+		printf '\t\t<string>%s</string>\n' "$(xml_escape "$INSTALL_DIR")"
+		printf '\t</array>\n'
+		# A calendar interval missed while the Mac slept runs when it wakes.
+		printf '\t<key>StartCalendarInterval</key>\n\t<dict>\n'
+		printf '\t\t<key>Hour</key><integer>%s</integer>\n' "$((10 + $(random_below 8)))"
+		printf '\t\t<key>Minute</key><integer>%s</integer>\n' "$(random_below 60)"
+		printf '\t</dict>\n'
+		printf '\t<key>ProcessType</key><string>Background</string>\n'
+		printf '%s\n' '</dict>' '</plist>'
+	} >"$launchd_tmp" || return 1
+	mv -f "$launchd_tmp" "$launchd_plist" || return 1
+
+	# bootstrap is the current interface and wants a GUI session; load is the
+	# old one and works over ssh. Whichever takes, launchd also reads the file
+	# at every login on its own.
+	launchd_domain="gui/$(id -u)"
+	launchctl bootout "$launchd_domain/$LAUNCHD_LABEL" >/dev/null 2>&1 || true
+	if launchctl bootstrap "$launchd_domain" "$launchd_plist" >/dev/null 2>&1 ||
+		launchctl load -w "$launchd_plist" >/dev/null 2>&1; then
+		step updates "checked daily (launchd: $LAUNCHD_LABEL)"
+	else
+		step updates "checked daily from your next login (launchd: $LAUNCHD_LABEL)"
+	fi
+}
+
+# has_systemd_user is false over ssh and in containers with no user manager,
+# which is exactly when enabling a timer would fail.
+has_systemd_user() {
+	have systemctl && systemctl --user show-environment >/dev/null 2>&1
+}
+
+# systemd_escape makes a path safe inside a double-quoted ExecStart word,
+# where % is a specifier, $ an expansion, and \ and " escape or end the word.
+systemd_escape() {
+	printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/%/%%/g' -e 's/\$/$$/g'
+}
+
+schedule_systemd() {
+	systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+	mkdir -p "$systemd_dir" || return 1
+	{
+		printf '[Unit]\n'
+		printf 'Description=Update lms-sync to the newest release\n\n'
+		printf '[Service]\n'
+		printf 'Type=oneshot\n'
+		printf 'ExecStart=%s "%s" --update --install-dir "%s"\n' "$(update_sh)" \
+			"$(systemd_escape "$INSTALL_DIR/install.sh")" "$(systemd_escape "$INSTALL_DIR")"
+	} >"$systemd_dir/$SYSTEMD_UNIT.service" || return 1
+	{
+		printf '[Unit]\n'
+		printf 'Description=Check daily for a newer lms-sync\n\n'
+		printf '[Timer]\n'
+		printf 'OnCalendar=*-*-* 10:00:00\n'
+		printf 'RandomizedDelaySec=8h\n'
+		# A day the machine was off is made up the next time it is on.
+		printf 'Persistent=true\n\n'
+		printf '[Install]\n'
+		printf 'WantedBy=timers.target\n'
+	} >"$systemd_dir/$SYSTEMD_UNIT.timer" || return 1
+	systemctl --user daemon-reload >/dev/null 2>&1 || return 1
+	systemctl --user enable --now "$SYSTEMD_UNIT.timer" >/dev/null 2>&1 || return 1
+	step updates "checked daily (systemd user timer: $SYSTEMD_UNIT.timer)"
+}
+
+# crontab_without_ours prints the current crontab minus our line. `crontab -l`
+# exits non-zero when there is no crontab yet, which here is an empty one.
+crontab_without_ours() {
+	{ crontab -l 2>/dev/null || true; } | grep -vF "$CRON_MARK" || true
+}
+
+schedule_cron() {
+	have crontab || return 1
+	cron_cmd="$(sh_quote "$(update_sh)") $(sh_quote "$INSTALL_DIR/install.sh") --update --install-dir $(sh_quote "$INSTALL_DIR")"
+	# cron reads an unescaped % as a newline.
+	cron_cmd=$(printf '%s' "$cron_cmd" | sed 's/%/\\%/g')
+	cron_line="$(random_below 60) $((10 + $(random_below 8))) * * * $cron_cmd $CRON_MARK"
+	{
+		crontab_without_ours
+		printf '%s\n' "$cron_line"
+	} | crontab - 2>/dev/null || return 1
+	step updates "checked daily (cron)"
+	if is_termux; then
+		step '' 'Termux runs cron only while crond does:'
+		step '' '  pkg install cronie termux-services && sv-enable crond'
+	fi
+}
+
+schedule_updates() {
+	if [ "$AUTO_UPDATE" != yes ]; then
+		unschedule_updates quiet
+		step updates "not scheduled, because --no-auto-update was passed"
+		return 0
+	fi
+	# A pinned release is a request for that release. Updating it tomorrow
+	# would quietly undo the one choice made on purpose — so an earlier
+	# install's schedule is taken out rather than left to do exactly that.
+	if [ -n "$WANT_VERSION" ]; then
+		unschedule_updates quiet
+		step updates "not scheduled, because --version pinned $WANT_VERSION"
+		return 0
+	fi
+	if [ "$KEPT_INSTALLER" != yes ]; then
+		step updates "not scheduled: that release has no verifiable install.sh"
+		return 0
+	fi
+
+	case "$OS" in
+	darwin)
+		schedule_launchd && return 0
+		;;
+	linux)
+		if ! is_termux && has_systemd_user; then
+			schedule_systemd && return 0
+		fi
+		schedule_cron && return 0
+		;;
+	esac
+	step updates "not scheduled: no launchd, systemd user session or crontab here"
+	step '' "to update by hand: sh $INSTALL_DIR/install.sh --update"
+}
+
+# unschedule_updates takes out whatever an earlier install registered, with
+# every scheduler it might have used — the machine may have gained or lost
+# systemd since. "quiet" leaves out the lines saying so.
+unschedule_updates() {
+	unsched_said=${1:-}
+	unsched_plist="$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist"
+	if [ -f "$unsched_plist" ]; then
+		launchctl bootout "gui/$(id -u)/$LAUNCHD_LABEL" >/dev/null 2>&1 ||
+			launchctl unload -w "$unsched_plist" >/dev/null 2>&1 || true
+		rm -f "$unsched_plist"
+		[ "$unsched_said" = quiet ] || step removed "$unsched_plist"
+	fi
+
+	unsched_units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+	if [ -f "$unsched_units/$SYSTEMD_UNIT.timer" ] || [ -f "$unsched_units/$SYSTEMD_UNIT.service" ]; then
+		if have systemctl; then
+			systemctl --user disable --now "$SYSTEMD_UNIT.timer" >/dev/null 2>&1 || true
+		fi
+		rm -f "${unsched_units:?}/${SYSTEMD_UNIT:?}.timer" "${unsched_units:?}/${SYSTEMD_UNIT:?}.service"
+		if have systemctl; then
+			systemctl --user daemon-reload >/dev/null 2>&1 || true
+		fi
+		[ "$unsched_said" = quiet ] || step removed "$SYSTEMD_UNIT.timer"
+	fi
+
+	if have crontab && { crontab -l 2>/dev/null || true; } | grep -qF "$CRON_MARK"; then
+		crontab_without_ours | crontab - 2>/dev/null || true
+		[ "$unsched_said" = quiet ] || step removed "the daily update from your crontab"
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -622,6 +885,7 @@ this folder has to stay writable. Pass --install-dir to choose another."
 	download_binary
 	place_binary
 	step installed "$TARGET"
+	keep_installer || true
 
 	if [ "$BIN_DIR" = "$INSTALL_DIR" ]; then
 		step 'on path' "$INSTALL_DIR (the folder itself)"
@@ -637,6 +901,8 @@ this folder has to stay writable. Pass --install-dir to choose another."
 	else
 		apply_to_profiles add_path_block
 	fi
+
+	schedule_updates
 
 	say ''
 	if ! "$TARGET" --version; then
@@ -664,6 +930,105 @@ this one. Report it at https://github.com/$REPO/issues"
 }
 
 # ---------------------------------------------------------------------------
+# Update — what the daily schedule runs
+# ---------------------------------------------------------------------------
+
+# do_update brings an existing install up to the newest release, and changes
+# nothing at all when it is already there.
+#
+# "Already there" is decided by hash, not by version string. The installed
+# binary is a release asset byte for byte, so comparing it with the line
+# SHA256SUMS holds for it needs no version parsing, works with wget (which
+# cannot resolve a tag), and costs one small download a day.
+#
+# It never touches PATH, profiles, the symlink or the schedule. Those were
+# settled at install, and an unattended run rewriting somebody's shell
+# profile is not something they would ever connect with a tool update.
+do_update() {
+	if [ -n "$INSTALL_DIR_OPT" ]; then
+		INSTALL_DIR="$INSTALL_DIR_OPT"
+	else
+		resolve_dirs
+		# Nothing here creates it, so cleanup has no business removing it.
+		BIN_DIR=''
+	fi
+	TARGET="$INSTALL_DIR/$BIN_NAME"
+
+	if [ ! -f "$TARGET" ]; then
+		die filesystem "There is no lms-sync in $INSTALL_DIR to update." \
+			"Install it first, or pass the folder it is in with --install-dir."
+	fi
+
+	# Run by a scheduler, nobody sees the output — so it goes to a file that
+	# holds the last run, where "why has it not updated?" can be answered.
+	if [ ! -t 1 ]; then
+		exec >"$INSTALL_DIR/update.log" 2>&1
+	fi
+
+	say ''
+	say "lms-sync update, $(date 2>/dev/null || true)"
+	say ''
+
+	trap cleanup EXIT INT TERM HUP
+	TMP_DIR="$INSTALL_DIR/.update.$$"
+	mkdir -p "$TMP_DIR"
+
+	# The tag pins the checksum file and the binary to the same release, so a
+	# release published between the two downloads cannot pair one with the
+	# other. Without one (wget) both come from latest/, and a mismatch there
+	# fails the check and is tried again tomorrow.
+	resolve_tag
+	step target "$OS/$ARCH"
+	step newest "${TAG:-latest}"
+
+	if ! http_get "$(asset_base)/SHA256SUMS" "$TMP_DIR/SHA256SUMS" quiet; then
+		die network "Could not download SHA256SUMS." \
+			"Nothing was changed. The update is tried again tomorrow."
+	fi
+	update_want=$(sums_lookup "$TMP_DIR/SHA256SUMS" "$ASSET")
+	if [ -z "$update_want" ]; then
+		die config "The newest release lists no build for $OS/$ARCH." \
+			"Nothing was changed. The update is tried again tomorrow."
+	fi
+	update_have=$(sha256_of "$TARGET") || update_have=''
+	if [ -z "$update_have" ]; then
+		die filesystem "No SHA-256 tool was found, so nothing can be compared." \
+			"Install one of sha256sum (coreutils), shasum or openssl."
+	fi
+
+	if [ "$update_want" = "$update_have" ]; then
+		step binary 'up to date'
+	else
+		step downloading "$ASSET"
+		if ! http_get "$(asset_base)/$ASSET" "$TMP_DIR/$ASSET"; then
+			die network "Could not download $ASSET." \
+				"Nothing was changed. The update is tried again tomorrow."
+		fi
+		verify_checksum "$TMP_DIR/SHA256SUMS" "$TMP_DIR/$ASSET"
+		step checksum ok
+		# A rename, so a sync or an MCP server running right now carries on
+		# with the program it started with and gets the new one next time.
+		place_binary
+		step updated "$TARGET"
+		"$TARGET" --version || true
+	fi
+
+	update_iwant=$(sums_lookup "$TMP_DIR/SHA256SUMS" install.sh)
+	update_ihave=''
+	if [ -f "$INSTALL_DIR/install.sh" ]; then
+		update_ihave=$(sha256_of "$INSTALL_DIR/install.sh") || update_ihave=''
+	fi
+	if [ -n "$update_iwant" ] && [ "$update_iwant" != "$update_ihave" ]; then
+		if keep_installer; then
+			step updated "$INSTALL_DIR/install.sh"
+		else
+			warn "the installer copy could not be refreshed; the binary is unaffected"
+		fi
+	fi
+	say ''
+}
+
+# ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
 
@@ -684,6 +1049,17 @@ do_uninstall() {
 	fi
 
 	apply_to_profiles remove_path_block
+	unschedule_updates
+
+	# The copy the schedule ran and its log are the installer's own files,
+	# not the student's, so they go too — otherwise they alone would keep the
+	# folder of an install that was never used from being removed.
+	for uninstall_own in install.sh update.log; do
+		if [ -f "$INSTALL_DIR/$uninstall_own" ]; then
+			rm -f "${INSTALL_DIR:?}/$uninstall_own"
+			step removed "$INSTALL_DIR/$uninstall_own"
+		fi
+	done
 
 	# rmdir, never `rm -rf`. It fails on a directory that still has anything
 	# in it, and that is exactly the guard wanted here: this can physically
@@ -756,7 +1132,9 @@ parse_args() {
 			;;
 		--bin-dir=*) BIN_DIR_OPT="${1#*=}" ;;
 		--no-modify-path) MODIFY_PATH=no ;;
+		--no-auto-update) AUTO_UPDATE=no ;;
 		--skip-checksum) SKIP_CHECKSUM=yes ;;
+		--update) ACTION=update ;;
 		--uninstall) ACTION=uninstall ;;
 		-h | --help)
 			usage
@@ -771,6 +1149,11 @@ parse_args() {
 
 	if [ "$WANT_VERSION" = v ]; then
 		die config "--version needs a release tag." "For example: --version v1.3.0"
+	fi
+	# An unattended run replacing a program is the one place where skipping
+	# the check can never be what was meant.
+	if [ "$ACTION" = update ] && [ "$SKIP_CHECKSUM" = yes ]; then
+		die config "--update always verifies what it installs." "Drop --skip-checksum."
 	fi
 }
 
@@ -795,6 +1178,10 @@ main() {
 	if [ "$HTTP_CLIENT" = none ]; then
 		die config "Neither curl nor wget is installed, so nothing can be downloaded." \
 			"Install one of them and run this again. On Termux: pkg install curl"
+	fi
+	if [ "$ACTION" = update ]; then
+		do_update
+		return 0
 	fi
 	do_install
 }
