@@ -634,6 +634,10 @@ The TOML reader is deliberately partial: top-level keys, one `[courses]` table, 
 
 `DefaultLMS` in config.go is the one line to change when forking for another university.
 
+## Commits and pull requests
+
+Do not add `Claude-Session:` or `Co-Authored-By:` trailers to commit messages, and no session links or "Generated with Claude Code" footers in PR descriptions. The repository is public and those lines are not wanted in its history.
+
 ## Tests
 
 All in [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`, a portal tool menu that names registrations only in icon classes, a syllabus tool behind an iframe, and a course whose Syllabus tab is enabled but empty. Every request is recorded, so a test can assert what was *not* fetched (`srv.requested`). Extend that fake rather than reaching for the network; there are no live-server tests.
