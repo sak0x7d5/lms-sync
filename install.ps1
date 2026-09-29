@@ -128,6 +128,27 @@ function Get-ArchFromName {
 	}
 }
 
+# Get-Sha256 returns a file's SHA-256 in lower case, the way SHA256SUMS
+# writes it.
+#
+# Not Get-FileHash. In Windows PowerShell 5.1 that cmdlet lives in a module
+# file rather than in the engine, and a 5.1 started from PowerShell 7 inherits
+# 7's module path, fails to load that file, and reports the cmdlet as not
+# existing. The daily update is exactly a 5.1 process, and it hashes before
+# it does anything else. .NET has had SHA256 since before either shell.
+function Get-Sha256 {
+	param([string] $Path)
+	$full = (Resolve-Path -LiteralPath $Path).ProviderPath
+	$sha = [System.Security.Cryptography.SHA256]::Create()
+	$stream = [System.IO.File]::OpenRead($full)
+	try {
+		return ([System.BitConverter]::ToString($sha.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+	} finally {
+		$stream.Dispose()
+		$sha.Dispose()
+	}
+}
+
 # Get-ExpectedHash pulls one file's line out of a SHA256SUMS body. The release
 # lists every asset and only one of them was downloaded, so the whole file is
 # never verified as a unit.
@@ -317,7 +338,7 @@ function Save-Installer {
 	if (-not $want) { return $false }
 	$dl = Join-Path $Tmp 'install.ps1'
 	if (-not (Get-Url "$AssetBase/install.ps1" $dl -Quiet)) { return $false }
-	$got = (Get-FileHash -Path $dl -Algorithm SHA256).Hash.ToLowerInvariant()
+	$got = (Get-Sha256 $dl)
 	if ($want -ne $got) { return $false }
 	try {
 		Move-Item -Path $dl -Destination (Join-Path $Dir 'install.ps1') -Force
@@ -505,8 +526,7 @@ That release does not appear to include a build for this machine.
 Built targets: $Supported
 "@
 			}
-			# Get-FileHash answers in upper case and sha256sum writes lower.
-			$got = (Get-FileHash -Path $dl -Algorithm SHA256).Hash.ToLowerInvariant()
+			$got = (Get-Sha256 $dl)
 			if ($want -ne $got) {
 				Fail 'config' "$asset does not match the checksum the release published." @"
 Nothing was installed. The download was corrupted in transit, or the
@@ -616,7 +636,7 @@ function Update-LmsSync {
 				Fail 'config' "The newest release lists no build for windows/$arch." `
 					'Nothing was changed. The update is tried again tomorrow.'
 			}
-			$have = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+			$have = (Get-Sha256 $exe)
 
 			if ($want -eq $have) {
 				Write-Step 'binary' 'up to date'
@@ -627,7 +647,7 @@ function Update-LmsSync {
 					Fail 'network' "Could not download $asset." `
 						'Nothing was changed. The update is tried again tomorrow.'
 				}
-				$got = (Get-FileHash -Path $dl -Algorithm SHA256).Hash.ToLowerInvariant()
+				$got = (Get-Sha256 $dl)
 				if ($want -ne $got) {
 					Fail 'config' "$asset does not match the checksum the release published." @"
 Nothing was changed.
@@ -646,7 +666,7 @@ Nothing was changed.
 			$iwant = Get-ExpectedHash $sums 'install.ps1'
 			$ihave = ''
 			if (Test-Path $script) {
-				$ihave = (Get-FileHash -Path $script -Algorithm SHA256).Hash.ToLowerInvariant()
+				$ihave = (Get-Sha256 $script)
 			}
 			if ($iwant -and $iwant -ne $ihave) {
 				if (Save-Installer $assetBase $tmp $dir) {
