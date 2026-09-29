@@ -126,7 +126,9 @@ jobs:
           - { os: ubuntu-latest,    target: linux/amd64 }
           - { os: ubuntu-24.04-arm, target: linux/arm64 }
           - { os: macos-latest,     target: darwin/arm64 }
-          - { os: macos-13,         target: darwin/amd64 }
+          # macos-13 was the Intel image until GitHub retired it; a job asking
+          # for it is never picked up and sits queued until it times out.
+          - { os: macos-15-intel,   target: darwin/amd64 }
           - { os: windows-latest,   target: windows/amd64 }
     runs-on: ${{ matrix.os }}
     steps:
@@ -235,11 +237,19 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           $url = "https://github.com/$env:REPO/releases/download/$env:TAG/install.ps1"
-          # The documented form, so what is tested is what the README says.
+          # Fetched with irm, the documented form, so what is tested is what
+          # the README says. Not (Invoke-WebRequest).Content: GitHub serves
+          # release assets as application/octet-stream, for which .Content is
+          # a byte array, and a scriptblock built from that is a list of
+          # numbers that fails to parse on its first line.
+          $text = Invoke-RestMethod -Uri $url
+          if ($text -isnot [string]) {
+            throw "irm returned $($text.GetType().FullName), not text, so the README's irm | iex cannot work"
+          }
           # -Version pins the tag under test: without it the installer resolves
           # /releases/latest, which is never this tag when this tag is a
           # prerelease.
-          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Version $env:TAG
+          & ([scriptblock]::Create($text)) -Version $env:TAG
 
           # Rebuilt from the registry rather than trusted from the session:
           # this is the real check that the *user* PATH got the entry.
@@ -256,10 +266,10 @@ jobs:
             throw "config did not resolve to the install dir: $out"
           }
 
-          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Version $env:TAG
+          & ([scriptblock]::Create($text)) -Version $env:TAG
 
           Set-Content -Path (Join-Path $dir 'config.toml') -Value "password = 'x'"
-          & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Uninstall
+          & ([scriptblock]::Create($text)) -Uninstall
           if (-not (Test-Path (Join-Path $dir 'config.toml'))) { throw 'uninstall deleted config.toml' }
           if (Test-Path (Join-Path $dir 'lms-sync.exe')) { throw 'uninstall left the exe' }
           $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -270,7 +280,7 @@ jobs:
           # The daily update, on a stable tag only: the unpinned install and
           # -Update both follow /releases/latest, which a prerelease is not.
           if (-not $env:TAG.Contains('-')) {
-            & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content))
+            & ([scriptblock]::Create($text))
             if (-not (Get-ScheduledTask -TaskName 'lms-sync update' -ErrorAction SilentlyContinue)) {
               throw 'no update task was registered'
             }
@@ -287,7 +297,7 @@ jobs:
               throw '-Update did not recognise the current release'
             }
 
-            & ([scriptblock]::Create((Invoke-WebRequest -Uri $url -UseBasicParsing).Content)) -Uninstall
+            & ([scriptblock]::Create($text)) -Uninstall
             if (Get-ScheduledTask -TaskName 'lms-sync update' -ErrorAction SilentlyContinue) {
               throw 'uninstall left the update task'
             }
