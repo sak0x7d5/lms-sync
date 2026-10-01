@@ -2,9 +2,11 @@
 
 # lms-sync
 
-**Your AI already knows statistics. It has never seen *your* statistics course.**
+**Ask AI about your lectures. It answers from your own course files.**
 
-lms-sync keeps every course from your university's **Sakai** LMS on your computer — slides, announcements, assignment briefs and due dates — and lets Claude answer from it, naming the file each answer came from.
+lms-sync copies everything from your university's **Sakai** LMS to your computer — slides, announcements, assignment briefs and due dates — keeps it up to date, and lets your AI app search it, naming the file each answer came from.
+
+Works with any AI app that can run a local MCP server: Claude Desktop, Claude Code, Cursor, VS Code, opencode and more.
 
 [![CI](https://github.com/sak0x7d5/lms-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/sak0x7d5/lms-sync/actions/workflows/ci.yml)
 [![Latest release](https://img.shields.io/github/v/release/sak0x7d5/lms-sync)](https://github.com/sak0x7d5/lms-sync/releases/latest)
@@ -56,7 +58,7 @@ Plain questions, in your own words. These were tested on a real library.
 | "Anything new in ITC? Sir said he uploaded the slides." | Checks the LMS for that one course from inside the chat (initials work), then lists which files are new. |
 | "Quiz me on box plots." | Writes questions from your own notes. You mark each answer; the ones you miss come back tomorrow. |
 
-A real answer, trimmed (course codes removed from the paths):
+A real answer from Claude Desktop, trimmed (course codes removed from the paths):
 
 > **You:** What have we covered so far in Statistics, up to measures of central tendency?
 >
@@ -74,7 +76,7 @@ Notice the gap it reported. The assistant is told to search before answering, na
 
 ## Quick start
 
-lms-sync is one program with nothing else to install, for Windows, Mac, Linux and Android. You also need an AI app that can start a program on your computer: [Claude Desktop](https://claude.ai/download), Claude Code, Cursor, opencode, or another app that runs local MCP servers. **The claude.ai website, ChatGPT's website and phone chat apps can't use it.**
+lms-sync is one program with nothing else to install, for Windows, Mac, Linux and Android. You also need an AI app that can run a local MCP server, meaning it starts a program on your computer: [Claude Desktop](https://claude.ai/download), Claude Code, Cursor, VS Code, opencode and many others. **Websites and phone chat apps can't use it yet** ([roadmap](#roadmap)).
 
 ### 1. Install
 
@@ -119,7 +121,9 @@ Press **Find my courses**. That saves your settings and lists your courses. Then
 
 <!-- screenshot: the settings page, with username and password blurred. Add it here once one exists. -->
 
-### 4. Connect Claude
+### 4. Connect your AI app
+
+Every app needs the same two things: the full path to lms-sync as the command, and `--mcp` as its argument. Here is the one-step version for the most common setups; [Using lms-sync with an AI assistant](docs/ai-assistants.md#connect-your-ai-app) has Cursor, VS Code, opencode and the rest.
 
 **Claude Desktop on Windows** — paste this into PowerShell and press Enter. It adds lms-sync to Claude's settings and keeps everything else in them; the old file is saved as `claude_desktop_config.json.bak`.
 
@@ -153,7 +157,7 @@ On Windows, in PowerShell (the quotes around `--` matter there):
 claude mcp add --scope user lms '--' "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe" --mcp
 ```
 
-**Check it worked.** Start a new chat and ask *"Which courses are in my library?"* The first time Claude uses one of lms-sync's tools, it asks your permission: choose **Allow**. Only fetching new material goes online; everything else just reads your folder. You should see your course folders listed. If not, see [When it doesn't work](docs/ai-assistants.md#when-it-doesnt-work). Cursor, opencode and other setups are in [Using lms-sync with an AI assistant](docs/ai-assistants.md#connect-your-ai-app).
+**Check it worked.** Start a new chat and ask *"Which courses are in my library?"* The first time your AI uses one of lms-sync's tools, it may ask your permission (Claude Desktop does): choose **Allow**. Only fetching new material goes online; everything else just reads your folder. You should see your course folders listed. If not, see [When it doesn't work](docs/ai-assistants.md#when-it-doesnt-work).
 
 <details>
 <summary><strong>Prefer to download it yourself?</strong></summary>
@@ -266,7 +270,7 @@ That history lives in `.lms-study/`, the one folder worth backing up. Every slid
 ## What it can't do
 
 - **Sign in anywhere but Sakai's own form.** No Canvas, Moodle or Blackboard, no single sign-on, no two-factor.
-- **Work from a website or a phone chat app.** It needs an AI app on your computer ([what to do on a phone](docs/android.md#asking-an-ai-from-your-phone)).
+- **Work from a website or a phone chat app, yet.** It needs an AI app on your computer ([what to do on a phone](docs/android.md#asking-an-ai-from-your-phone); [roadmap](#roadmap)).
 - **Tell you what's in a quiz.** Quizzes are never opened; what it knows about one is what was announced.
 - **Read scanned PDFs.** They download, but there's no text to search.
 - **Promise it works at your university.** It is confirmed at one so far.
@@ -291,7 +295,7 @@ Which tabs a course offers varies too. `lms-sync --probe` lists them for every c
 
 ## FAQ
 
-**Is it free?** Yes, MIT-licensed. Claude Desktop is free to download, and every Claude plan, Free included, can connect local tools like this one; your plan decides how much you can ask.
+**Is it free?** Yes, MIT-licensed. Your AI app has its own pricing. Claude Desktop, for example, is free to download, and every Claude plan, Free included, can connect local tools like this one.
 
 **Does the AI need my password?** No, and it never sees it. Everything except checking the LMS for new material works from your disk with no password. Only `sync_courses`, which does that checking from a chat, signs in.
 
@@ -303,13 +307,19 @@ Which tabs a course offers varies too. `lms-sync --probe` lists them for every c
 
 **Where is my password stored?** In `config.toml` beside the program, in plain text. On Windows that is inside your own user folder; on a Mac or Linux only you can read the file. Don't share or commit it. To keep it off disk altogether, see [credentials](docs/configuration.md#credentials).
 
+## Roadmap
+
+- **Use it from the web and your phone.** lms-sync is a local MCP server today, so it needs an AI app on your computer. A hosted MCP server, reached over HTTPS, would let apps that can only connect to servers online, such as the claude.ai website and phone apps, use your library too.
+
+Ideas and requests are welcome: [open an issue](https://github.com/sak0x7d5/lms-sync/issues).
+
 ## Documentation
 
 | Page | Read it when |
 |---|---|
 | [Installing lms-sync](docs/install.md) | You want to update, uninstall, pass installer options or check a download |
 | [lms-sync on Android](docs/android.md) | You're setting it up on a phone |
-| [Using lms-sync with an AI assistant](docs/ai-assistants.md) | You use a Mac, Cursor or opencode, or the tools don't show up |
+| [Using lms-sync with an AI assistant](docs/ai-assistants.md) | You use a Mac, or an app other than Claude, or the tools don't show up |
 | [Command line and scheduled syncs](docs/command-line.md) | You want a daily sync, every flag, exit codes, or to diagnose a server |
 | [Configuration](docs/configuration.md) | You want to edit `config.toml`: tabs, time zone, your course list |
 | [Keeping a copy in the cloud](docs/cloud-backup.md) | You want a synced folder or Google Drive, including [using your own Google project](docs/cloud-backup.md#use-your-own-google-project) |

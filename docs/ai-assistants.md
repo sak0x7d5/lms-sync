@@ -7,8 +7,8 @@ MCP (Model Context Protocol) is the standard way AI apps connect to tools on you
 ## What you need
 
 - **A synced library.** Run lms-sync and sync at least once, so there is something to ask about. The [README](../README.md) walks through it.
-- **An AI app that can start a program on your computer.** Claude Desktop, Claude Code, Cursor and opencode are covered below. Other apps that run local MCP servers are set up the same way.
-- **Not a website.** The claude.ai website, ChatGPT's website and phone chat apps cannot start a program on your computer, so they cannot use lms-sync. For a phone, see [Asking an AI from your phone](android.md#asking-an-ai-from-your-phone).
+- **An AI app that can start a program on your computer.** Claude Desktop, Claude Code, Cursor, VS Code and opencode are covered below. Any other app that runs local MCP servers is set up the same way: see [Any other app](#any-other-app).
+- **Not a website, yet.** The claude.ai website, ChatGPT's website and phone chat apps cannot start a program on your computer, so they cannot use lms-sync today. A hosted server is on the [roadmap](../README.md#roadmap). For a phone now, see [Asking an AI from your phone](android.md#asking-an-ai-from-your-phone).
 - **Optional: poppler**, so PDFs are searchable too. See [Searchable PDFs](#searchable-pdfs).
 
 Answers come from the copy on your disk, which is why they are quick. Nothing is downloaded while you wait unless you ask for a sync.
@@ -194,6 +194,23 @@ Cursor reads the same `mcpServers` block as Claude Desktop. Put it in `~/.cursor
 
 On Windows, write the path as the [PowerShell line above](#connect-your-ai-app) prints it, ready for JSON. Then check Cursor's MCP settings: `lms` should be listed with its tools.
 
+### VS Code
+
+VS Code reads a similar block, but its top-level key is `servers`, not `mcpServers`. A block copied from Claude or Cursor is not read. Run **MCP: Open User Configuration** from the Command Palette (Ctrl+Shift+P) to use it in every workspace, or put it in `.vscode/mcp.json` inside one project:
+
+```json
+{
+  "servers": {
+    "lms": {
+      "command": "/full/path/to/lms-sync",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+On Windows, write the path as the [PowerShell line above](#connect-your-ai-app) prints it. The tools then appear in VS Code's chat.
+
 ### opencode
 
 opencode reads `opencode.json`, in your project's root or at `~/.config/opencode/opencode.json` for every project. Three of its keys differ from the other apps:
@@ -222,6 +239,15 @@ A block copied from a Claude config is not rejected. It is simply ignored, so `l
 On Windows, write the path as the [PowerShell line above](#connect-your-ai-app) prints it.
 
 Running an AI app inside Termux on a phone is untested. For what works from a phone, see [Asking an AI from your phone](android.md#asking-an-ai-from-your-phone); for where a phone's library should live, see [Where to save](android.md#where-to-save).
+
+### Any other app
+
+lms-sync is a standard local MCP server (the kind some apps call "stdio"), so any app that runs those can use it. They all ask for the same two things, in a settings file or an "Add MCP server" form:
+
+- **Command:** the full path to lms-sync, from the [table above](#connect-your-ai-app).
+- **Arguments:** `--mcp`.
+
+Most apps read the `mcpServers` block shown under [Claude Desktop](#claude-desktop); the app's own documentation says which file. Got it working in an app that isn't listed here? [Tell us](https://github.com/sak0x7d5/lms-sync/issues) and it can be added.
 
 ### Without a config file
 
