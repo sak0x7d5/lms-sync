@@ -28,13 +28,13 @@ Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.
 The project was renamed from `sakai-sync` because students know the thing as "the LMS", not as Sakai. The generic name is deliberate; so is every remaining mention of Sakai. Keep the distinction:
 
 - **Project identity** — binary, module path, repo, window title, user agent, `LMS_USER` / `LMS_PASS` — is `lms-sync`.
-- **Sakai stays wherever it is a factual claim about the server software**: the `fakeSakai` test harness, the comments describing Sakai's 200-with-login-form login and its directory index, the hint text in errors.go, and the README's supported-platform section.
+- **Sakai stays wherever it is a factual claim about the server software**: the `fakeSakai` test harness, the comments describing Sakai's 200-with-login-form login and its directory index, the hint text in errors.go, the README's "Will this work at my university?" section, and the Sakai-only lines in docs/.
 
 It only speaks native Sakai form login — not Canvas, Moodle or Blackboard, and not any SSO front end. Don't let the generic name lead to copy that implies otherwise.
 
 ## Hard constraint: standard library only
 
-`go.mod` has no `require` block and that is a product feature ("no dependencies to fetch, vendor or audit" — README). Do not add a module, including for TOML parsing or HTML parsing — the hand-rolled versions in `config.go` and `sync.go` exist precisely to avoid that. `go.mod` says go 1.21, CI builds on 1.22; don't use newer language/stdlib features.
+`go.mod` has no `require` block and that is a product feature ("Standard library only — nothing to fetch, vendor or audit" — README, Build from source). Do not add a module, including for TOML parsing or HTML parsing — the hand-rolled versions in `config.go` and `sync.go` exist precisely to avoid that. `go.mod` says go 1.21, CI builds on 1.22; don't use newer language/stdlib features.
 
 ## Architecture
 
@@ -59,6 +59,8 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [drive.go](drive.go) — the one-way copy of a finished library to Google Drive.
 - [driveauth.go](driveauth.go) — the Google sign-in, and the only part of the tool that waits on a human.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
+
+User documentation: [README.md](README.md) is the pitch and the quick start; the depth lives in [docs/](docs/) (install, android, ai-assistants, command-line, configuration, cloud-backup, how-it-works, troubleshooting), and contributor notes in [CONTRIBUTING.md](CONTRIBUTING.md). Say a fact once, in its page, and link to it — several facts there describe behaviour an open fix will change, and one copy is one edit. Two README headings are link targets for code outside the docs and must not be renamed: `## Build from source` (both installers print `…/lms-sync#build-from-source` for an unsupported machine, and released installers cannot be changed) and `## Will this work at my university?` (errors.go's SSO hint sends people to it).
 
 ### One core, many tabs
 
@@ -377,8 +379,9 @@ That list now appears in **five** places: [ci.yml](.github/workflows/ci.yml)'s
 cross-compile loop, [release.yml](.github/workflows/release.yml)'s build
 matrix, its `verify` matrix, both installers' architecture detection
 (`SUPPORTED` in [install.sh](install.sh), `$Supported` in
-[install.ps1](install.ps1)), and the README's download table — **keep them the
-same**, or a target is released without ever having been compiled on a pull
+[install.ps1](install.ps1)), and the README's download table (the `<details>`
+under Quick start; CONTRIBUTING.md's "Adding a build target" repeats the list
+of places) — **keep them the same**, or a target is released without ever having been compiled on a pull
 request, or offered to a machine no file was built for.
 
 `windows/arm64` is the one target with no `verify` leg: there is no ARM
@@ -542,9 +545,11 @@ applies `LMS_USER` / `LMS_PASS` over the loaded config *before* dispatching to
 does not put the client's password in a second place — and an `env` block in a
 client's `mcpServers` entry then works with no code here knowing about MCP at
 all — which is the idiom every other MCP server
-uses for its secrets, and what the README documents. An env-only setup has no
-config file to carry the destination, so `--dest` goes in `args`; without it
-the library resolves to `Courses` beside the binary. Tool descriptions carry
+uses for its secrets, and what docs/ai-assistants.md documents under "Without a
+config file". An env-only setup has no config file to carry the destination, so
+`--dest` goes in `args`; without it the library resolves to `Courses` beside the
+binary. Nor can it carry the LMS address, which then falls back to
+`DefaultLMS` — that page tells anyone not at IBA so. Tool descriptions carry
 their own context because the server is meant to work in any MCP client, and
 most have no project instructions to lean on.
 
