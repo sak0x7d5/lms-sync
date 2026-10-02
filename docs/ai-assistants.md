@@ -17,7 +17,7 @@ Answers come from the copy on your disk, which is why they are quick. Nothing is
 
 Every app needs the same two things: the full path to lms-sync, and the argument `--mcp`.
 
-**Run lms-sync once before you connect it.** The interface writes `config.toml` beside the binary, holding your LMS address, where to save and your sign-in. After that the AI app needs nothing but the path. No config file? See [Without a config file](#without-a-config-file).
+**Sign in once before you connect it**: say yes when the installer offers, or run `lms-sync --setup` (or `lms-sync` for the interface). That writes `config.toml` beside the binary, holding your LMS address, where to save and your sign-in, and `--setup` prints the program's full path when it finishes. After that the AI app needs nothing but the path. No config file? See [Without a config file](#without-a-config-file).
 
 If you used the installer, lms-sync is here:
 
@@ -424,6 +424,7 @@ That reads your synced files again, without going online, and picks up the PDFs 
 | `lms` does not appear in the app | Quit the app completely and reopen it. Check the path is written in full (no `~` or `%LOCALAPPDATA%`) and, on Windows, as the [PowerShell line](#connect-your-ai-app) prints it, every backslash doubled. If Claude will not start after the change, see [Troubleshooting](troubleshooting.md#searching-and-your-ai-app). In opencode, check the [three keys](#opencode). |
 | The app says the server failed to start | Run the same path with `--version` in a terminal. If that fails too, the path is wrong. |
 | It connects, but finds no courses | Nothing has synced yet, or the app is reading a different folder. Run a sync. If the app's entry has `--dest`, make sure it matches where the interface saves, or remove it and let `config.toml` decide. |
+| `sync_courses` says no sign-in reached lms-sync | Its reply lists what it was started with. If you put `LMS_USER` and `LMS_PASS` in the app, the app did not pass them on: check the names, and that they are under `env` (`environment` in [opencode](#opencode)), then quit and reopen the app. Or run `lms-sync --setup` once, and leave them out of the app. |
 | `sync_courses` says the sign-in was refused | Your LMS username is often a roll number, not an email. Fix the password in the interface or the app's `env`, then quit and reopen the app. |
 | It signs in to `lms.iba.edu.pk`, but you study elsewhere | You are using the [no-config-file setup](#without-a-config-file), which only works for IBA. Run `lms-sync` once and set your LMS address. |
 | It says something is not there that was just posted | Ask it to sync that course first: "Sync ITC, then check." |

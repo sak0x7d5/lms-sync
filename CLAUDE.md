@@ -21,7 +21,7 @@ pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run), `--setup` (signs in from the terminal; the installers offer it).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -57,7 +57,8 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
 - [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
 - [drive.go](drive.go) — the one-way copy of a finished library to Google Drive.
-- [driveauth.go](driveauth.go) — the Google sign-in, and the only part of the tool that waits on a human.
+- [driveauth.go](driveauth.go) — the Google sign-in, and the only part of the tool that opens a browser and waits on a human.
+- [setup.go](setup.go) — `--setup`: signing in from a terminal, checked with the LMS before anything is saved. [terminal_other.go](terminal_other.go) / [terminal_windows.go](terminal_windows.go) are the build-tagged `setEcho` pair that hides the password.
 - [web/index.html](web/index.html) — the whole UI (one file, inline CSS/JS), embedded via `go:embed`; rebuild after editing it.
 
 User documentation: [README.md](README.md) is the pitch and the quick start; the depth lives in [docs/](docs/) (install, android, ai-assistants, command-line, configuration, cloud-backup, how-it-works, troubleshooting), and contributor notes in [CONTRIBUTING.md](CONTRIBUTING.md). Say a fact once, in its page, and link to it — several facts there describe behaviour an open fix will change, and one copy is one edit. Two README headings are link targets for code outside the docs and must not be renamed: `## Build from source` (both installers print `…/lms-sync#build-from-source` for an unsupported machine, and released installers cannot be changed) and `## Will this work at my university?` (errors.go's SSO hint sends people to it).
@@ -235,6 +236,10 @@ These encode bugs that already cost someone real time — the comments in the so
   `TestAStoredPasswordSurvivesAnEnvironmentOverride`,
   `TestAPasswordTypedIntoTheInterfaceIsSaved`.
 - **stdout belongs to the MCP protocol.** Anything else printed there is a corrupt stream, not a stray line; `mcpLog` writes to stderr.
+- **A missing sign-in says what arrived.** "No credentials are configured" was true and useless: a student had put `LMS_USER` / `LMS_PASS` in opencode's settings under `env`, which opencode ignores (it reads `environment`), so they never reached the process — and only the process can see that. `missingCredentials` lists whether each variable was set, set but empty, or absent, what config.toml holds, and any `LMS_` name nothing reads (`LMS_PASSWORD`), never a value; the startup log carries the same as `Sign-in:`. `TestMissingCredentialsSayWhatArrivedAndWhere`.
+- **Setup saves nothing until the LMS has accepted the sign-in.** That is the whole difference from the interface, and what lets the installers offer it: a config.toml `--setup` wrote is one that signs in, so an AI app's entry needs nothing but the path. A refused password is asked for again but never offered back as Enter's default, and three refusals stop it — each sign-in can post to three login pages. `--setup` runs *before* `ApplyEnv`, because "Enter keeps the current password" has to mean the one that will be saved. Its exit code is about setup: once the file is saved it returns 0 whatever the first sync it offers does, or an installer would report a forbidden file as a failed setup. `TestSetupSavesASignInOnlyOnceTheLMSAcceptsIt`, `TestSetupStopsAfterThreeRefusedSignInsAndSavesNothing`, `TestSetupStopsWithoutSavingWhenInputEnds`.
+- **Setup never moves an existing library.** Enter keeps a destination folder that exists, or one somebody chose that does not yet; only the shipped default, which sits in the install folder, is replaced by a suggestion (Documents, or `/storage/emulated/0` on a phone). A typed path must be absolute after `~` and `$VAR` expansion, since a relative one means one folder to the person and another to the config. `TestSetupEnterKeepsTheSavedAccountAndLibrary`, `TestSetupOffersAFolderYouCanFindAndWantsAWholePath`.
+- **The password is read with echo off, and echo always comes back.** Each read runs on a goroutine so Ctrl-C is noticed while it blocks, and starts only when its question is asked — never ahead — because a Windows console fixes whether a read echoes when the read *begins*: a reader that ran one line ahead had the password's read waiting before echo was turned off. `secret` restores echo on every path, the cancelled one included. `stty` on Unix, `SetConsoleMode` on Windows — termios differs per OS in ways `syscall` does not cover, and `x/term` is a module. `TestThePasswordIsReadWithEchoOff`.
 - **A notification is never answered.** A message with no id gets no reply whatever it says — answering one is a protocol violation. `TestMCPNotificationIsNeverAnswered`. That is a rule about *replying*, not about ignoring: `notifications/cancelled` is acted on, and the invariant below is why it has to be.
 - **A tool call never blocks the read loop, and a cancelled one is dropped.** Handling messages strictly in turn meant a slow search also held up the client's notice that it had given up on it — so one timed-out call left every later call queued behind work nobody would read, which is what turned a single timeout into two. Calls still run one at a time **and in the order they arrived** (`prevTool`, a chain of channels linked on the read loop), since a client that pipelines a record and a read expects the read to see the record, and replies are serialised on `outMu` because interleaved ones are an unreadable stream rather than a slow one. The queue was a mutex first, which gave exclusion but not order: goroutines do not acquire a mutex in the order they were started, so `record_answer` and the `weak_spots` behind it ran backwards about a quarter of the time and the read reported nothing recorded. Order can only be captured on the read loop, which is why the baton is linked there and waited on inside the goroutine — and why the wait is never abandoned on cancellation, since closing the baton early would let the next call start beside one still running. A cancelled call writes no reply: the client is not waiting for one, and dropping it is what clears the queue. `TestMCPCancelledToolCallIsNotAnswered`, `TestMCPKeepsAnsweringWhileAToolWaits`, `TestMCPToolCallsAnswerInTheOrderTheyArrived`.
 - **Cached text is only ever as old as the last extraction.** Holding bodies in memory is what stops a search re-reading the whole library, but a cached answer must never outlive the file it came from: each is validated against its index record, so a sync that re-extracts a deck drops the old text on the next search. `TestMCPExtractedTextIsReadOnceAcrossSearches`, `TestReExtractedTextIsNotServedStale`.
@@ -291,7 +296,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A path component is never a Windows device name.** `NUL`, `AUX`, `COM1` and the rest are refused as filenames by Windows with or without an extension, and nothing rejects them elsewhere — so a course holding `aux.pdf` synced cleanly on the machine that built the library and failed on that one file, every run, for every Windows user. `SafeName` prefixes them; names that merely start with those letters are untouched. `TestSafeNameAvoidsWindowsDeviceNames`.
 - **Text is cut between characters, never inside one.** `read_material` hands back a byte offset for the caller to continue from, so a fixed-width cut splits a rune on any material that is not plain ASCII: the seam arrives as replacement glyphs and the next call resumes midway through a letter. `truncateBytes` and the chunking in `readMaterial` both snap to a boundary. `TestReadMaterialChunksOnCharacterBoundaries`.
 - **The saved config advertises every tab that exists.** The comment above `sections` is the only place a student learns what can be switched on, and spelling the list out by hand is how it came to name three tabs when the tool had grown to six. It is built from `sectionCatalogue()`. `TestSavedConfigListsEveryAvailableSection`.
-- **Nothing but `--drive-login` and the interface's Connect button may ask a human for anything.** The Drive push runs inside `Sync`, so a scheduled run, the web UI and an assistant's `sync_courses` call all reach it — and two of those three cannot show anyone a Google consent screen. stdout belongs to the MCP protocol and `mcpLog`'s stderr lands in a file nobody reads, so a prompt there is an invisible hang, not a prompt. A missing or revoked sign-in is therefore a `KindAuth` error carrying the command to run, which `Sync` reports as a `warn` and carries on. `TestASyncWithNoDriveSignInStillFinishesAndSaysWhatToRun`.
+- **Nothing but `--drive-login`, `--setup` and the interface's Connect button may ask a human for anything.** The Drive push runs inside `Sync`, so a scheduled run, the web UI and an assistant's `sync_courses` call all reach it — and two of those three cannot show anyone a Google consent screen. stdout belongs to the MCP protocol and `mcpLog`'s stderr lands in a file nobody reads, so a prompt there is an invisible hang, not a prompt. A missing or revoked sign-in is therefore a `KindAuth` error carrying the command to run, which `Sync` reports as a `warn` and carries on. `TestASyncWithNoDriveSignInStillFinishesAndSaysWhatToRun`.
 - **A Drive push never fails a sync.** The downloads are the point; a backup that could not be made is worth one warning. Only cancellation propagates, exactly as with the text index.
 - **A file already in Drive is updated by id, never re-created.** Drive holds two files of the same name in one folder without complaint, so a lost id duplicates the library rather than erroring. `drive-push.json` maps path → id, and records the destination it belongs to so a different `--dest` starts fresh instead of claiming a new library is already backed up. `TestAChangedFileIsReplacedInDriveRatherThanDuplicated`, `TestAPushRecordFromADifferentLibraryIsIgnored`.
 - **The push keeps `.lms-study` and skips `.lms-index`.** It cannot use `scanLibrary`, which answers a different question and skips every dot-directory. The study log is the only part of the library that cannot be rebuilt by syncing again; the text index is derived from the files beside it and re-extracts in one command. `TestDrivePushKeepsTheStudyLogAndLeavesTheTextIndexBehind`.
@@ -479,9 +484,31 @@ binaries beside it. `SHA256SUMS` covers them too.
   release.yml's `verify` job registers a real schedule on each OS, runs the
   scheduled command, and expects "up to date". It does this on stable tags
   only, because `--update` follows `/releases/latest`.
-- **Nothing prompts.** Under `curl | sh` there is no terminal: `read` returns
-  non-zero at EOF, which `set -e` turns into an abort, and `/dev/tty` is not
-  always there. Every choice is a flag or an environment variable.
+- **One question, at the end, and never a required one.** The installers ask
+  whether to sign in now and hand a yes to `lms-sync --setup`; they never write
+  `config.toml` themselves, so its format and the rule that an environment
+  password is never saved stay in config.go. It was "nothing prompts" until
+  students asked for this, and every reason behind that rule still holds,
+  which is what shapes how it asks:
+  - **Only with a person at a terminal.** Under `curl | sh` stdin is the
+    script, so the answer comes from `/dev/tty`, opened first in a subshell by
+    `true` — a redirection that fails on a special built-in such as `:` ends a
+    non-interactive sh outright. `CI` is checked by name, and `read` failing
+    (EOF) is taken as "not now", since `set -e` would otherwise abort.
+    install.ps1 checks `UserInteractive`, `-NonInteractive`, redirected
+    console streams and the ISE (whose child processes cannot read input).
+  - **Never on `--update`**, never with `--no-setup` / `-NoSetup` /
+    `LMS_SYNC_NO_SETUP`, and never over an install whose config.toml already
+    names a username — an upgrade asking again would be a question with one
+    answer at every reinstall.
+  - **Last.** Everything an install must do is done and said first, so Ctrl-C
+    during the questions, or during a first sync that takes minutes, cannot
+    leave it half-made.
+  - **install.ps1 runs it with `Start-Process -NoNewWindow`, never `& $exe`.**
+    A function's output is its return value, so a native program called
+    inside one has its stdout captured instead of shown: every question setup
+    asks was swallowed. The handle is read before waiting, or 5.1 can report
+    no exit code.
 - The PATH-editing and checksum-parsing logic in install.ps1 is written as
   **pure functions** (`Add-DirToPathValue`, `Remove-DirFromPathValue`,
   `Get-ExpectedHash`) so it can be tested without a Windows registry — the

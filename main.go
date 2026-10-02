@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +30,7 @@ func run() int {
 		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
+		doSetup    = flag.Bool("setup", false, "sign in from this terminal, check it works, and save it")
 		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
 		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
@@ -64,6 +66,19 @@ func run() int {
 	if *destFlag != "" {
 		cfg.Destination = *destFlag
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	manifest := LoadManifest(manifestPath())
+
+	// Setup decides what the file will hold, so it sees the file and not the
+	// environment laid over it: offering to keep "the current password" has
+	// to mean the one that will be saved, and LMS_PASS never is.
+	if *doSetup {
+		return cliSetup(ctx, cfg, manifest, *insecure)
+	}
+
 	// Environment wins over the file, so a scheduled run can avoid storing
 	// a password on disk — which means Save must not put it there either.
 	cfg.ApplyEnv(os.Getenv("LMS_USER"), os.Getenv("LMS_PASS"))
@@ -74,11 +89,6 @@ func run() int {
 	if *pushDrive {
 		cfg.DrivePush = true
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	manifest := LoadManifest(manifestPath())
 
 	switch {
 	case *driveLogIn:
@@ -106,6 +116,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `lms-sync %s — mirror Sakai LMS course material.
 
   lms-sync                 open the interface (default)
+  lms-sync --setup         sign in from this terminal instead, and check it works
   lms-sync --sync          sync and exit, for scheduled runs
   lms-sync --discover      find your courses and save them
   lms-sync --dry-run       show what would download, write nothing
@@ -208,6 +219,13 @@ func cliSync(ctx context.Context, cfg *Config, manifest *Manifest,
 	if err != nil {
 		return reportErr(err)
 	}
+	return cliSyncWith(ctx, client, cfg, manifest, dryRun)
+}
+
+// cliSyncWith is cliSync with the sign-in already done, so --setup can go
+// straight on to a first sync without posting the password a second time.
+func cliSyncWith(ctx context.Context, client *Client, cfg *Config, manifest *Manifest,
+	dryRun bool) int {
 
 	added, err := RefreshCourses(ctx, client, cfg)
 	if err != nil {
@@ -336,14 +354,7 @@ func cliProbe(ctx context.Context, cfg *Config, insecure bool) int {
 }
 
 func reportErr(err error) int {
-	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "Error ["+KindOf(err).String()+"]:", err.Error())
-	if hint := hintOf(err); hint != "" {
-		fmt.Fprintln(os.Stderr)
-		for _, line := range strings.Split(hint, "\n") {
-			fmt.Fprintln(os.Stderr, "  "+line)
-		}
-	}
+	printErr(os.Stderr, err)
 	switch KindOf(err) {
 	case KindCancelled:
 		return 130
@@ -351,6 +362,19 @@ func reportErr(err error) int {
 		return 2
 	}
 	return 1
+}
+
+// printErr is how every failure reads on a terminal: the kind in brackets,
+// then the hint indented under a blank line.
+func printErr(w io.Writer, err error) {
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Error ["+KindOf(err).String()+"]:", err.Error())
+	if hint := hintOf(err); hint != "" {
+		fmt.Fprintln(w)
+		for _, line := range strings.Split(hint, "\n") {
+			fmt.Fprintln(w, "  "+line)
+		}
+	}
 }
 
 func hintOf(err error) string {
@@ -361,7 +385,9 @@ func hintOf(err error) string {
 	return ""
 }
 
-// cliDriveLogin is the one place in this tool that asks a human for anything.
+// cliDriveLogin is one of the two places in this tool that ask a human for
+// anything; cliSetup is the other. Both are commands somebody types, and
+// nothing a scheduled run, the interface or the MCP server does reaches either.
 //
 // It deliberately does not call cfg.Validate(): signing in to Google has
 // nothing to do with the LMS password, and refusing to set up a backup

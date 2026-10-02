@@ -5798,3 +5798,342 @@ func TestAPushRecordFromADifferentLibraryIsIgnored(t *testing.T) {
 		t.Errorf("%d uploads in total, want 2", n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// --setup, and what the MCP server says when no sign-in reached it
+// ---------------------------------------------------------------------------
+
+// setupConfig is a first run: no file yet, and the shipped defaults.
+func setupConfig(t *testing.T) *Config {
+	t.Helper()
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+	cfg.Delay = 0
+	cfg.Timeout = 10
+	cfg.Sections = []string{"resources"}
+	return cfg
+}
+
+// setupHome points the home folder at a temporary one, so the folder setup
+// suggests is one the test can predict, and rules out Termux whatever
+// machine this runs on.
+func setupHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(termuxVersionEnv, "")
+	t.Setenv(prefixEnv, "")
+	return home
+}
+
+// runSetup answers setup's questions in order, one line each, and records
+// every change it makes to the terminal's echo.
+func runSetup(t *testing.T, cfg *Config, answers ...string) (code int, out string, echoes []bool) {
+	t.Helper()
+	var b strings.Builder
+	echo := func(on bool) error { echoes = append(echoes, on); return nil }
+	input := strings.Join(answers, "\n") + "\n"
+	p := newPrompter(strings.NewReader(input), &b, echo)
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	code = setupOn(context.Background(), cfg, manifest, p, false)
+	return code, b.String(), echoes
+}
+
+// The point of setup over the interface is that it asks the LMS before it
+// writes anything: a config.toml it saved is one that signs in. A refused
+// password is asked for again, and is never offered back as the default —
+// Enter re-sending a rejected password is one more failure towards a lock.
+func TestSetupSavesASignInOnlyOnceTheLMSAcceptsIt(t *testing.T) {
+	setupHome(t)
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+	dest := filepath.Join(t.TempDir(), "Uni", "Courses")
+
+	code, out, echoes := runSetup(t, cfg,
+		srv.URL, "37103", "wrong",
+		"", "", "", "correct-horse",
+		dest, "n")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "refused these details") {
+		t.Errorf("the refusal was not explained:\n%s", out)
+	}
+	if !strings.Contains(out, "A password is needed") {
+		t.Errorf("Enter after a refusal should not re-send the refused password:\n%s", out)
+	}
+	if n := srv.timesRequested("/access/login"); n != 2 {
+		t.Errorf("%d sign-ins, want 2: one refused, one accepted", n)
+	}
+	// Echo off for each of the three password prompts — the refused one,
+	// the empty answer, the accepted one — and back on after each.
+	if fmt.Sprint(echoes) != "[false true false true false true]" {
+		t.Errorf("echo changes %v, want it off for each password and restored after", echoes)
+	}
+
+	back, err := LoadConfig(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.BaseURL != srv.URL || back.Username != "37103" || back.Password != "correct-horse" {
+		t.Errorf("saved %q / %q / %q", back.BaseURL, back.Username, back.Password)
+	}
+	if back.Destination != dest {
+		t.Errorf("destination %q, want %q", back.Destination, dest)
+	}
+	if len(back.Courses) != 2 {
+		t.Errorf("courses %v, want the two the LMS lists", back.Courses)
+	}
+	// The AI-app half of the answer: the path, and nothing else needed.
+	if !strings.Contains(out, "--mcp") {
+		t.Errorf("setup did not say how to connect an AI app:\n%s", out)
+	}
+}
+
+// Each sign-in can post to three login pages, and repeated failures lock an
+// account. Somebody retyping is worth allowing; a loop with no end is not.
+func TestSetupStopsAfterThreeRefusedSignInsAndSavesNothing(t *testing.T) {
+	setupHome(t)
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+
+	code, out, _ := runSetup(t, cfg,
+		srv.URL, "37103", "wrong-1",
+		"", "", "wrong-2",
+		"", "", "wrong-3",
+		"", "", "correct-horse") // never reached
+	if code != 2 {
+		t.Errorf("exit %d, want 2 (auth)", code)
+	}
+	if n := srv.timesRequested("/access/login"); n != maxSignIns {
+		t.Errorf("%d sign-ins, want %d", n, maxSignIns)
+	}
+	if !strings.Contains(out, "Stopped after 3 refused sign-ins") {
+		t.Errorf("did not say why it stopped:\n%s", out)
+	}
+	if _, err := os.Stat(cfg.path); err == nil {
+		t.Error("a sign-in the LMS refused was saved")
+	}
+}
+
+// Running setup again to change one thing must not demand everything again,
+// and above all must not move an existing library: a new destination means
+// every file downloaded a second time into it.
+func TestSetupEnterKeepsTheSavedAccountAndLibrary(t *testing.T) {
+	setupHome(t)
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	if err := os.MkdirAll(cfg.Destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg.found = true
+	before := cfg.Destination
+
+	code, out, _ := runSetup(t, cfg, "", "", "", "", "n")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	back, err := LoadConfig(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Password != "correct-horse" || back.Username != "37103" {
+		t.Errorf("Enter did not keep the account: %q / %q", back.Username, back.Password)
+	}
+	if back.Destination != before {
+		t.Errorf("destination moved to %q, want the existing library %q kept", back.Destination, before)
+	}
+}
+
+// The shipped destination is inside the program's own hidden folder, so setup
+// offers one a student can find — but types are taken as whole paths, since a
+// relative one means a different folder to the person than to the config.
+func TestSetupOffersAFolderYouCanFindAndWantsAWholePath(t *testing.T) {
+	home := setupHome(t)
+	if err := os.MkdirAll(filepath.Join(home, "Documents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := setupConfig(t)
+	var b strings.Builder
+	p := newPrompter(strings.NewReader("\n"), &b, nil)
+	if err := setupDestination(context.Background(), cfg, p); err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(home, "Documents", "Courses"); cfg.Destination != want {
+		t.Errorf("Enter chose %q, want the suggested %q", cfg.Destination, want)
+	}
+
+	cfg = setupConfig(t)
+	b.Reset()
+	p = newPrompter(strings.NewReader("Courses\n~/Uni/Courses\n"), &b, nil)
+	if err := setupDestination(context.Background(), cfg, p); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "Type the whole path") {
+		t.Errorf("a relative path was accepted:\n%s", b.String())
+	}
+	if want := filepath.Join(home, "Uni", "Courses"); cfg.Destination != want {
+		t.Errorf("~ gave %q, want %q", cfg.Destination, want)
+	}
+}
+
+// Ctrl-D, or a pipe that runs dry, is somebody walking away. Nothing is
+// saved, and a password prompt it interrupted gives the terminal its echo
+// back.
+func TestSetupStopsWithoutSavingWhenInputEnds(t *testing.T) {
+	setupHome(t)
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+
+	code, out, echoes := runSetup(t, cfg, srv.URL, "37103")
+	if code != 1 {
+		t.Errorf("exit %d, want 1", code)
+	}
+	if !strings.Contains(out, "Nothing was saved") {
+		t.Errorf("did not say nothing was saved:\n%s", out)
+	}
+	if len(echoes) == 0 || !echoes[len(echoes)-1] {
+		t.Errorf("echo changes %v: the terminal was left without echo", echoes)
+	}
+	if _, err := os.Stat(cfg.path); err == nil {
+		t.Error("an unfinished setup wrote config.toml")
+	}
+	if srv.requested("/access/login") {
+		t.Error("signed in with no password")
+	}
+}
+
+// Saying yes to the first download goes straight on with the client setup
+// already signed in: a second sign-in is one more post of the password for
+// nothing.
+func TestSetupCanDownloadStraightAway(t *testing.T) {
+	setupHome(t)
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+	dest := filepath.Join(t.TempDir(), "Courses")
+
+	code, out, _ := runSetup(t, cfg, srv.URL, "37103", "correct-horse", dest, "y")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	var found bool
+	filepath.WalkDir(dest, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == "limits.pdf" {
+			found = true
+		}
+		return nil
+	})
+	if !found {
+		t.Error("the first sync did not download anything into the chosen folder")
+	}
+	if n := srv.timesRequested("/access/login"); n != 1 {
+		t.Errorf("%d sign-ins, want 1", n)
+	}
+}
+
+// The failure behind this: credentials put in opencode's settings under
+// "env", which opencode ignores — it reads "environment" — so they never
+// reached the process, and the tool said only that none were configured.
+// Only the process can see what arrived, so it has to be the one to say.
+func TestMissingCredentialsSayWhatArrivedAndWhere(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+
+	msg := missingCredentials(cfg, []string{
+		"PATH=/usr/bin",
+		"LMS_USER=",
+		"LMS_PASSWORD=hunter2",
+		"LMS_SYNC_VERSION=v1.4.0",
+	})
+	for _, want := range []string{
+		"LMS_USER  set, but empty",
+		"LMS_PASS  not set",
+		cfg.path + ": not found",
+		"LMS_PASSWORD",        // the guessed name, named
+		`"environment"`,       // opencode's key
+		"lms-sync --setup",    // the way out that needs no key at all
+		"rather than calling", // and the model is told not to loop
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("missing %q in:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "hunter2") {
+		t.Error("the message repeats a variable's value")
+	}
+	if strings.Contains(msg, "LMS_SYNC_VERSION") {
+		t.Error("the installer's own variables were reported as misspellings")
+	}
+
+	// And it is what the tool answers.
+	s := &mcpServer{cfg: cfg, dest: t.TempDir(), ctx: context.Background()}
+	if _, err := s.syncCourses(context.Background(), nil); err == nil ||
+		!strings.Contains(err.Error(), "LMS_PASS") {
+		t.Errorf("sync_courses did not explain the missing sign-in: %v", err)
+	}
+}
+
+func TestSignInSummaryNamesWhereEachCredentialCameFrom(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+	if got := signInSummary(cfg); !strings.Contains(got, "sync_courses cannot run") {
+		t.Errorf("no credentials: %q", got)
+	}
+	cfg.Password = "from-the-file"
+	cfg.ApplyEnv("37103", "")
+	if got, want := signInSummary(cfg), "username from LMS_USER, password from config.toml"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// ttyReader hands out one line per Read, as a terminal does, and records
+// whether echo was on at the moment each read began.
+type ttyReader struct {
+	lines  []string
+	echoOn *bool
+	seen   map[string]bool // line -> echo state when it was read
+}
+
+func (r *ttyReader) Read(b []byte) (int, error) {
+	if len(r.lines) == 0 {
+		return 0, io.EOF
+	}
+	l := r.lines[0]
+	r.lines = r.lines[1:]
+	r.seen[l] = *r.echoOn
+	return copy(b, l+"\n"), nil
+}
+
+// A Windows console decides whether a read echoes when the read begins, so a
+// read already waiting when echo was turned off would show the password. Each
+// read has to start after its question is asked — and the password's after
+// echo is off.
+func TestThePasswordIsReadWithEchoOff(t *testing.T) {
+	setupHome(t)
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+
+	echoOn := true
+	tty := &ttyReader{
+		lines:  []string{srv.URL, "37103", "correct-horse", filepath.Join(t.TempDir(), "C"), "n"},
+		echoOn: &echoOn,
+		seen:   map[string]bool{},
+	}
+	var out strings.Builder
+	p := newPrompter(tty, &out, func(on bool) error { echoOn = on; return nil })
+	manifest := LoadManifest(filepath.Join(t.TempDir(), "manifest.json"))
+	if code := setupOn(context.Background(), cfg, manifest, p, false); code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if tty.seen["correct-horse"] {
+		t.Error("the password was read by a read that began with echo on")
+	}
+	if !tty.seen["37103"] {
+		t.Error("echo was off for the username, which should show as it is typed")
+	}
+	if !echoOn {
+		t.Error("echo was left off")
+	}
+}

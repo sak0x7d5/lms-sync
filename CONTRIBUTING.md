@@ -120,8 +120,13 @@ Rules the checks cannot catch:
 - **`install.ps1` stays ASCII.** The daily task runs it through Windows
   PowerShell 5.1, which reads a file with no byte-order mark in the ANSI code
   page. There a UTF-8 em dash becomes a curly quote and ends a string early.
-- **Nothing prompts.** Under `curl | sh` there is no terminal to answer from.
-  Every choice is a flag or an environment variable.
+- **One question, never a required one.** The installers ask whether to sign
+  in, and only when a person is at a terminal: read from `/dev/tty` (under
+  `curl | sh`, stdin is the script), skipped under CI, `--update`,
+  `--no-setup` and an install that already has a username. Every other choice
+  is a flag or an environment variable.
+- **The installers never write `config.toml`.** `lms-sync --setup` does, so
+  the format and the credential rules stay in one place.
 - **Uninstall uses `rmdir`, never `rm -rf`** (and `Remove-Item` without
   `-Recurse`). Failing on a non-empty folder is what makes it unable to delete
   settings or a library.

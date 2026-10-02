@@ -58,7 +58,7 @@ A scheduled run can act on the exit code instead. See [Exit codes](command-line.
 - **The summary says some files failed.** Usually files an instructor linked that students cannot open. They are counted and skipped, and everything else synced. See [Reliability](how-it-works.md#reliability).
 - **"Another sync has been running since …"** Only one sync runs on a library at a time: a scheduled run, the interface or your AI app may have it. Wait for it. If nothing is running, delete the `.lms-sync.lock` file the message names. See [Safety](how-it-works.md#safety).
 - **"Could not write to …" or "Check free disk space."** Make sure the destination is a folder you can write to, and that the disk is not full.
-- **You cannot find where the files went.** With no destination set, they go to a `Courses` folder beside the program. Set "where to save" in the interface. See [Where it goes](install.md#where-it-goes).
+- **You cannot find where the files went.** With no destination set, they go to a `Courses` folder beside the program. Set "where to save" in the interface, or run `lms-sync --setup`. See [Where it goes](install.md#where-it-goes).
 - **Finding one file among hundreds.** Open `index.html` at the top of your library. See [index.html](how-it-works.md#indexhtml).
 - **Due dates are a few hours out.** Set your [time zone](configuration.md#time-zone). On a phone this is needed; see [Set your time zone](android.md#set-your-time-zone).
 - **A change you made in `config.toml` did not stick**, such as `timezone`. The interface or an AI app running lms-sync wrote its own copy of the settings back over it. Close them first, then edit. See [Where the file lives](configuration.md#where-the-file-lives).
@@ -70,6 +70,7 @@ A scheduled run can act on the exit code instead. See [Exit codes](command-line.
 - **Search stopped finding things in a Google Drive or OneDrive folder.** Keep the library available offline. See [Use a synced folder](cloud-backup.md#use-a-synced-folder).
 - **Your AI app does not show lms-sync, or finds no courses.** See [When it doesn't work](ai-assistants.md#when-it-doesnt-work).
 - **Claude won't start, or shows a settings error, after connecting.** The settings file is broken, usually by a missing comma or brace. Copy `%APPDATA%\Claude\claude_desktop_config.json.bak` back over `claude_desktop_config.json`, or fix the comma or brace ([how the file fits together](ai-assistants.md#claude-desktop)). Then quit and reopen Claude. Its logs are in `%APPDATA%\Claude\logs` (`mcp-server-lms.log`), or `~/Library/Logs/Claude` on a Mac.
+- **The assistant says no sign-in reached lms-sync, though you put it in the app.** The app did not pass it on. See [When it doesn't work](ai-assistants.md#when-it-doesnt-work).
 - **The assistant keeps saying the sign-in was refused, even after you fixed it.** Quit and reopen your AI app. It keeps the settings it started with.
 - **The assistant says something is not there that was just posted.** Ask it to sync that course first. See [Syncing from a conversation](ai-assistants.md#syncing-from-a-conversation).
 

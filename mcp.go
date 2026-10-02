@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -154,6 +155,10 @@ func serveMCP(ctx context.Context, cfg *Config) int {
 	if _, err := os.Stat(dest); err != nil {
 		mcpLog("nothing to serve yet — run a sync first")
 	}
+	// Whether LMS_USER and LMS_PASS arrived is something only this process
+	// can see. An app that put them under a key it does not read starts the
+	// server without them, and this line is where that shows.
+	mcpLog("Sign-in:   %s", signInSummary(cfg))
 
 	// What this build actually offers, derived from the tables that serve it
 	// so the two can never disagree. A client discovers this over the
@@ -1044,6 +1049,126 @@ func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string,
 	return b.String(), nil
 }
 
+// readEnv is every LMS_ variable this program reads, so that one it does not
+// read can be pointed out by name. The installers' LMS_SYNC_ variables are
+// matched by prefix in strayEnv.
+var readEnv = map[string]bool{
+	"LMS_USER": true, "LMS_PASS": true,
+	"LMS_DRIVE_CLIENT_ID": true, "LMS_DRIVE_CLIENT_SECRET": true,
+}
+
+// lookupEnv finds a variable in an environ list. Windows compares names
+// without regard to case, and so does os.Getenv there.
+func lookupEnv(environ []string, name string) (string, bool) {
+	for _, kv := range environ {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if k == name || (runtime.GOOS == "windows" && strings.EqualFold(k, name)) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// strayEnv lists LMS_ variables that are set but that nothing here reads,
+// which is what a guessed name like LMS_PASSWORD looks like.
+func strayEnv(environ []string) []string {
+	var out []string
+	for _, kv := range environ {
+		k, _, _ := strings.Cut(kv, "=")
+		name := k
+		if runtime.GOOS == "windows" {
+			name = strings.ToUpper(k)
+		}
+		if strings.HasPrefix(strings.ToUpper(k), "LMS_") && !readEnv[name] &&
+			!strings.HasPrefix(name, "LMS_SYNC_") {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// missingCredentials explains a sync with nothing to sign in with, by saying
+// what arrived from each place a credential can come from.
+//
+// "No credentials are configured" was true and no help. The student had put
+// them in their AI app's settings, under the key most apps use — and
+// opencode, which names that block "environment" rather than "env", ignored
+// it without a word. The variables never reached this process, and nothing
+// here said so: the answer to "why is it rejecting what I gave it?" was
+// that it had been given nothing, which only the process itself can see.
+func missingCredentials(cfg *Config, environ []string) string {
+	var b strings.Builder
+	b.WriteString("No LMS sign-in reached lms-sync, so a sync cannot log in. " +
+		"The other tools work without one.\n\nWhat this server was started with:\n")
+
+	for _, name := range []string{"LMS_USER", "LMS_PASS"} {
+		state := "not set"
+		if v, ok := lookupEnv(environ, name); ok {
+			state = "set"
+			if strings.TrimSpace(v) == "" {
+				state = "set, but empty"
+			}
+		}
+		fmt.Fprintf(&b, "  %-9s %s\n", name, state)
+	}
+
+	file := "not found"
+	if cfg.found {
+		user, pass := cfg.savedUsername() != "", cfg.savedPassword() != ""
+		switch {
+		case user && pass:
+			file = "holds a username and a password"
+		case user:
+			file = "holds a username but no password"
+		case pass:
+			file = "holds a password but no username"
+		default:
+			file = "holds neither a username nor a password"
+		}
+	}
+	fmt.Fprintf(&b, "  %s: %s\n", cfg.path, file)
+
+	if stray := strayEnv(environ); len(stray) > 0 {
+		fmt.Fprintf(&b, "\nAlso set, but not read by lms-sync: %s. "+
+			"The names it reads are exactly LMS_USER and LMS_PASS.\n", strings.Join(stray, ", "))
+	}
+
+	b.WriteString("\nIf they are in the AI app's settings, the app did not pass them on. Check that:\n" +
+		"- the names are exactly LMS_USER and LMS_PASS;\n" +
+		"- they sit in the block that app reads: \"env\" in Claude Desktop, Claude Code and " +
+		"Cursor, but \"environment\" in opencode, which ignores \"env\" without a word;\n" +
+		"- the app was quit completely and reopened since: it keeps the settings it started with.\n" +
+		"\nOr have the student run `lms-sync --setup` in a terminal once. It checks the sign-in " +
+		"with the LMS and saves it in config.toml, after which the app's entry needs no " +
+		"credentials at all. Tell the student which of these applies rather than calling " +
+		"sync_courses again.")
+	return b.String()
+}
+
+// signInSummary is the startup log's line about credentials: where each one
+// came from, or that sync_courses has none to use.
+func signInSummary(cfg *Config) string {
+	user, pass := cfg.credentialOrigins()
+	if user == "" && pass == "" {
+		return "none, so sync_courses cannot run; every other tool works without one"
+	}
+	from := func(origin string) string {
+		if origin == "" {
+			return "missing"
+		}
+		return "from " + origin
+	}
+	line := "username " + from(user) + ", password " + from(pass)
+	if user == "" || pass == "" {
+		line += "; sync_courses cannot run until both are there"
+	}
+	return line
+}
+
 // syncCourses starts a sync, or reports the one already under way, waiting
 // up to syncWait for it to end either way.
 func (s *mcpServer) syncCourses(ctx context.Context, args json.RawMessage) (string, error) {
@@ -1056,9 +1181,7 @@ func (s *mcpServer) syncCourses(ctx context.Context, args json.RawMessage) (stri
 		}
 	}
 	if strings.TrimSpace(s.cfg.Username) == "" || strings.TrimSpace(s.cfg.Password) == "" {
-		return "", fmt.Errorf("no LMS credentials are configured, so a sync cannot log in. "+
-			"Set them in %s, or in the LMS_USER and LMS_PASS environment variables",
-			s.cfg.path)
+		return "", errors.New(missingCredentials(s.cfg, os.Environ()))
 	}
 
 	// An outcome nobody has been told about is the answer to this call.

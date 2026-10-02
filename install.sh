@@ -19,9 +19,12 @@
 # the real file — so its settings follow the binary instead of being written
 # into your bin directory.
 #
-# Nothing here asks a question. Under `curl | sh` there is no terminal to read
-# an answer from, so every choice is a flag or an environment variable; run
-# with --help to see them.
+# It asks one question, at the very end and only when somebody is at a
+# terminal to answer it: whether to sign in to the LMS now. Everything else is
+# a flag or an environment variable, and so is that (--no-setup); run with
+# --help to see them. Under `curl | sh` stdin is this script, so the answer is
+# read from /dev/tty — and where there is none, as under a scheduler or in CI,
+# the question is simply not asked.
 
 set -eu
 
@@ -80,6 +83,13 @@ else
 	AUTO_UPDATE=yes
 fi
 
+if [ -n "${LMS_SYNC_NO_SETUP:-}" ]; then
+	SETUP=no
+else
+	SETUP=yes
+fi
+SETUP_DONE=no
+
 # ---------------------------------------------------------------------------
 # Saying things
 # ---------------------------------------------------------------------------
@@ -122,6 +132,7 @@ Options (pass them after `| sh -s --`):
   --bin-dir DIR        where the symlink that puts it on PATH goes
   --no-modify-path     do not touch any shell profile
   --no-auto-update     do not schedule the daily update check
+  --no-setup           do not offer to sign in to the LMS at the end
   --skip-checksum      install without verifying SHA256SUMS
   --update             bring an existing install up to the newest release;
                        this is what the daily schedule runs
@@ -130,8 +141,8 @@ Options (pass them after `| sh -s --`):
   -h, --help           this
 
 Each has an environment variable: LMS_SYNC_VERSION, LMS_SYNC_INSTALL_DIR,
-LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH, LMS_SYNC_NO_AUTO_UPDATE. A flag
-wins over the variable.
+LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH, LMS_SYNC_NO_AUTO_UPDATE,
+LMS_SYNC_NO_SETUP. A flag wins over the variable.
 
   curl -fsSL .../install.sh | sh -s -- --version v1.3.0
 USAGE
@@ -812,6 +823,83 @@ unschedule_updates() {
 }
 
 # ---------------------------------------------------------------------------
+# Signing in
+#
+# The installer asks whether to, and lms-sync --setup does it: asks for the
+# account, checks it with the LMS, finds the courses and writes config.toml.
+# The installer never writes that file itself. Its format, and the rule that
+# a password from the environment is never put in it, belong to the program,
+# and a second writer here would be how they drift.
+# ---------------------------------------------------------------------------
+
+# can_ask reports whether somebody is at a terminal to answer.
+#
+# /dev/tty rather than stdin, which under `curl | sh` is this script. Opened
+# by `true` in a subshell, never by `:` — a redirection that fails on a
+# special built-in ends a non-interactive sh outright, which here would be
+# the whole install. CI is checked by name as well, because a runner that
+# does hand out a terminal still has nobody behind it.
+can_ask() {
+	[ -z "${CI:-}" ] || return 1
+	[ -t 1 ] || return 1
+	(true </dev/tty) 2>/dev/null
+}
+
+# is_set_up reports whether config.toml already names an account — which is
+# what an upgrade over an existing install looks like. Asking there would be
+# the same question at every reinstall, with one sensible answer.
+is_set_up() {
+	[ -f "$INSTALL_DIR/config.toml" ] &&
+		grep -Eq "^[[:space:]]*username[[:space:]]*=[[:space:]]*['\"]?[^'\"[:space:]#]" \
+			"$INSTALL_DIR/config.toml" 2>/dev/null
+}
+
+# offer_setup asks, and runs lms-sync --setup on a yes. Enter means yes: the
+# person is at the keyboard now, and later is when a setup gets forgotten.
+#
+# It runs last, after everything an install must do is done and said, so
+# that walking away from a question — or Ctrl-C during a first sync that
+# takes minutes — cannot leave an install half-made.
+offer_setup() {
+	if [ "$SETUP" != yes ] || ! can_ask; then
+		return 0
+	fi
+	say 'Sign in to your LMS now?'
+	say ''
+	say '  1) Yes, here: sign in, check it works, find your courses'
+	say '  2) Not now'
+	say ''
+	offer_tries=0
+	while :; do
+		printf 'Choose 1 or 2 [1]: '
+		offer_answer=''
+		# A read that fails is an answer too: end of input means nobody is
+		# going to type one.
+		read -r offer_answer </dev/tty || offer_answer=2
+		case "$offer_answer" in
+		'' | 1) break ;;
+		2)
+			say ''
+			return 0
+			;;
+		esac
+		offer_tries=$((offer_tries + 1))
+		if [ "$offer_tries" -ge 3 ]; then
+			say ''
+			return 0
+		fi
+	done
+	say ''
+	# Setup says for itself why it stopped, and the summary after this says
+	# how to start it again, so a failure here needs no words of its own.
+	if "$TARGET" --setup </dev/tty; then
+		SETUP_DONE=yes
+	else
+		say ''
+	fi
+}
+
+# ---------------------------------------------------------------------------
 # Install
 # ---------------------------------------------------------------------------
 
@@ -918,14 +1006,30 @@ this one. Report it at https://github.com/$REPO/issues"
 		say "  export PATH=\"$BIN_DIR:\$PATH\""
 		say ""
 	fi
-	say "Run lms-sync to open the interface."
+
+	if is_set_up; then
+		say "Already set up: $INSTALL_DIR/config.toml holds your sign-in."
+		say "Run lms-sync --sync to fetch what is new, or lms-sync to open the"
+		say "interface. lms-sync --setup changes the sign-in."
+		say ""
+		return 0
+	fi
+
+	offer_setup
+	if [ "$SETUP_DONE" = yes ]; then
+		say ""
+		return 0
+	fi
+
+	say "Run lms-sync to open the interface and sign in there, or"
+	say "lms-sync --setup to sign in from this terminal."
 	say ""
 	# The tool resolves a relative destination against the folder its config
 	# is in, and ships with the relative default "Courses" — so until a
 	# destination is set, coursework lands inside the install directory. Say
 	# so here rather than leaving someone to find a library in a dot folder.
-	say "Settings live in $INSTALL_DIR. Set a destination in the interface —"
-	say "until you do, courses land in $INSTALL_DIR/Courses."
+	say "Settings live in $INSTALL_DIR. Until you choose where to save,"
+	say "courses land in $INSTALL_DIR/Courses."
 	say ""
 }
 
@@ -1133,6 +1237,7 @@ parse_args() {
 		--bin-dir=*) BIN_DIR_OPT="${1#*=}" ;;
 		--no-modify-path) MODIFY_PATH=no ;;
 		--no-auto-update) AUTO_UPDATE=no ;;
+		--no-setup) SETUP=no ;;
 		--skip-checksum) SKIP_CHECKSUM=yes ;;
 		--update) ACTION=update ;;
 		--uninstall) ACTION=uninstall ;;

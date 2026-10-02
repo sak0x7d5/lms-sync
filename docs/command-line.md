@@ -11,6 +11,7 @@ Give one mode per command. If you give two, only one of them runs.
 | Mode | What it does |
 |---|---|
 | `lms-sync` | Opens the interface in your browser. This is the default. |
+| `lms-sync --setup` | Signs you in from the terminal instead: asks for your LMS address, username, password and where to save, checks the sign-in with the LMS before saving anything, and offers a first sync. Enter keeps each current answer. The installer offers this at the end; see [Signing in](install.md#signing-in). |
 | `lms-sync --sync` | Syncs every course, then exits. Use this for scheduled runs. |
 | `lms-sync --dry-run` | Lists what a sync would download, and writes nothing: no folders, no `index.html`, no config. |
 | `lms-sync --discover` | Finds your courses and saves them, **replacing** your course list with the LMS's titles. Folder names you changed are lost. A normal sync already adds new courses, so you rarely need this. See [Your course list](configuration.md#your-course-list). |
@@ -45,7 +46,7 @@ A sync prints each file as it arrives. Near the end, under "Open this to browse 
 | `0` | Everything worked. |
 | `1` | Something failed: some files could not be downloaded, or the run itself did (`network`, `tls`, `session`, `server`, `filesystem`). Also when `config.toml` exists but cannot be read. |
 | `2` | Bad credentials or configuration (`auth`, `config`). Running again will not help until you fix it. |
-| `130` | Interrupted by Ctrl-C, or stopped by the system (SIGTERM), during `--sync` or `--dry-run`. |
+| `130` | Interrupted by Ctrl-C, or stopped by the system (SIGTERM), during `--sync`, `--dry-run` or `--setup`. |
 
 The interface's **Stop** button ends a sync but not the program, so it gives no exit code.
 
@@ -55,7 +56,7 @@ A scheduler can act on these. Code `2`, for example, means the password needs fi
 
 ## Run it on a schedule
 
-Run lms-sync once by hand first, to check it signs in and saves where you expect. A scheduled run finds its settings beside the program, so it needs no working folder.
+Sign in once first, with `lms-sync --setup` or the interface, to check it signs in and saves where you expect. A scheduled run finds its settings beside the program, so it needs no working folder.
 
 - **Credentials** come from `config.toml`. To keep the password out of that file, give the scheduler `LMS_USER` and `LMS_PASS` instead. See [Credentials](configuration.md#credentials).
 - **One sync runs per library at a time.** If the interface or an AI app is already syncing into the same folder, the scheduled run refuses to start. See [Safety](how-it-works.md#safety).

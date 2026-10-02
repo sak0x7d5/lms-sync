@@ -90,7 +90,7 @@ irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | 
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
 ```
 
-It needs no administrator rights. The installer picks the right build for your machine, checks it against the release's published checksums, gives the program a folder of its own, and schedules a daily check for updates ([how updates work](docs/install.md#updates); uninstalling removes it). Read [install.ps1](install.ps1) or [install.sh](install.sh) first if you like. On a phone, start with [lms-sync on Android](docs/android.md): where you save decides whether anything else on the phone can open the files.
+It needs no administrator rights. The installer picks the right build for your machine, checks it against the release's published checksums, gives the program a folder of its own, and schedules a daily check for updates ([how updates work](docs/install.md#updates); uninstalling removes it). At the end it offers to sign you in, right there: that is [step 3](#3-sign-in). Read [install.ps1](install.ps1) or [install.sh](install.sh) first if you like. On a phone, start with [lms-sync on Android](docs/android.md): where you save decides whether anything else on the phone can open the files.
 
 ### 2. Make PDFs searchable
 
@@ -105,7 +105,18 @@ Word, PowerPoint and Excel files are searchable straight away. Most lecture note
 
 If you add it after your first sync, run `lms-sync --extract` once. A scanned PDF is a picture of text, so it has nothing to search.
 
-### 3. Run it and sign in
+### 3. Sign in
+
+The installer ends by asking **Sign in to your LMS now?** Press Enter, and answer in the same window:
+
+- **LMS address** — Enter keeps `https://lms.iba.edu.pk` (IBA Karachi). Anywhere else, type yours; just `lms.youruni.edu` is enough.
+- **Username** and **password** — your normal LMS sign-in, often a roll number rather than an email. The password does not show as you type.
+- **Save courses to** — Enter takes the suggested `Courses` folder in your Documents, or type a whole path of your own.
+
+It checks your sign-in with the LMS before it saves anything, lists your courses, then offers to download them. The first download can take several minutes; later syncs fetch only what changed. Skipped it, or want to change something? Run `lms-sync --setup` any time ([more](docs/install.md#signing-in)).
+
+<details>
+<summary>Prefer a page in your browser?</summary>
 
 Open a **new** PowerShell window (or terminal) and run `lms-sync`. A settings page opens in your browser.
 
@@ -114,6 +125,8 @@ Open a **new** PowerShell window (or terminal) and run `lms-sync`. A settings pa
 - **Save files to** starts as `Courses`, inside the program's own hidden folder. Press **Browse…** and pick (or make) a folder you can find, such as Documents → Courses. If you type it instead, type the whole path, like `C:\Users\you\Documents\Courses`: a short one like `Documents\Courses` ends up inside the program's folder.
 
 Press **Find my courses**. That saves your settings and lists your courses. Then press **Sync**. The first sync fetches everything and can take several minutes; later ones fetch only what changed. Keep the window you started it from open until the sync finishes. After that you can close it: your AI app starts lms-sync by itself whenever it needs it.
+
+</details>
 
 **If the sign-in is refused,** check your username and password before trying again. Several failed attempts can lock your LMS account.
 

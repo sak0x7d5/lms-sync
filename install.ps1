@@ -20,8 +20,10 @@
 # Task Scheduler task that runs the copy with -Update once a day, so nobody
 # has to come back to GitHub for a fix. -NoAutoUpdate turns that off.
 #
-# Nothing here asks a question. Run as `irm | iex` there is nothing to read an
-# answer from, so every choice is a parameter.
+# It asks one question, at the very end and only when somebody is at the
+# console to answer it: whether to sign in to the LMS now. Everything else is
+# a parameter, and so is that (-NoSetup). The daily task, CI and anything run
+# with -NonInteractive are never asked.
 #
 # This file is ASCII on purpose, and CI holds it to that. The daily task runs
 # it with `powershell.exe -File`, and Windows PowerShell 5.1 reads a file with
@@ -41,6 +43,9 @@ param(
 
 	# Do not register the daily update task.
 	[switch] $NoAutoUpdate,
+
+	# Do not offer to sign in to the LMS at the end.
+	[switch] $NoSetup,
 
 	# Install without checking the download against SHA256SUMS.
 	[switch] $SkipChecksum,
@@ -461,6 +466,93 @@ function Set-UpdateSchedule {
 	Register-UpdateTask $Dir
 }
 
+# ---------------------------------------------------------------------------
+# Signing in
+#
+# The installer asks whether to, and `lms-sync --setup` does it: asks for the
+# account, checks it with the LMS, finds the courses and writes config.toml.
+# The installer never writes that file itself. Its format, and the rule that
+# a password from the environment is never put in it, belong to the program.
+# ---------------------------------------------------------------------------
+
+# Test-CanAsk reports whether somebody is at this console to answer. CI is
+# checked by name, because a runner can look interactive with nobody behind
+# it; the ISE is excluded because a program it starts cannot read its input.
+function Test-CanAsk {
+	if ($env:CI) { return $false }
+	if (-not [Environment]::UserInteractive) { return $false }
+	if ([Environment]::GetCommandLineArgs() -match '^-noni') { return $false }
+	if ($Host.Name -eq 'Windows PowerShell ISE Host') { return $false }
+	try {
+		if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) { return $false }
+	} catch {
+		return $false
+	}
+	return $true
+}
+
+# Test-SetUp reports whether config.toml already names an account, which is
+# what an upgrade over an existing install looks like. Read with .NET rather
+# than Select-String, for the reason Get-Sha256 gives.
+function Test-SetUp {
+	param([string] $Dir)
+	$cfg = Join-Path $Dir 'config.toml'
+	if (-not (Test-Path -LiteralPath $cfg)) { return $false }
+	try {
+		foreach ($line in [System.IO.File]::ReadAllLines($cfg)) {
+			if ($line -match '^\s*username\s*=\s*[''"]?[^''"\s#]') { return $true }
+		}
+	} catch { }
+	return $false
+}
+
+# Invoke-Setup asks, and runs lms-sync --setup on a yes. Enter means yes: the
+# person is at the keyboard now, and later is when a setup gets forgotten.
+# Returns whether setup finished.
+function Invoke-Setup {
+	param([string] $Exe)
+	if ($NoSetup -or $env:LMS_SYNC_NO_SETUP) { return $false }
+	if (-not (Test-CanAsk)) { return $false }
+
+	Write-Host 'Sign in to your LMS now?'
+	Write-Host ''
+	Write-Host '  1) Yes, here: sign in, check it works, find your courses'
+	Write-Host '  2) Not now'
+	Write-Host ''
+	$go = $false
+	for ($i = 0; $i -lt 3; $i++) {
+		try {
+			$answer = "$(Read-Host 'Choose 1 or 2 [1]')".Trim()
+		} catch {
+			break
+		}
+		if ($answer -eq '' -or $answer -eq '1') { $go = $true; break }
+		if ($answer -eq '2') { break }
+	}
+	Write-Host ''
+	if (-not $go) { return $false }
+
+	# Start-Process rather than `& $Exe`. A function's output is its return
+	# value, so a native program called inside one has its stdout captured
+	# into that value instead of shown: every question setup asks would be
+	# swallowed, and the answer to them typed into a console showing nothing.
+	# -NoNewWindow hands it this console as it is. The handle is read before
+	# waiting because without that 5.1 can report no exit code at all.
+	#
+	# Setup says for itself why it stopped, and the summary after this says
+	# how to start it again, so a failure here needs no words of its own.
+	try {
+		$p = Start-Process -FilePath $Exe -ArgumentList '--setup' -NoNewWindow -PassThru
+		$null = $p.Handle
+		$p.WaitForExit()
+		$ok = ($p.ExitCode -eq 0)
+	} catch {
+		$ok = $false
+	}
+	Write-Host ''
+	return $ok
+}
+
 function Install-LmsSync {
 	Write-Host ''
 	Write-Host 'lms-sync installer'
@@ -572,13 +664,29 @@ then run this again.
 	Write-Host ''
 	& $exe --version
 	Write-Host ''
-	Write-Host 'Open a new terminal, then run lms-sync to open the interface.'
+	if (-not $NoModifyPath) {
+		Write-Host 'This window can run lms-sync now. Windows opened before it need reopening first.'
+		Write-Host ''
+	}
+
+	if (Test-SetUp $dir) {
+		Write-Host "Already set up: $dir\config.toml holds your sign-in."
+		Write-Host 'Run lms-sync --sync to fetch what is new, or lms-sync to open the'
+		Write-Host 'interface. lms-sync --setup changes the sign-in.'
+		Write-Host ''
+		return
+	}
+
+	if (Invoke-Setup $exe) { return }
+
+	Write-Host 'Run lms-sync to open the interface and sign in there, or'
+	Write-Host 'lms-sync --setup to sign in from this window.'
 	Write-Host ''
 	# The tool resolves a relative destination against the folder its config
 	# is in, and ships with the relative default "Courses", so until a
 	# destination is set the coursework lands inside the install folder.
-	Write-Host "Settings live in $dir. Set a destination in the interface;"
-	Write-Host "until you do, courses land in $dir\Courses."
+	Write-Host "Settings live in $dir. Until you choose where to save,"
+	Write-Host "courses land in $dir\Courses."
 	Write-Host ''
 }
 

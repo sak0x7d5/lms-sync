@@ -475,6 +475,26 @@ func (c *Config) savedPassword() string {
 	return c.Password
 }
 
+// credentialOrigins names where this run's username and password came from:
+// the environment variable, the config file, or "" for nowhere at all.
+func (c *Config) credentialOrigins() (user, pass string) {
+	file := "config.toml"
+	if c.path != "" {
+		file = filepath.Base(c.path)
+	}
+	origin := func(value string, fromEnv bool, env string) string {
+		switch {
+		case value == "":
+			return ""
+		case fromEnv:
+			return env
+		}
+		return file
+	}
+	return origin(c.Username, c.userFromEnv, "LMS_USER"),
+		origin(c.Password, c.passFromEnv, "LMS_PASS")
+}
+
 // writeCredential emits one credential line, or says where the credential
 // actually comes from when the file has none of its own. An empty password
 // line would read as "none configured" on a setup that works perfectly, and

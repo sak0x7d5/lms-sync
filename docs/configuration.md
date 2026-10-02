@@ -2,7 +2,7 @@
 
 Every setting lms-sync reads, where it keeps them, and when you would change one. Back to the [README](../README.md).
 
-You rarely need to open the file. The interface writes it for you, and covers the LMS address, username, password, where to save, which tabs to mirror, and whether to keep each tab's page. The Google Drive backup is not shown there yet: it appears once you [set up your own Google project](cloud-backup.md#use-your-own-google-project). Everything else on this page is set in the file.
+You rarely need to open the file. The interface writes it for you, and so does `lms-sync --setup` in a terminal ([Signing in](install.md#signing-in)). The interface covers the LMS address, username, password, where to save, which tabs to mirror, and whether to keep each tab's page. The Google Drive backup is not shown there yet: it appears once you [set up your own Google project](cloud-backup.md#use-your-own-google-project). Everything else on this page is set in the file.
 
 ## Where the file lives
 
@@ -15,7 +15,7 @@ Things to know:
 
 - **Move `manifest.json` with the program.** It records what has been downloaded. Without it every file looks new, and the whole library is downloaded again.
 - **`--config PATH` reads a config file from somewhere else.** `manifest.json` still stays beside the program.
-- **A relative `destination` is resolved against the folder `config.toml` is in**, never the folder you ran the command from. The default, `Courses`, therefore lands inside the install folder. Set a real destination in the interface (**Save files to**).
+- **A relative `destination` is resolved against the folder `config.toml` is in**, never the folder you ran the command from. The default, `Courses`, therefore lands inside the install folder. Set a real destination in the interface (**Save files to**) or with `lms-sync --setup`, which writes it out in full.
 - **Write the destination as a full path.** `~` is not understood: `~/Courses` makes a folder called `~` inside the install folder. `$HOME/Courses` and `${VAR}` do work. On Windows, `%USERPROFILE%` does not, so write the path out in full, such as `D:\University\Courses`.
 - **On the first run there is no file.** lms-sync uses the defaults below and writes the file the first time it saves.
 

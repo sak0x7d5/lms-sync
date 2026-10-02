@@ -19,8 +19,9 @@ irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | 
 
 On Windows, the window you installed from can run `lms-sync` straight away.
 Windows that were already open cannot find it until you reopen them. On macOS
-and Linux the installer tells you if you need a new terminal. Then run
-`lms-sync` and carry on from [Quick start](../README.md#quick-start).
+and Linux the installer tells you if you need a new terminal. At the end it
+offers to [sign you in](#signing-in); then carry on from
+[Quick start](../README.md#quick-start).
 
 On a phone, start with [lms-sync on Android](android.md#install) instead:
 there are two steps before this command.
@@ -32,12 +33,58 @@ The installer:
 2. checks it against the release's `SHA256SUMS`, and stops if it does not
    match;
 3. puts it in a folder of its own and puts `lms-sync` on your PATH;
-4. schedules a daily [update check](#updates).
+4. schedules a daily [update check](#updates);
+5. offers to [sign you in](#signing-in) to your LMS.
 
-It needs no administrator rights and no `sudo`. It never stops to ask a
-question: every choice is a flag (see [Installer options](#installer-options)).
+It needs no administrator rights and no `sudo`. It asks one question, at the
+end, and only when you are at a terminal to answer it. Every other choice is a
+flag (see [Installer options](#installer-options)).
 It is a plain script, so read it first if you would rather:
 [install.sh](../install.sh), [install.ps1](../install.ps1).
+
+## Signing in
+
+The installer finishes by asking:
+
+```text
+Sign in to your LMS now?
+
+  1) Yes, here: sign in, check it works, find your courses
+  2) Not now
+
+Choose 1 or 2 [1]:
+```
+
+Enter or `1` runs `lms-sync --setup`, in the same window. It asks for your LMS
+address, username, password and where to save, then:
+
+- **signs in to check them before it saves anything.** A wrong password is
+  asked for again. After three refusals it stops, rather than risk your LMS
+  locking the account;
+- **lists your courses** and saves everything to `config.toml`;
+- **offers to download your courses** straight away;
+- **prints what to give an AI app**: the program's full path and `--mcp`.
+  Your sign-in is in `config.toml`, so the app's entry needs nothing else. See
+  [Connect your AI app](ai-assistants.md#connect-your-ai-app).
+
+The password does not show as you type. For where to save, it suggests a
+`Courses` folder in your Documents (on a phone, `/storage/emulated/0/Courses`;
+see [Where to save](android.md#where-to-save)). Type a whole path to choose
+another; `~` works.
+
+The question is skipped, and the install finishes exactly as it would without
+it:
+
+- when nobody is at a terminal: a scheduled run, CI, or a script run with no
+  terminal attached;
+- when `config.toml` already holds a username. Upgrading never asks you to
+  sign in again;
+- with `--no-setup` (`-NoSetup` on Windows).
+
+**Run `lms-sync --setup` any time** to sign in later or to change something.
+Enter keeps each current answer, and a library you already have stays where it
+is unless you type another folder. Moving it would download every file again.
+The interface does the same job in your browser: run `lms-sync`.
 
 ## Where it goes
 
@@ -62,7 +109,8 @@ folder of its own. That folder holds:
 | `install.sh` or `install.ps1` | a verified copy of the installer, which the daily update runs |
 | `update.log` | the result of the last update check |
 
-Your courses go wherever you set **where to save** in the interface — see
+Your courses go wherever you choose when you [sign in](#signing-in), or set as
+**where to save** in the interface — see
 [What you get](../README.md#what-you-get) for what arrives there. Set it on
 the first run. Until you do, courses land in a `Courses` folder inside the
 install folder above, which is hidden on macOS and Linux and awkward to find
@@ -157,13 +205,15 @@ PowerShell needs the script as a block before it will take a parameter:
 | `--bin-dir DIR` | — | `LMS_SYNC_BIN_DIR` | where the symlink that puts it on your PATH goes |
 | `--no-modify-path` | `-NoModifyPath` | `LMS_SYNC_NO_MODIFY_PATH` | leave your shell startup file (Windows: your PATH) alone |
 | `--no-auto-update` | `-NoAutoUpdate` | `LMS_SYNC_NO_AUTO_UPDATE` | do not schedule the [daily update check](#updates) |
+| `--no-setup` | `-NoSetup` | `LMS_SYNC_NO_SETUP` | do not offer to [sign you in](#signing-in) at the end |
 | `--skip-checksum` | `-SkipChecksum` | — | install without checking `SHA256SUMS` — see [Verify a download](#verify-a-download) |
 | `--update` | `-Update` | — | bring an existing install up to the newest release; this is what the daily check runs |
 | `--uninstall` | `-Uninstall` | — | [remove it](#uninstall) |
 | `-h`, `--help` | — | — | list these options |
 
-A flag wins over its environment variable. `install.sh` reads all five
-variables; `install.ps1` reads only `LMS_SYNC_NO_AUTO_UPDATE`. Windows has no
+A flag wins over its environment variable. `install.sh` reads all six
+variables; `install.ps1` reads only `LMS_SYNC_NO_AUTO_UPDATE` and
+`LMS_SYNC_NO_SETUP`. Windows has no
 `--bin-dir` because it puts the install folder itself on your PATH.
 
 ## Uninstall

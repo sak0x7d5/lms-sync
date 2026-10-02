@@ -19,13 +19,17 @@ need root.
    pkg install cronie termux-services   # for the daily update check
    termux-setup-storage        # once; Android asks for the storage permission
    curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
-   lms-sync
    ```
 
 The installer recognises Termux and links `lms-sync` into `$PREFIX/bin`, which
-is already on your PATH, so it edits no startup file. `lms-sync` opens the
-interface in your phone's browser, the same as on a laptop. Before you press
-**Sync**, set where to save — see the next section.
+is already on your PATH, so it edits no startup file. At the end it offers to
+sign you in, right there in Termux: press Enter. When it asks where to save,
+Enter takes `/storage/emulated/0/Courses`, the folder the next section
+recommends.
+
+Or skip that, and run `lms-sync` later: it opens the interface in your
+phone's browser, the same as on a laptop. Before you press **Sync** there, set
+where to save — see the next section.
 
 It needs a 64-bit phone: `uname -m` prints `aarch64` on one. There is no
 32-bit ARM release; [CONTRIBUTING.md](../CONTRIBUTING.md#cross-compile) says
@@ -36,9 +40,10 @@ Everything else about installing — where the files go, options, uninstalling
 
 ## Where to save
 
-**Type `/storage/emulated/0/Courses` into Save files to.** Your phone's file
-picker calls that *Internal storage ▸ Courses*. Type the full path: the field
-does not understand `~`. From the Termux shell, the same folder is
+**Save to `/storage/emulated/0/Courses`.** Your phone's file picker calls that
+*Internal storage ▸ Courses*. `lms-sync --setup` suggests it. In the
+interface, type it into **Save files to** as a full path: that field does not
+understand `~`. From the Termux shell, the same folder is
 `~/storage/shared/Courses`.
 
 Do this before your first sync. Termux's own home folder is private to the
