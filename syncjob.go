@@ -270,8 +270,10 @@ func changedReport(changed []string) string {
 		// something in it was posted or edited — but which one only the
 		// page itself says.
 		b.WriteString("\nA changed .html page is a whole tab (Announcements, Assignments, " +
-			"Overview, Syllabus): something on it was posted or edited. Read it with " +
-			"read_material to see what; each notice says when it was posted.\n")
+			"Calendar, Overview, Syllabus): something on it was posted or edited, or on " +
+			"Assignments the student's own submission state changed. Read it with " +
+			"read_material to see what — each notice says when it was posted — or ask " +
+			"deadlines for what is due.\n")
 	}
 	return b.String()
 }

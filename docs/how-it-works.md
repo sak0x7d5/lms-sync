@@ -9,7 +9,7 @@ Every sync runs the same steps, whether you started it from the interface, a ter
 1. **Sign in.** lms-sync uses Sakai's own username and password form, and keeps the session in a cookie jar. It then checks the session is real, because Sakai answers a wrong password with an ordinary page.
 2. **Find your courses.** It reads the course links on your LMS home page. New courses are added to your list, folder names you changed are kept, and nothing is removed. See [Your course list](configuration.md#your-course-list).
 3. **Check each course's tabs.** Only the tabs a course actually has, and that you switched on, are visited.
-4. **Read each tab.** Resources and Drop Box are folder listings, which lms-sync walks folder by folder. Overview, Syllabus, Announcements and Assignments are pages. Overview is always captured from the page. The other three come from Sakai's JSON API where your LMS offers it, and are captured from the page where it does not. Files a page links to are downloaded beside it. Links off the LMS go into `Links.md`.
+4. **Read each tab.** Resources and Drop Box are folder listings, which lms-sync walks folder by folder. Overview, Syllabus, Announcements, Assignments and Calendar are pages. Overview is always captured from the page. Syllabus, Announcements and Assignments come from Sakai's JSON API where your LMS offers it, and are captured from the page where it does not. Calendar comes only from the JSON API. Files a page links to are downloaded beside it. Links off the LMS go into `Links.md`.
 5. **Download only what is new or changed.** `manifest.json`, beside the program, records each file's size and a fingerprint of each saved page. A file is skipped while it is still where it was saved and its size matches. A deck re-uploaded under the same name, at a different size, is fetched again. The record is saved after each course, so an interrupted run does not start over.
 6. **Rebuild [`index.html`](#indexhtml)**, one page listing everything you have.
 7. **Make new files searchable.** See [The searchable copy](#the-searchable-copy).
@@ -22,7 +22,7 @@ Your destination ends up holding:
 | a folder per course | the course's files, with each tab's own folder inside |
 | `index.html` | everything you have on one page |
 | `.lms-index/` | the searchable text of every file. Safe to delete; `lms-sync --extract` rebuilds it. |
-| `.lms-study/` | your quiz history. **It cannot be rebuilt.** See [Your study history](ai-assistants.md#your-study-history). |
+| `.lms-study/` | your quiz history, topics and what you told your AI app. **It cannot be rebuilt.** See [Your study history](ai-assistants.md#your-study-history) and [What it remembers](ai-assistants.md#what-it-remembers). |
 | `.lms-sync.lock` | present only while a sync is running |
 
 Your settings and the download record live beside the program instead. See [Where it goes](install.md#where-it-goes).
@@ -35,20 +35,23 @@ Your settings and the download record live beside the program instead. See [Wher
 | Overview | `Overview/` | what your instructor typed on the course home page, as `Overview.html`, plus any files it links to |
 | Syllabus | `Syllabus/` | the files it links to, usually the course outline PDF |
 | Announcements | `Announcements/` | every announcement in `Announcements.html`, with its posting date, plus attachments |
-| Assignments | `Assignments/` | each assignment's instructions and due date in `Assignments.html`, plus the attached briefs |
+| Assignments | `Assignments/` | each assignment's instructions, due date, late-submission window and your own submission state in `Assignments.html`, plus the attached briefs |
+| Calendar | `Calendar/` | events that are not an assignment's due date, such as quiz deadlines from Tests & Quizzes, in `Calendar.html` |
 | Drop Box | `Drop Box/` | your own Drop Box folder |
 
 **Overview matters most on the courses that look empty.** Where an instructor never touched Resources, it is often the only place anything was posted: a reading list, a marks breakdown, a room change, links to lecture recordings.
 
 - **Announcements go back further than Sakai shows by default.** Sakai hands out the three newest from the last ten days unless asked. lms-sync asks for up to 500, from the last 400 days.
 - **Dates are in your time zone**, in 12-hour time, labelled with the zone and offset. See [Time zone](configuration.md#time-zone).
+- **The dates are also kept as data**, in a hidden `.items.json` beside each page: due dates, submission states, dates read out of announcements. That is what your AI app's [`deadlines`](ai-assistants.md#what-is-due) reads. It is rebuilt by every sync and never listed or searched as coursework.
+- **Your submission state never includes your grade.** The LMS sends your grade, the instructor's feedback, your name and student number alongside it; none of it is saved.
 - **Two briefs with the same name both survive.** Attachments that would clash, such as two `brief.pdf`s, get distinct names.
 - **Which pages are kept** depends on the tab, and on `keep_pages` for Syllabus. See [Choosing tabs](configuration.md#choosing-tabs).
 - **Saved pages work offline.** Links to files lms-sync downloaded point at your copy. Every other link is made complete, so it still opens from your disk.
 
 **Material that is not a file is still recorded.** Links to anything off the LMS, such as a textbook site, a video playlist or a shared folder, are written to `Links.md` beside the tab. They are never opened. `Links.md` is searchable, so your AI app can answer "which textbook does this course use?". An empty folder means nothing was uploaded, not that it was never taught.
 
-**Tests & Quizzes is never opened.** On some Sakai versions, the link into a quiz is an ordinary page that starts a timed attempt. There is nothing there to mirror anyway. What you can know about a quiz is what Announcements, Assignments and Overview say about it.
+**Tests & Quizzes is never opened.** On some Sakai versions, the link into a quiz is an ordinary page that starts a timed attempt. There is nothing there to mirror anyway. What you can know about a quiz is what Announcements, Assignments, Calendar and Overview say about it. The Calendar carries each quiz's due date, posted there by Tests & Quizzes itself, and the link it holds into the quiz is never followed.
 
 Anything not in the table, such as Gradebook, Forums or Site Info, is not mirrored.
 

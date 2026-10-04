@@ -16,6 +16,7 @@ Give one mode per command. If you give two, only one of them runs.
 | `lms-sync --discover` | Finds your courses and saves them, **replacing** your course list with the LMS's titles. Folder names you changed are lost. A normal sync already adds new courses, so you rarely need this. See [Your course list](configuration.md#your-course-list). |
 | `lms-sync --probe` | Reports which tabs each course has, and which of the LMS's endpoints answered. Downloads nothing. See [Diagnosing a server](#diagnosing-a-server). |
 | `lms-sync --extract` | Makes files you have already synced searchable. Never goes online. Run it after installing poppler. See [The searchable copy](how-it-works.md#the-searchable-copy). |
+| `lms-sync --open [COURSE]` | Prints where your library is and opens it in File Explorer or Finder. Name a course (`--open ITC`: its folder name, part of it, or its initials) to open that course's folder instead. Put any options before the course name. |
 | `lms-sync --mcp` | Serves your library to an AI app. The app runs this for you; see [Using lms-sync with an AI assistant](ai-assistants.md). |
 | `lms-sync --drive-login` | Signs in to Google Drive for the backup, once. It does not turn the backup on. See [Push to Google Drive](cloud-backup.md#push-to-google-drive). |
 | `lms-sync --version` | Prints the version and exits. |

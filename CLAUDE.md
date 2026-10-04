@@ -21,7 +21,7 @@ pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--open [course]` (opens the library or one course in the file manager), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -48,12 +48,18 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [manifest.go](manifest.go) — the "already downloaded" record.
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
 - [platform.go](platform.go) — the one question `runtime.GOOS` cannot answer: whether this Linux is a phone.
+- [reveal.go](reveal.go) — opening a file or folder on the student's screen, for `open_material`, `--open` and the UI's Open folder button.
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [search.go](search.go) — turning a question into matches over the text cache.
 - [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.
 - [review.go](review.go) — what the student has been asked, how it went, and when it comes back.
+- [itemfacts.go](itemfacts.go) — what a tab's items say as data (`.items.json`): due dates, submission states, paper hand-ins, dates read out of announcements.
+- [deadlines.go](deadlines.go) — the `deadlines` view: everything due, merged from the LMS's data and the student's notes, computed per call and never stored.
+- [memory.go](memory.go) — what the student told the assistant (`notes.json`), and the `remember` / `forget` tools.
+- [learning.go](learning.go) — how each topic is going (`topics/`), `assessTopic`, `canonicalCourse`, and `track_topic`.
+- [briefing.go](briefing.go) — the start-of-conversation `briefing`, and the core memory that rides in the server's instructions.
 - [synclock.go](synclock.go) — one crawl at a time into a library, across processes.
 - [syncjob.go](syncjob.go) — running a sync in the background for a tool call.
 - [drive.go](drive.go) — the one-way copy of a finished library to Google Drive.
@@ -74,9 +80,17 @@ each course; a section returns `artifact`s, which come in two shapes:
   a local page instead of downloaded.
 
 Resources and Drop Box are directory indexes and share `walkTree`. Overview,
-Syllabus, Announcements and Assignments are all the same *rendered* shape, so
+Syllabus, Announcements, Assignments and Calendar are all the same *rendered* shape, so
 they are one `pageSection` described by an entry in the `pageSections` table —
-adding another rendered tab is one entry there, nothing else.
+adding another rendered tab is one entry there, nothing else. Calendar is
+`apiOnly`: it is read through the Entity Broker or not at all, because its
+rendered page is a month grid of navigation.
+
+A rendered tab whose items carry facts — due dates, the student's submission
+state, dates typed into announcements — also writes them as data in
+`.items.json` beside its page (a `quiet` artifact: saved and hash-fresh like a
+page, never counted or reported). That file is what `deadlines` reads; see
+[itemfacts.go](itemfacts.go).
 
 **Overview is the tab that matters most on the courses that look empty.** Its
 registration is `sakai.iframe.site`, which reads like portal chrome and was
@@ -138,7 +152,7 @@ Hints are stored on the error and joined by `Explain()` as `message + "\n\n" + h
 
 These encode bugs that already cost someone real time — the comments in the source say so. Don't "simplify" them away:
 
-- **A wrong password returns HTTP 200 with the login form.** Status codes prove nothing; `Client.Authenticated` verifies the session via `/direct/session/current.json` *and* falls back to regex-matching the rendered portal, because Entity Broker is disabled on many installs. `TestWrongPasswordIsAuthError`.
+- **A wrong password returns HTTP 200 with the login form.** Status codes prove nothing; `Client.Authenticated` verifies the session via `/direct/session/current.json` *and* falls back to regex-matching the rendered portal, because Entity Broker is disabled on many installs. The session answer is parsed as JSON and only a non-empty `userId` counts: logged out, the live install answers HTTP 200 with `"userId": null`, which the text check this replaced (`"userId"` present and not `""`) read as signed in — so a wrong password was reported as success wherever the Entity Broker is on. The fake now answers exactly that. `TestWrongPasswordIsAuthError`.
 - **Auth failures are never retried** (lockouts). `Client.do` retries only timeouts, connection errors, 429 and 5xx — 4xx are answers. A request with a non-nil body is never retried, since the body can only be read once, and that rule has to be stated in **both** branches of the loop: it was applied to connection errors only, so a 5xx on the login endpoint was retried with a drained reader — posting an empty form, which the server records as a sign-in attempt with no password, against the one endpoint where repeated failures lock an account. `TestARetriedRequestNeverPostsAnEmptyBody`.
 - **`Client.do` never returns a nil response with a nil error.** Every caller goes straight to `resp.Body`, so that pair is a panic rather than a failure, and the loop simply never runs when `retries` is below 1 — the value any `Config` built in code rather than loaded through `sanitise()` carries. `TestDoAlwaysReturnsAResponseOrAnError`.
 - **`childLinks` keeps only immediate children of the current page URL.** That single prefix rule is what makes `../` traversal out of the course tree impossible — `TestChildLinksTraversal` asserts it.
@@ -159,6 +173,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A captured region stops at its own closing tag.** `extractRegion` counts nested `<div>`s. The greedy regex it replaced ran to the last `</div>` on the page, swallowed the portal navigation, and then downloaded every file linked in that chrome as an attachment of the tab. `TestPageRegionDoesNotSwallowSiteNavigation`.
 - **Links in a saved page are rewritten, or they are dead.** The LMS writes root-relative hrefs, which point at nothing once the page is a file on a laptop. `localiseLinks` repoints links to downloaded files at the local copy and makes everything else absolute; inline `on*` handlers are stripped because the page is opened from disk. `TestSavedPageLinksWorkOffline`.
 - **Attachment filenames are deduplicated case-insensitively.** Sakai files attachments under opaque per-item folders, so two assignments can both link a `brief.pdf`; Windows would also collide on names Linux keeps apart. `TestAssignmentBriefsGetUniqueNames`.
+- **A captured page lists each item's files under that item.** They were one sorted pile at the foot, so a course posting labs and homeworks through the one Assignments tool left nothing on disk saying which PDF was Lab 3 or when it was due. Sakai has no lab type, so Assignments are grouped by `assignmentKind` (read from the title) and numbered within each kind; the files themselves stay flat in `Assignments/`, so nothing moves or re-downloads. `TestAssignmentsAreGroupedByKind`, `TestAnAttachmentIsListedUnderItsOwnItem`.
 - **The course list is refreshed every run, and never shrinks.** `RefreshCourses` adds what is new and keeps the folder names the student chose. Dropping a vanished course would be worse than a stale line they can delete. `TestRefreshAddsNewCoursesAndKeepsChosenNames`.
 - **A run reports exactly one `done`, and it is last.** The web UI closes its log on `done`, so extraction returns its summary for `Sync` to report as `extract` rather than emitting a second one. `TestSyncReportsExactlyOneDone`.
 - **A dry run writes nothing — the destination folder, the lock file and the text cache included.** `Sync` created the destination before any of the `dryRun` guards below it were consulted, so `--dry-run --dest <typo>` created the typo and then reported the files it would have put in it, which is most of what the flag is for. The cost is that an unwritable destination goes unreported until the real run — the run that needs to know — and every write below creates its own parent anyway. `TestDryRunWritesNoTextIndex`, `TestDryRunDoesNotCreateTheDestination`.
@@ -214,6 +229,86 @@ These encode bugs that already cost someone real time — the comments in the so
   why the setting exists. A string that is not RFC 3339 is kept verbatim, never
   guessed at. `TestDatesAreWrittenInTheStudentsZoneAndSaySo`,
   `TestTheTimezoneSettingIsReadSavedAndChecked`.
+- **A submission is read by its date and draft flag, never by `submitted`.**
+  On the live install two fields that look like the answer were wrong:
+  `submitted` was true on an empty record whose own status said "Not Started",
+  and `userSubmission` was true on a draft with a file attached that was never
+  sent. Submitted means a submission time exists; a draft is its own state,
+  "draft saved, never submitted", and is the mistake `deadlines` raises first;
+  a submission time *and* a draft is a resubmission in progress, which must
+  never read as missing. An absent `submissions` field is unknown, not "not
+  started". The status text is localised and never parsed.
+  `TestSubmittedMeansASubmissionDateNotTheSubmittedFlag`,
+  `TestADraftIsNotASubmission`, `TestAResubmissionDraftDoesNotHideTheSubmission`.
+- **Paper hand-ins claim no LMS state.** Two of the live install's three
+  courses with assignments took them on paper; the LMS shows those as "Not
+  Started" forever. `NON_ELECTRONIC_ASSIGNMENT_SUBMISSION` drops the state
+  entirely; an online assignment whose instructions ask for a hard copy keeps
+  its state beside the caveat, because that is a reading of prose. "viva" is not
+  paper. `TestPaperAssignmentsClaimNoLMSStatus`, `TestVivaIsNotPaper`.
+- **Grades, feedback, names and student numbers are never written.** They
+  arrive in the same submission record. `TestSubmissionStatusCarriesNoGradesOrNames`.
+- **`.items.json` is quiet, byte-stable and hidden.** A sync announcing it would
+  report something new on every run that read a state; anything varying per run
+  would rewrite it; and its leading dot keeps it out of `scanLibrary`, search,
+  `index.html` and the Drive push. `TestItemDataIsKeptBesideTheTab`.
+- **Calendar has no page fallback, skips assignments' own events, and never
+  follows a description's links.** A quiz event links into Samigo; only API
+  attachments are ever fetched, and the allowlist would refuse that URL anyway.
+  The assignment record wins over its calendar copy — the live copy of one was
+  a day off. The range is always passed. A broker that answers nothing is a
+  skip, not a failure. Note that a logged-out session gets HTTP 200 and an
+  empty calendar, not an error. `TestCalendarAddsQuizDeadlinesAndDefersToAssignments`,
+  `TestCalendarHasNoPageFallback`.
+- **Dates in prose are read, never guessed.** `datesIn` takes a missing year
+  from the posting date (never the clock — the file must not change day to
+  day), keeps a weekday that disagrees with its date and shows it, drops a time
+  with no AM/PM rather than guessing one, leaves "next week" undated, and
+  always carries the sentence it read. Only announcements about something
+  assessed (`mentionsIn`) are read at all, which keeps Sakai's own open-date
+  notices out. `TestDatesInAnnouncementText`, `TestAutoNoticesAreNotDeadlines`.
+- **Freshness of a submission state is per course.** `synced.json` in
+  `.lms-index` records when each course last finished a crawl; `index.html`'s
+  time would date ITP's states by a sync that only touched Calculus.
+  `TestEachCourseRecordsWhenItWasLastSynced`.
+- **`deadlines` is computed, never stored.** A remembered table is wrong the
+  day after it is written. Rows from different sources about one thing (same
+  course, same day, two shared identifying words) merge, keeping the LMS's time
+  and the announcement's sentence. `TestDeadlinesMergeEverySourceAndDedupe`.
+- **An empty deadline list over missing data says INCOMPLETE.** "Nothing due"
+  is what a model concludes from an empty list, and when a course's dates are
+  only in its page — never synced by this version (sync it), or an LMS that
+  sends no data (read the page) — that is the wrong thing to tell a student.
+  Found on the real library, whose first briefing said "nothing dated" over
+  three uncovered courses. The same rule as an empty folder not meaning
+  "never taught". `TestDeadlinesSayWhichSourcesAreMissing`.
+- **"I submitted it" is checked, not believed.** A `done` note on electronic
+  work the LMS has not got is kept as the student's word, and the reply says
+  THE LMS DISAGREES so the model tells the student; on paper work the student's
+  word is the record. A done note must name one item: "lab" ticks off nothing.
+  `TestADoneNoteTheLMSContradictsSaysSo`, `TestADoneNoteForAPaperAssignmentIsTheRecord`,
+  `TestADoneNoteNeedsTheRightItem`.
+- **Memory that will not parse refuses writes, for all three stores.** The
+  review log used to leave a corrupt file alone on load and then save an empty
+  log over it at the next recorded answer. `TestNotesAndTopicsThatWillNotParseAreLeftAlone`.
+- **A note holds while its quoted line does.** Not the file's size: an
+  Announcements page is rewritten by every new notice. `TestANoteSurvivesANewAnnouncementButNotItsOwnRemoval`.
+- **Memory is never coursework, and is a record, not an instruction.** Notes
+  live in `.lms-study`, never in a course folder, so search cannot hand a
+  model its own words back as a source; they come back one line each, under a
+  header saying so. `TestMemoryIsNeverCoursework`, `TestBriefingFramesMemoryAsRecordsNotInstructions`.
+- **`briefing` is a read.** A "since you last asked" mark would hide whatever an
+  earlier model saw and did not pass on, from every conversation after. `TestBriefingIsARead`.
+- **The instructions carry a capped core memory and no dates.** They live as
+  long as the process, which can be days. `TestInstructionsCarryACappedCoreMemoryWithNoDates`.
+- **One course, one history.** `canonicalCourse` files "ITP", "itp" and the
+  folder name together, and refuses a name matching two courses.
+  `TestTheSameCourseNamedTwoWaysIsOneHistory`.
+- **A topic's standing is computed from the student's words and quiz answers,
+  and shown with its evidence.** Misses from before "it clicked" do not count
+  against it; asking three times is "keeps coming up", not "struggling"; similar
+  topic names are suggested, never refused — least of all in `record_answer`.
+  `TestTopicStandings`, `TestSimilarTopicNamesAreSuggestedNeverRefused`.
 - **The sync log says where it is writing.** `describe` rendered no line for
   the `start` event, so the destination — the whole reason that event exists —
   never reached a tool call, and "did anything download, and where to?" could
@@ -241,7 +336,8 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A failed tool is a result, not a protocol error.** The model is meant to read what went wrong and try again, which it cannot do if the transport swallows it. An unknown *method* is still a protocol error. `TestMCPToolFailureIsAResultNotAProtocolError`.
 - **An unrecognised protocol version is answered, not refused.** The server replies with what it does speak and lets the client decide; refusing would break against every future spec release. `TestMCPUnknownProtocolVersionIsAnsweredNotRefused`.
 - **Every prompt carries the ground rules.** A client with no project instructions is the normal case, so "search before answering", "cite the path", and above all "an empty folder means the material was not uploaded, not that it was never taught" have to travel with the prompt. `TestEveryPromptCarriesTheGroundRules`.
-- **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`.
+- **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`, `TestMCPOpenMaterialRefusesPathsOutsideTheLibrary`.
+- **Opening a file never runs it.** The default `extensions` list downloads `.js` and `.py`, an empty one downloads anything, and on Windows "opening" a `.js` runs it in Windows Script Host — while `open_material`'s path is written by that same possibly-steered model. `viewable` is an allowlist of document and image types handed to the default app; anything else is *revealed* (its folder opened with it selected), and on Linux only its folder is opened. Explorer gets its command line verbatim (`explorerCmdLine`), because Go's quoting turns `/select,` into no switch at all. Every answer carries the absolute path, since a window can fail to appear. `TestOpeningNeverRunsWhatItOpens`, `TestMCPOpenMaterialShowsCodeInItsFolderRatherThanRunningIt`, `TestShowCommandsFitThePlatform`, `TestExplorerIsGivenACommandLineItCanParse`, `TestMCPOpenMaterialAlwaysSaysWhereTheFileIs`.
 - **A review log that will not parse is left alone, never overwritten.** Every other cache here rebuilds itself from a corrupt file; this one holds the only copy of a year's answers. `TestHistorySurvivesACorruptFileRatherThanBeingOverwritten`.
 - **The same question keeps its history.** `questionID` normalises case and whitespace, so a rephrasing does not split one item into two that each get half the practice. `TestRewordedWhitespaceIsTheSameQuestion`.
 - **A miss resets the ladder; a verdict is the student's.** Half-remembering something for a month is the state that needs frequent practice, not a longer gap — and a model deciding the verdict itself can drag a known item back for weeks. `TestAMissedQuestionComesBackTomorrow`, `TestGettingItRightPushesItFurtherOut`, `TestQuizPromptRequiresRecordingAndDefersTheVerdict`.
@@ -325,6 +421,28 @@ scale the retention difference decides nothing. Verdicts are **self-assessed**
 interval and drags the item back for weeks. `questionID` normalises case and
 whitespace so a rephrased question keeps its history rather than splitting
 into two half-practised items.
+
+### The memory
+
+Every conversation with an assistant starts blank, and the protocol has no
+"new conversation" event. What carries over splits by where its truth lives:
+
+- **Derivable from the LMS** (what is due, whether it was handed in): never
+  remembered, always computed. `deadlines` reads the `.items.json` files a sync
+  writes. A question asked again and again is a missing view, not missing memory.
+- **Said only by the student** (a quiz announced on WhatsApp, a lab handed in on
+  paper, how they like explanations, where a session stopped): `notes.json`,
+  through `remember` / `forget`.
+- **How the student is learning**: `topics/<course>.json`, through
+  `track_topic`, joined with the review log's quiz answers by topic.
+
+`briefing` is the pull: the first call of a conversation, a pure read. The part
+that rarely changes also rides in `initialize.instructions` (`coreMemory`), for
+clients that show instructions to the model. Signals are the student's own
+words; `asked` is recorded when the student asks, because an after-the-fact
+"explained" is the bookkeeping step models skip. All of it lives in
+`.lms-study`, is backed up with it, and is capped, framed as records, and
+removable.
 
 ### The searchable copy
 
@@ -501,7 +619,12 @@ library. It is a *reader* everywhere but `sync_courses` (below): it
 never logs in, never fetches, and needs no password, which is also why it can
 answer in milliseconds — a crawl is minutes
 and far too slow to sit inside a tool call. Keeping the mirror current stays
-`--sync`'s job, on a schedule.
+`--sync`'s job, on a schedule. `open_material` is the one tool with an effect
+outside the protocol: it puts a file or folder on the student's screen, and
+writes nothing. It exists because an assignment brief has to be read by the
+student, not asked about, and the default destination sits inside the install
+folder where nobody finds it. What it may open is [reveal.go](reveal.go)'s
+decision, shared with `--open` and the interface's Open folder button.
 
 **stdout carries the protocol and nothing else.** A stray `fmt.Println`
 anywhere on that path corrupts the stream and the client disconnects with no
@@ -563,6 +686,11 @@ that **the mirror holds what was uploaded, which is not a record of what was
 taught** — without it an assistant reports an empty folder as "you were never
 taught this".
 
+`briefing`, `deadlines`, `remember`, `forget` and `track_topic` are the
+memory: see "The memory" above. Three of them write, and only into
+`.lms-study`; every path they take is checked by `resolveInside`, and every
+course name goes through `canonicalCourse`.
+
 `tools` and `prompts` are declared because both are implemented. Resources
 would suit this server too, but declaring a capability that is not implemented
 is worse than not having it.
@@ -614,9 +742,18 @@ An installed copy keeps `config.toml` in `~/.local/share/lms-sync/` (macOS, Linu
 `config.toml` in this working directory is a real one: it holds the user's actual LMS username and password. It's git-ignored — don't read it into context, print it, or commit it. `LMS_USER` / `LMS_PASS` override the file, and are never written back into it — `Save` emits a line saying where the credential comes from instead.
 
 `sections` picks which tabs to mirror (`resources`, `overview`, `syllabus`,
-`announcements`, `assignments`, `dropbox`);
+`announcements`, `assignments`, `calendar`, `dropbox`);
 unknown ids are dropped by `sanitise()` rather than obeyed, and the list can
-never end up empty.
+never end up empty. A saved config lists its tabs explicitly, so on its own a
+tab added to the defaults would never reach an existing install; `Save` also
+writes `known_sections`, the tabs the file has been offered, and
+`offerNewTabs` switches on a default tab missing from it, once. A file from
+before that line is taken to have been offered `legacyKnownSections`, the six
+tabs that existed then — so Calendar reaches it and anything the student left
+out stays out. Loading never writes the file (a dry run must not); the next
+save records the offer, after which leaving a tab out keeps it off.
+`TestANewTabIsSwitchedOnInAnOlderConfig`, `TestATabTurnedOffStaysOff`,
+`TestOfferingANewTabDoesNotWriteTheConfig`.
 
 `timezone` (default: the machine's) is the IANA zone dates in saved pages are
 written in; an unknown one is dropped by `sanitise()`.

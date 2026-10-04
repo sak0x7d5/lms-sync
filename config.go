@@ -30,6 +30,12 @@ type Config struct {
 	KeepPages   bool     // also save the captured page, not just the files a tab links to
 	Timezone    string   // IANA zone for dates in saved pages; "" = this machine's
 
+	// knownSections is every tab the file had been offered when it was last
+	// written: what it held under known_sections, or legacyKnownSections for
+	// a file from before that line existed. A default tab missing from it is
+	// new since then, and is switched on; see offerNewTabs.
+	knownSections []string
+
 	// Copying the finished library up to Google Drive. Off by default: it
 	// needs a Google sign-in that only --drive-login can perform, and a tool
 	// that silently started uploading a student's coursework would be a
@@ -64,7 +70,7 @@ func DefaultConfig() *Config {
 		Retries:     3,
 		MaxDepth:    12,
 		Sections: []string{"resources", "overview", "syllabus", "announcements",
-			"assignments", "dropbox"},
+			"assignments", "calendar", "dropbox"},
 		KeepPages: false,
 		Extensions: []string{
 			".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx",
@@ -124,6 +130,7 @@ func LoadConfig(path string) (*Config, error) {
 	defer f.Close()
 	cfg.found = true
 
+	sawSections, sawKnown := false, false
 	section := ""
 	scan := bufio.NewScanner(f)
 	scan.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -178,7 +185,11 @@ func LoadConfig(path string) (*Config, error) {
 		case "sections":
 			if list := parseArray(raw); len(list) > 0 {
 				cfg.Sections = list
+				sawSections = true
 			}
+		case "known_sections":
+			cfg.knownSections = parseArray(raw)
+			sawKnown = true
 		case "timezone":
 			cfg.Timezone = unquote(raw)
 		case "keep_pages":
@@ -198,8 +209,48 @@ func LoadConfig(path string) (*Config, error) {
 			"The file could not be read to the end.", err)
 	}
 
+	if sawSections {
+		if !sawKnown {
+			cfg.knownSections = legacyKnownSections
+		}
+		cfg.offerNewTabs()
+	}
 	cfg.sanitise()
 	return cfg, nil
+}
+
+// legacyKnownSections is the tabs that existed before a config file recorded
+// which it had been offered. A file without known_sections was written by a
+// version that offered exactly these, so anything it leaves out was left out
+// on purpose — and anything else is new to it.
+var legacyKnownSections = []string{"resources", "overview", "syllabus", "announcements",
+	"assignments", "dropbox"}
+
+// offerNewTabs switches on the default tabs this file has never been offered.
+//
+// A saved config lists its tabs explicitly, so a tab added to the defaults
+// never reached anyone who already had one: Calendar, which is what puts quiz
+// deadlines in front of the assistant, would have been missing for every
+// existing install, with nothing to say it existed but a comment. Telling
+// "left out on purpose" from "never heard of" is what known_sections is for.
+// A tab the file has been offered stays exactly as the student left it.
+//
+// Nothing is written here: a dry run must not touch the config. The next save
+// records the tab as offered, and from then on leaving it out keeps it off.
+func (c *Config) offerNewTabs() {
+	known := map[string]bool{}
+	for _, id := range c.knownSections {
+		known[strings.ToLower(strings.TrimSpace(id))] = true
+	}
+	on := map[string]bool{}
+	for _, id := range c.Sections {
+		on[strings.ToLower(strings.TrimSpace(id))] = true
+	}
+	for _, id := range DefaultConfig().Sections {
+		if !known[id] && !on[id] {
+			c.Sections = append(c.Sections, id)
+		}
+	}
 }
 
 // sanitise keeps a hand-edited config from producing absurd behaviour —
@@ -534,6 +585,14 @@ func (c *Config) Save() error {
 		quoted = append(quoted, tomlQuote(id))
 	}
 	fmt.Fprintf(&b, "sections    = [%s]\n", strings.Join(quoted, ", "))
+	b.WriteString("# The tabs this file has been offered. A tab added in a later version is\n")
+	b.WriteString("# switched on once, because it is not listed here; after that, leaving it\n")
+	b.WriteString("# out of sections keeps it off.\n")
+	offered := make([]string, 0, len(sectionCatalogue()))
+	for _, s := range sectionCatalogue() {
+		offered = append(offered, tomlQuote(s.ID))
+	}
+	fmt.Fprintf(&b, "known_sections = [%s]\n", strings.Join(offered, ", "))
 	b.WriteString("\n# Tabs like Syllabus are usually just a wrapper around a PDF, so by default\n")
 	b.WriteString("# only the linked files are kept. Set this to true to also save the page\n")
 	b.WriteString("# itself, which is worth doing if your instructors type notes into the tab.\n")
