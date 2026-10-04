@@ -117,6 +117,15 @@ func (c *Client) Probe(ctx context.Context, course Course, eid string) probeRepo
 			})
 			continue
 		}
+		if ps.apiOnly {
+			// Never captured, so there is nothing to probe: a sync reads this
+			// tab through the JSON route above or not at all.
+			rep.Checks = append(rep.Checks, probeCheck{
+				Label: ps.name + " (tool page)", URL: t.URL,
+				Result: "tab present; read only through the JSON route above",
+			})
+			continue
+		}
 		check := probeCheck{Label: ps.name + " (tool page)", URL: t.URL,
 			Result: c.probeURL(ctx, t.URL)}
 		for _, line := range c.savePage(ctx, course.Folder+" "+ps.name, t.URL) {

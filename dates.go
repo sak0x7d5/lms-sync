@@ -66,22 +66,45 @@ func formatWhen(t time.Time, loc *time.Location) string {
 // postedOn renders an announcement's createdOn, which Sakai versions report
 // either as epoch milliseconds or as a string of them.
 func postedOn(raw json.RawMessage, loc *time.Location) string {
+	if t, ok := createdAt(raw); ok {
+		return formatWhen(t, loc)
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		s = strings.TrimSpace(s)
+		if _, err := strconv.ParseInt(s, 10, 64); err != nil {
+			return s // already a date; keep the server's own
+		}
+	}
+	return ""
+}
+
+// createdAt reads an announcement's createdOn as a moment, when it is one:
+// epoch milliseconds, as a number or as a string of digits.
+func createdAt(raw json.RawMessage) (time.Time, bool) {
 	var ms int64
 	if err := json.Unmarshal(raw, &ms); err != nil {
 		var s string
 		if json.Unmarshal(raw, &s) != nil {
-			return ""
+			return time.Time{}, false
 		}
 		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 		if err != nil {
-			return strings.TrimSpace(s) // already a date; keep the server's own
+			return time.Time{}, false
 		}
 		ms = n
 	}
 	if ms <= 0 {
-		return ""
+		return time.Time{}, false
 	}
-	return formatWhen(time.UnixMilli(ms), loc)
+	return time.UnixMilli(ms), true
+}
+
+// rfc3339 reads one of the Entity Broker's UTC timestamp strings, such as
+// dueTimeString or closeTimeString.
+func rfc3339(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, strings.TrimSpace(s))
+	return t, err == nil
 }
 
 // dueOn renders an assignment's dueTimeString. Anything that is not an

@@ -130,10 +130,10 @@ Press **Find my courses**. That saves your settings and lists your courses. Then
   $raw = if (Test-Path $f) { [IO.File]::ReadAllText($f) }
   $c = if ($raw) { $raw | ConvertFrom-Json } else { [pscustomobject]@{} }
   if (-not $c.mcpServers) { $c | Add-Member mcpServers ([pscustomobject]@{}) -Force }
-  $c.mcpServers | Add-Member lms ([pscustomobject]@{ command = "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe"; args = @('--mcp') }) -Force
+  $c.mcpServers | Add-Member university-courses ([pscustomobject]@{ command = "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe"; args = @('--mcp') }) -Force
   if ($raw) { Copy-Item $f "$f.bak" -Force } else { New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null }
   [IO.File]::WriteAllText($f, ($c | ConvertTo-Json -Depth 32))
-  "Added lms to $f"
+  "Added university-courses to $f"
 }
 ```
 
@@ -144,13 +144,13 @@ Then quit Claude completely and open it again. Closing the window isn't enough: 
 **Claude Code** — `--scope user` makes it available in every project:
 
 ```bash
-claude mcp add --scope user lms -- ~/.local/share/lms-sync/lms-sync --mcp
+claude mcp add --scope user university-courses -- ~/.local/share/lms-sync/lms-sync --mcp
 ```
 
 On Windows, in PowerShell (the quotes around `--` matter there):
 
 ```powershell
-claude mcp add --scope user lms '--' "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe" --mcp
+claude mcp add --scope user university-courses '--' "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe" --mcp
 ```
 
 **Check it worked.** Start a new chat and ask *"Which courses are in my library?"* The first time Claude uses one of lms-sync's tools, it asks your permission: choose **Allow**. Only fetching new material goes online; everything else just reads your folder. You should see your course folders listed. If not, see [When it doesn't work](docs/ai-assistants.md#when-it-doesnt-work). Cursor, opencode and other setups are in [Using lms-sync with an AI assistant](docs/ai-assistants.md#connect-your-ai-app).
@@ -195,7 +195,7 @@ Uninstalling removes the program, the `lms-sync` command and the daily update ch
 
 ## What you get
 
-Every tab that holds material, not just the files. All six are on by default; untick any under **Tabs to mirror**.
+Every tab that holds material, not just the files. All seven are on by default; untick any under **Tabs to mirror**.
 
 | Tab | What you get |
 |---|---|
@@ -203,7 +203,8 @@ Every tab that holds material, not just the files. All six are on by default; un
 | Overview | What the instructor typed on the course home page. On a course that looks empty, often the only thing there |
 | Syllabus | The files it links to, usually the course outline PDF |
 | Announcements | Notices going back more than a year, not just the few Sakai shows by default, with posting dates |
-| Assignments | Each brief with its due date in your time zone, plus the files it links to |
+| Assignments | Each brief with its due date in your time zone, whether you handed it in, plus the files it links to |
+| Calendar | Quiz deadlines from Tests & Quizzes, without the quiz ever being opened |
 | Drop Box | Your own Drop Box folder |
 
 Links that lead off the LMS, such as a textbook or a playlist, are written to a `Links.md` beside the tab and never opened.
@@ -250,6 +251,8 @@ Your AI app offers these as ready-made workflows; in Claude Desktop they are und
 | What should I work on now (`study_plan`) | Where your next hour should go, weighted by what's shaky and what's due |
 
 **It remembers what you missed.** Every quiz answer is recorded, and **you** decide whether it was right, not the AI. A miss comes back tomorrow; each right answer pushes the next review further out, up to three months. Ask for your weak spots and it ranks the questions you usually get wrong ([how it works](docs/ai-assistants.md#your-study-history)).
+
+**It remembers you between conversations.** Tell it the quiz is on Thursday, that you handed the lab in on paper, or that recursion finally clicked, and the next conversation already knows. Ask *"what's due?"* and it answers in one step: assignments, quiz deadlines and dates from announcements, with a draft you never submitted flagged first ([what is due](docs/ai-assistants.md#what-is-due), [what it remembers](docs/ai-assistants.md#what-it-remembers)).
 
 That history lives in `.lms-study/`, the one folder worth backing up. Every slide can be downloaded again; a year of recorded answers cannot.
 

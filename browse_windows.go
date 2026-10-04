@@ -13,3 +13,9 @@ import (
 func hideConsole(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 }
+
+// useCommandLine hands a program its command line exactly as written, for
+// explorer.exe, which parses its own rather than taking Go's quoting.
+func useCommandLine(cmd *exec.Cmd, line string) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{CmdLine: line}
+}

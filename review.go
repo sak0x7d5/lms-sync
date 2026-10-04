@@ -36,11 +36,16 @@ const (
 	// disposable and says so; this is not, and two similar dot-directories
 	// side by side is an invitation to delete the wrong one.
 	studyReadme = `This folder is your study history: the questions you have been
-asked, what you got wrong, and when each is due to come back.
+asked, what you got wrong, and when each is due to come back (review/); the
+topics you have found hard or easy (topics/); and what you told an assistant
+so that it need not be told again (notes.json).
 
 It is NOT disposable. Deleting .lms-index only costs a slow re-read of your
 course files. Deleting this folder loses everything the tool knows about you,
 and none of it can be rebuilt from the LMS.
+
+Everything here is plain JSON you can read. To have something forgotten, ask
+the assistant to forget it, or delete it from the file yourself.
 `
 )
 
@@ -126,6 +131,12 @@ type ReviewLog struct {
 	course string
 	items  map[string]*reviewItem
 	dirty  bool
+
+	// unreadable is set when the history exists but will not parse. Leaving
+	// the file alone on load was only half of it: the next recorded answer
+	// marked the empty log dirty and saved it over the year it replaced. So
+	// once set, Save refuses.
+	unreadable error
 }
 
 func studyDir(dest string) string { return filepath.Join(dest, studyDirName) }
@@ -146,7 +157,10 @@ func LoadReviews(dest, course string) *ReviewLog {
 	if err := json.Unmarshal(data, &items); err != nil {
 		// Unlike the text index, this cannot be rebuilt — so a file that will
 		// not parse is left exactly where it is rather than overwritten, and
-		// the run continues with an empty log in memory.
+		// the run continues with an empty log in memory that may be read but
+		// never saved.
+		log.unreadable = fmt.Errorf("%s could not be read (%v). It has been left exactly as it is; "+
+			"fix or move it and nothing will be lost", reviewPath(dest, course), err)
 		return log
 	}
 	for _, it := range items {
@@ -280,6 +294,9 @@ func (l *ReviewLog) Save() error {
 	defer l.mu.Unlock()
 	if !l.dirty {
 		return nil
+	}
+	if l.unreadable != nil {
+		return l.unreadable
 	}
 
 	items := make([]*reviewItem, 0, len(l.items))

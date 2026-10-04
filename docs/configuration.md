@@ -49,7 +49,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `retries` | `3` | Total attempts per request, the first included, when it times out, drops, or gets a 429 or 5xx. `1` means never retry. Kept between 1 and 10. |
 | `login_path` | tries three | Pins the sign-in path. See [Login path](#login-path). |
 | `extensions` | common types | Which linked files to download. See the list below. |
-| `sections` | all six tabs | Which tabs to mirror. See [Choosing tabs](#choosing-tabs). |
+| `sections` | all seven tabs | Which tabs to mirror. See [Choosing tabs](#choosing-tabs). |
 | `keep_pages` | `false` | Also save the page of a wrapper tab such as Syllabus. See [Choosing tabs](#choosing-tabs). |
 | `timezone` | this computer's | The zone dates are written in. See [Time zone](#time-zone). |
 | `drive_push` | `false` | Copy the library to Google Drive after each sync. See [Push to Google Drive](cloud-backup.md#push-to-google-drive). |
@@ -116,7 +116,7 @@ For AI apps, which can hold the password in their own settings, see [Should your
 In the interface, tick the boxes under **Tabs to mirror**. In the file:
 
 ```toml
-sections = ['resources', 'overview', 'syllabus', 'announcements', 'assignments', 'dropbox']
+sections = ['resources', 'overview', 'syllabus', 'announcements', 'assignments', 'calendar', 'dropbox']
 ```
 
 | Id | Tab |
@@ -126,19 +126,23 @@ sections = ['resources', 'overview', 'syllabus', 'announcements', 'assignments',
 | `syllabus` | Syllabus |
 | `announcements` | Announcements |
 | `assignments` | Assignments |
+| `calendar` | Calendar |
 | `dropbox` | Drop Box |
 
-All six are on by default. [What each tab gives you](how-it-works.md#what-each-tab-gives-you) says where each one is saved and what comes out of it.
+All seven are on by default. [What each tab gives you](how-it-works.md#what-each-tab-gives-you) says where each one is saved and what comes out of it.
+
+**A tab added in a later version is switched on for you, once.** `known_sections`, written under `sections`, records the tabs your file has been offered. A tab missing from it is new, so it is turned on; a tab you have been offered and left out stays off. That is how an existing install gains Calendar, and with it quiz deadlines in [What is due](ai-assistants.md#what-is-due). To keep it off, untick it in the interface, or remove it from `sections` once `known_sections` lists it. The assistant's `deadlines` says when Calendar is off.
 
 - **A tab is only visited on courses that have it.** Leaving one on costs nothing.
 - **An id it does not know is dropped.** If nothing is left, it mirrors Resources.
-- **Tests & Quizzes cannot be added.** On some Sakai versions, opening a quiz starts a timed attempt.
+- **Tests & Quizzes cannot be added.** On some Sakai versions, opening a quiz starts a timed attempt. Quiz due dates still arrive through the Calendar, which Tests & Quizzes posts them to; the quiz itself is never opened.
+- **Calendar is read only where your LMS's data feed answers.** Without it there is nothing to save: the Calendar's page is a month grid of links, not material.
 
 ### Pages
 
 Some tabs are text; others are a wrapper around a file. `keep_pages` (**Also save each tab's page** in the interface) decides what happens to the wrappers.
 
-- **Overview, Announcements and Assignments always keep their page.** Their text is the material: no PDF "is" an announcement or a due date. `keep_pages` cannot turn these off.
+- **Overview, Announcements, Assignments and Calendar always keep their page.** Their text is the material: no PDF "is" an announcement or a due date. `keep_pages` cannot turn these off.
 - **Syllabus keeps only the files it links to**, usually the course outline PDF. Set `keep_pages = true` if your instructors type the syllabus straight into the tab.
 - **A tab that links to no files always keeps its page**, whatever the setting, so nothing is lost silently.
 

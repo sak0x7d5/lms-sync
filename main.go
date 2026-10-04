@@ -29,6 +29,7 @@ func run() int {
 		doProbe    = flag.Bool("probe", false, "report which tabs this LMS offers, and exit")
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
+		doOpen     = flag.Bool("open", false, "open the library, or one course (--open ITC), in the file manager")
 		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
 		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
@@ -95,6 +96,8 @@ func run() int {
 		return cliExtract(ctx, cfg)
 	case *doMCP:
 		return serveMCP(ctx, cfg)
+	case *doOpen:
+		return cliOpen(cfg, flag.Arg(0))
 	case *doSync || *dryRun:
 		return cliSync(ctx, cfg, manifest, *dryRun, *insecure)
 	default:
@@ -112,6 +115,7 @@ func usage() {
   lms-sync --probe         report which tabs your LMS offers, and how
   lms-sync --extract       make synced files searchable, without going online
   lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
+  lms-sync --open [COURSE] open your library, or one course, in the file manager
   lms-sync --drive-login   sign in to Google Drive (once; everything else is silent)
 
 Options:
@@ -417,6 +421,44 @@ func cliExtract(ctx context.Context, cfg *Config) int {
 		fmt.Println("  Debian/Ubuntu  sudo apt install poppler-utils")
 		fmt.Println("  macOS          brew install poppler")
 		fmt.Println("  Windows        winget install oschwartz10612.Poppler")
+	}
+	return 0
+}
+
+// cliOpen opens the library, or one course of it, in the file manager.
+//
+// The path is printed before anything is opened. It is the answer to "where
+// did my files go", and the one part that still works on a machine with no
+// file manager to open.
+func cliOpen(cfg *Config, course string) int {
+	dest, err := cfg.DestinationPath()
+	if err != nil {
+		return reportErr(err)
+	}
+	if _, err := os.Stat(dest); err != nil {
+		fmt.Println(cfg.WhereItLooked(dest))
+		return reportErr(failf(KindFS, "open "+dest,
+			"Nothing has been synced to that folder yet. Run a sync first.", err))
+	}
+
+	target := dest
+	if strings.TrimSpace(course) != "" {
+		courses := coursesOnDisk(dest)
+		got, err := matchCourses(courses, course)
+		if err != nil {
+			// matchCourses' own message tells a model which tool to call
+			// next, which is no use to someone at a terminal.
+			return reportErr(failf(KindNotFound,
+				fmt.Sprintf("no single course matches %q", course),
+				"The courses are: "+courseNames(courses)+
+					"\nLeave the course out to open the whole library.", nil))
+		}
+		target = filepath.Join(dest, got[0].Folder)
+	}
+
+	fmt.Println(target)
+	if _, err := show(target); err != nil {
+		return reportErr(failf(KindNotFound, "open a window", noOpenerHint(), err))
 	}
 	return 0
 }
