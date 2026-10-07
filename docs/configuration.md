@@ -87,7 +87,25 @@ Case does not matter. An empty list is ignored and the defaults are used. The li
 
 ## Credentials
 
-Your username and password are stored in plain text in `config.toml`.
+Your username is in `config.toml`. Your password is in one of three places, and lms-sync looks in this order:
+
+1. **`LMS_PASS`**, if it is set for this run (see below).
+2. **Your computer's password store**, when `config.toml` has `password_store = 'os'`. `lms-sync --setup` and the interface put it there whenever the computer has one:
+
+   | Computer | Store | Where to see the entry |
+   |---|---|---|
+   | Windows | Credential Manager | Control Panel → Credential Manager → Windows Credentials, `lms-sync:<username>@<LMS host>` |
+   | macOS | Keychain | Keychain Access, `lms-sync` |
+   | Linux desktop | GNOME Keyring or KWallet, through `secret-tool` | Passwords and Keys, `lms-sync` |
+
+   The store keeps it encrypted, unlocked by your login, and lms-sync fetches it itself. That is why neither `config.toml` nor an AI app's settings need to hold it.
+3. **`password = '…'` in `config.toml`**, in plain text. This is used where there is no store (Android, a server), when a store refuses the password, or when you choose it on Linux.
+
+`lms-sync --sign-out` removes the saved password from wherever it is kept, and leaves your username, courses and library alone. `lms-sync --setup` signs in again.
+
+**Linux and scheduled syncs.** A desktop keyring answers only inside your desktop session, and cron has none. So `--setup` asks before using it on Linux. Answer `n` if you will run `lms-sync --sync` from cron. A scheduled run that cannot reach the keyring stops with `Error [config]` and says so; it does not count as a wrong password.
+
+About `config.toml` itself:
 
 - **The file is readable only by you** on macOS, Linux and Android. On Windows, keep it inside your own user folder, as the installer does.
 - **Never commit it.** It is git-ignored in this repository. A password pushed once stays readable in git history, even after you delete the file.
@@ -107,7 +125,7 @@ LMS_USER='your-username' LMS_PASS='your-password' lms-sync --sync
   ```
 
 - **They do not erase what the file already holds.** A password the file has kept for a year survives a run with `LMS_PASS` set.
-- **A password you type into the interface is saved to the file**, even on a run where `LMS_PASS` is set.
+- **A password you type into the interface is saved**, in the password store where there is one, otherwise in the file. That holds even on a run where `LMS_PASS` is set. `LMS_PASS` itself is never written to either.
 
 For AI apps, which can hold the password in their own settings, see [Should your password go in the app?](ai-assistants.md#should-your-password-go-in-the-app). Every variable lms-sync reads is listed in [Environment variables](command-line.md#environment-variables).
 

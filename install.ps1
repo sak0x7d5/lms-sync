@@ -855,7 +855,7 @@ function Uninstall-LmsSync {
 	Write-Host "  $dir"
 	foreach ($item in $left) {
 		switch ($item.Name) {
-			'config.toml' { Write-Host '    config.toml       your LMS username and password' }
+			'config.toml' { Write-Host '    config.toml       your LMS sign-in and settings' }
 			'manifest.json' { Write-Host '    manifest.json     what has already been downloaded' }
 			'drive-token.json' { Write-Host '    drive-token.json  your Google sign-in' }
 			'drive-push.json' { Write-Host '    drive-push.json   what has been copied to Drive' }
@@ -867,6 +867,23 @@ function Uninstall-LmsSync {
 	Write-Host ''
 	Write-Host "  Remove-Item -Recurse '$dir'"
 	Write-Host ''
+
+	# The program that would remove the saved password is gone by now, and
+	# the entry is the student's, so like everything else here it is named,
+	# never removed.
+	$cfg = Join-Path $dir 'config.toml'
+	$stored = $false
+	try {
+		foreach ($line in [System.IO.File]::ReadAllLines($cfg)) {
+			if ($line -match '^\s*password_store\s*=') { $stored = $true }
+		}
+	} catch { }
+	if ($stored) {
+		Write-Host 'Your LMS password is not in that folder: it is in Windows Credential'
+		Write-Host 'Manager. To remove it as well, open Control Panel > Credential Manager >'
+		Write-Host 'Windows Credentials and remove the entry that starts with lms-sync:'
+		Write-Host ''
+	}
 }
 
 function Get-OsArchitecture {

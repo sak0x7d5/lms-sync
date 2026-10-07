@@ -199,6 +199,12 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		s.cfg.SetUsername(in.Username)
 		if in.Password != "" {
 			s.cfg.SetPassword(in.Password)
+			// A typed password goes to the OS store where every kind of run
+			// can reach it — the same choice --setup makes, without the
+			// question it asks on Linux, which a page has no good place for.
+			if s.cfg.PasswordStore == "" && storeByDefault(osStore()) {
+				s.cfg.PasswordStore = "os"
+			}
 		}
 		if in.Destination != "" {
 			s.cfg.Destination = in.Destination
@@ -215,7 +221,14 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		// The same guard the config file gets: unknown ids are dropped, and
 		// the list can never end up empty.
 		s.cfg.sanitise()
-		if err := s.cfg.Save(); err != nil {
+		err := s.cfg.Save()
+		if err != nil && s.cfg.PasswordStore == "os" && s.cfg.passDirty {
+			// The store refused the password. Keeping it in the file beats
+			// reporting settings that were typed in good faith as unsaved.
+			s.cfg.PasswordStore = ""
+			err = s.cfg.Save()
+		}
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "Settings could not be saved.", Explain(err))
 			return
 		}

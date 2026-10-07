@@ -19,6 +19,7 @@ Give one mode per command. If you give two, only one of them runs.
 | `lms-sync --extract` | Makes files you have already synced searchable. Never goes online. Run it after installing poppler. See [The searchable copy](how-it-works.md#the-searchable-copy). |
 | `lms-sync --mcp` | Serves your library to an AI app. The app runs this for you; see [Using lms-sync with an AI assistant](ai-assistants.md). |
 | `lms-sync --drive-login` | Signs in to Google Drive for the backup, once. It does not turn the backup on. See [Push to Google Drive](cloud-backup.md#push-to-google-drive). |
+| `lms-sync --sign-out` | Removes your saved LMS password, from the password store or `config.toml`. Your username, courses and library stay. See [Credentials](configuration.md#credentials). |
 | `lms-sync --version` | Prints the version and exits. |
 
 Options combine with any mode:
@@ -58,7 +59,7 @@ A scheduler can act on these. Code `2`, for example, means the password needs fi
 
 Sign in once first, with `lms-sync --setup` or the interface, to check it signs in and saves where you expect. A scheduled run finds its settings beside the program, so it needs no working folder.
 
-- **Credentials** come from `config.toml`. To keep the password out of that file, give the scheduler `LMS_USER` and `LMS_PASS` instead. See [Credentials](configuration.md#credentials).
+- **Credentials** come from your computer's password store or `config.toml`, wherever `--setup` saved them. Windows Task Scheduler and macOS launchd runs can read the store. **Linux cron runs cannot**, so on Linux keep the password in `config.toml` for a cron schedule. See [Credentials](configuration.md#credentials).
 - **One sync runs per library at a time.** If the interface or an AI app is already syncing into the same folder, the scheduled run refuses to start. See [Safety](how-it-works.md#safety).
 - **The Drive backup runs too**, when `drive_push` is on. A scheduled run cannot ask you to sign in, so a missing Google sign-in is a warning naming the command to run, never a failed sync.
 

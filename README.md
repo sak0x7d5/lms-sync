@@ -113,7 +113,7 @@ The installer ends by asking **Sign in to your LMS now?** Press Enter, and answe
 - **Username** and **password** — your normal LMS sign-in, often a roll number rather than an email. The password does not show as you type.
 - **Save courses to** — Enter takes the suggested `Courses` folder in your Documents, or type a whole path of your own.
 
-It checks your sign-in with the LMS before it saves anything, lists your courses, then offers to download them. The first download can take several minutes; later syncs fetch only what changed. Skipped it, or want to change something? Run `lms-sync --setup` any time ([more](docs/install.md#signing-in)).
+It checks your sign-in with the LMS before it saves anything, keeps your password in your computer's password store (Credential Manager, Keychain or your desktop keyring), lists your courses, then offers to download them. The first download can take several minutes; later syncs fetch only what changed. Skipped it, or want to change something? Run `lms-sync --setup` any time ([more](docs/install.md#signing-in)).
 
 <details>
 <summary>Prefer a page in your browser?</summary>

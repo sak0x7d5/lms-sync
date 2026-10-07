@@ -279,11 +279,11 @@ To use a config file kept somewhere else, pass `"args": ["--mcp", "--config", "/
 
 You do not have to put it there. Seven of the eight tools work entirely on your disk and need no password. The password buys one tool: `sync_courses`, which fetches new material when you ask for it in the chat.
 
+- **Best: sign in once with `lms-sync --setup`.** On Windows and macOS, and on a Linux desktop if you agree, the password goes in your computer's password store, encrypted. lms-sync fetches it itself, so the plain entry above can sync and nothing extra goes in the app. See [Credentials](configuration.md#credentials).
 - **Leave it out** and keep `lms-sync --sync` on a schedule ([how](command-line.md#run-it-on-a-schedule)). The assistant still sees everything, as of the last run.
-- **If `config.toml` already holds it**, the plain entry above can sync too. Nothing extra goes in the app.
 - **If you put it in `env`, it stays there.** A password that arrives through `LMS_USER` / `LMS_PASS` is never written into `config.toml`, even when a sync saves that file to record new courses. The file names the variable instead, so one copy stays one copy. It never erases a password the file already holds, either.
 
-Either way it is stored in plain text, in the app's config or in `config.toml`. See [Credentials](configuration.md#credentials).
+In the app's settings, or in `config.toml`, it is plain text. Only the password store keeps it encrypted.
 
 ## What it can do
 

@@ -1117,7 +1117,12 @@ func missingCredentials(cfg *Config, environ []string) string {
 	}
 
 	file := "not found"
-	if cfg.found {
+	if cfg.found && cfg.PasswordStore == "os" {
+		file = "says the password is in this computer's password store"
+		if cfg.savedUsername() == "" {
+			file += ", but names no username"
+		}
+	} else if cfg.found {
 		user, pass := cfg.savedUsername() != "", cfg.savedPassword() != ""
 		switch {
 		case user && pass:
@@ -1131,6 +1136,10 @@ func missingCredentials(cfg *Config, environ []string) string {
 		}
 	}
 	fmt.Fprintf(&b, "  %s: %s\n", cfg.path, file)
+	if cfg.storeErr != nil {
+		fmt.Fprintf(&b, "  password store: %s. %s\n", cfg.storeErr.Error(),
+			strings.ReplaceAll(hintOf(cfg.storeErr), "\n", " "))
+	}
 
 	if stray := strayEnv(environ); len(stray) > 0 {
 		fmt.Fprintf(&b, "\nAlso set, but not read by lms-sync: %s. "+

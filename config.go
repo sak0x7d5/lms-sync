@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +31,10 @@ type Config struct {
 	KeepPages   bool     // also save the captured page, not just the files a tab links to
 	Timezone    string   // IANA zone for dates in saved pages; "" = this machine's
 
+	// PasswordStore is "os" when the password lives in this computer's
+	// password store rather than in the file; see credstore.go.
+	PasswordStore string
+
 	// Copying the finished library up to Google Drive. Off by default: it
 	// needs a Google sign-in that only --drive-login can perform, and a tool
 	// that silently started uploading a student's coursework would be a
@@ -48,6 +53,16 @@ type Config struct {
 	// never the environment's: see writeCredential.
 	fileUsername, filePassword string
 	userFromEnv, passFromEnv   bool
+
+	// The password store's side of it. storedAccount is the entry the
+	// password was read from or last written to, so a changed username moves
+	// it rather than leaving the old one behind; passDirty marks a password
+	// typed on this run, which Save has to put in the store.
+	passFromStore bool
+	passDirty     bool
+	storedAccount string
+	storeName     string
+	storeErr      error
 }
 
 type Course struct {
@@ -181,6 +196,8 @@ func LoadConfig(path string) (*Config, error) {
 			}
 		case "timezone":
 			cfg.Timezone = unquote(raw)
+		case "password_store":
+			cfg.PasswordStore = strings.ToLower(strings.TrimSpace(unquote(raw)))
 		case "keep_pages":
 			cfg.KeepPages = boolOr(unquote(raw), cfg.KeepPages)
 		case "drive_push":
@@ -227,6 +244,12 @@ func (c *Config) sanitise() {
 	}
 	if strings.TrimSpace(c.Destination) == "" {
 		c.Destination = "Courses"
+	}
+
+	// Only one store is known. Anything else would point at a password
+	// nothing can fetch, so the file's own password line is used instead.
+	if c.PasswordStore != "os" {
+		c.PasswordStore = ""
 	}
 
 	// A zone that does not exist is dropped rather than obeyed, like a
@@ -457,6 +480,106 @@ func (c *Config) SetUsername(v string) {
 
 func (c *Config) SetPassword(v string) {
 	c.Password, c.passFromEnv, c.filePassword = v, false, ""
+	c.passFromStore, c.passDirty = false, true
+}
+
+// LoadStoredPassword fetches the password from the OS store when the file
+// says it is there. It runs once, straight after the file is read and before
+// LMS_PASS is laid over it, so every surface — a sync, the interface, the
+// MCP server, a scheduled run — gets the password the same way and none of
+// them knows the store exists.
+//
+// A store that cannot be read is not fatal here: plenty of runs need no
+// password at all (--extract, every MCP tool but one). The reason is kept,
+// and Validate returns it to whatever does need one.
+func (c *Config) LoadStoredPassword() {
+	if c.PasswordStore != "os" || c.Username == "" {
+		return
+	}
+	account := storeAccount(c.Username, c.BaseURL)
+	st := osStore()
+	if st == nil {
+		c.storeErr = failf(KindConfig, "read the saved password",
+			"config.toml says the password is in this computer's password store, but lms-sync\n"+
+				"cannot reach one here. Run lms-sync --setup to sign in again.", nil)
+		return
+	}
+	c.storeName = st.Name()
+	pw, err := st.Get(account)
+	switch {
+	case errors.Is(err, errNoCredential):
+		c.storeErr = failf(KindConfig, "read the saved password",
+			st.Name()+" has no password saved for "+account+".\n"+
+				"Run lms-sync --setup to sign in again.", nil)
+	case err != nil:
+		hint := "The store did not answer; it may be locked. Unlock it, or run\n" +
+			"lms-sync --setup to sign in again."
+		if st.NeedsSession() {
+			hint = "The keyring answers only inside a desktop session, and a run from cron\n" +
+				"has none. Run lms-sync --setup and answer n to keep the password in\n" +
+				"config.toml instead."
+		}
+		c.storeErr = failf(KindConfig, "read the saved password from "+st.Name(), hint, err)
+	default:
+		c.Password, c.passFromStore, c.storedAccount = pw, true, account
+	}
+}
+
+// savePasswordToStore puts a newly typed password in the store, before the
+// file that points at it is written — so a store that refuses it fails the
+// save, rather than leaving a config pointing at an entry that is not there.
+func (c *Config) savePasswordToStore() error {
+	if c.PasswordStore != "os" {
+		return nil
+	}
+	account := storeAccount(c.savedUsername(), c.BaseURL)
+	moved := c.storedAccount != "" && c.storedAccount != account
+	if !c.passDirty && !moved {
+		return nil
+	}
+	pw := c.savedPassword()
+	if pw == "" {
+		return nil
+	}
+	st := osStore()
+	if st == nil {
+		return failf(KindConfig, "save the password",
+			"This machine has no password store lms-sync can use.", nil)
+	}
+	if err := st.Set(account, pw); err != nil {
+		return failf(KindConfig, "save the password in "+st.Name(),
+			"The store refused it. Nothing was changed.", err)
+	}
+	if moved {
+		// Best effort: an old entry left behind holds a password that still
+		// works, which is untidy, not wrong.
+		st.Delete(c.storedAccount)
+	}
+	c.storedAccount, c.storeName, c.passDirty = account, st.Name(), false
+	return nil
+}
+
+// ForgetPassword removes the saved password, wherever it is kept, and says
+// where that was. The username, courses and library stay.
+func (c *Config) ForgetPassword() (string, error) {
+	where := ""
+	if c.PasswordStore == "os" {
+		st := osStore()
+		if st == nil {
+			return "", failf(KindConfig, "remove the saved password",
+				"This machine has no password store lms-sync can reach.", nil)
+		}
+		if err := st.Delete(storeAccount(c.savedUsername(), c.BaseURL)); err != nil {
+			return "", failf(KindConfig, "remove the password from "+st.Name(), "", err)
+		}
+		where = st.Name()
+	} else if c.savedPassword() != "" {
+		where = filepath.Base(c.path)
+	}
+	c.PasswordStore = ""
+	c.Password, c.filePassword, c.passFromEnv = "", "", false
+	c.passFromStore, c.passDirty, c.storedAccount = false, false, ""
+	return where, c.Save()
 }
 
 // savedUsername and savedPassword are what Save writes: the file's own
@@ -491,8 +614,11 @@ func (c *Config) credentialOrigins() (user, pass string) {
 		}
 		return file
 	}
-	return origin(c.Username, c.userFromEnv, "LMS_USER"),
-		origin(c.Password, c.passFromEnv, "LMS_PASS")
+	pass = origin(c.Password, c.passFromEnv, "LMS_PASS")
+	if c.passFromStore && !c.passFromEnv {
+		pass = c.storeName
+	}
+	return origin(c.Username, c.userFromEnv, "LMS_USER"), pass
 }
 
 // writeCredential emits one credential line, or says where the credential
@@ -513,6 +639,9 @@ func (c *Config) Save() error {
 	if c.path == "" {
 		return failf(KindConfig, "save config", "No config path is set.", nil)
 	}
+	if err := c.savePasswordToStore(); err != nil {
+		return err
+	}
 
 	var b strings.Builder
 	b.WriteString("# lms-sync configuration\n#\n")
@@ -520,7 +649,13 @@ func (c *Config) Save() error {
 	b.WriteString("# Git-ignored by default. Never commit it or send it to anyone.\n\n")
 	fmt.Fprintf(&b, "base_url    = %s\n", tomlQuote(c.BaseURL))
 	writeCredential(&b, "username", c.savedUsername(), "LMS_USER")
-	writeCredential(&b, "password", c.savedPassword(), "LMS_PASS")
+	if c.PasswordStore == "os" {
+		b.WriteString("# The password is not in this file: it is in this computer's password\n")
+		b.WriteString("# store, under lms-sync. lms-sync --sign-out removes it.\n")
+		b.WriteString("password_store = 'os'\n")
+	} else {
+		writeCredential(&b, "password", c.savedPassword(), "LMS_PASS")
+	}
 	b.WriteString("\n# Where downloaded files are SAVED. Only course folders land here.\n")
 	b.WriteString("# Windows paths need single quotes so '\\' stays literal:\n")
 	b.WriteString("#   destination = 'D:\\University\\Courses'\n")
@@ -634,6 +769,8 @@ func (c *Config) Validate() error {
 	case c.Username == "":
 		return failf(KindConfig, "check settings",
 			"No username. This is your LMS login, often a roll number.", nil)
+	case c.Password == "" && c.storeErr != nil:
+		return c.storeErr
 	case c.Password == "":
 		return failf(KindConfig, "check settings",
 			"No password. Put it in config.toml or set LMS_PASS.", nil)

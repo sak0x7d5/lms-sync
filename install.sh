@@ -1192,7 +1192,7 @@ do_uninstall() {
 			continue
 		fi
 		case "$(basename "$uninstall_left")" in
-		config.toml) say "    config.toml     your LMS username and password" ;;
+		config.toml) say "    config.toml     your LMS sign-in and settings" ;;
 		manifest.json) say "    manifest.json   what has already been downloaded" ;;
 		drive-token.json) say "    drive-token.json  your Google sign-in" ;;
 		drive-push.json) say "    drive-push.json   what has been copied to Drive" ;;
@@ -1203,6 +1203,26 @@ do_uninstall() {
 	say 'Delete it yourself once you are sure:'
 	say ''
 	say "  rm -rf $INSTALL_DIR"
+	say ''
+	uninstall_store_note
+}
+
+# uninstall_store_note says where the password is when config.toml points at
+# the OS password store. The program that would remove it is gone by now, and
+# the entry is the student's, so — like everything else left here — it is
+# named with the command to remove it, never removed.
+uninstall_store_note() {
+	if ! grep -q "^[[:space:]]*password_store[[:space:]]*=" "$INSTALL_DIR/config.toml" 2>/dev/null; then
+		return 0
+	fi
+	say 'Your LMS password is not in that folder: it is in this computer'"'"'s'
+	say 'password store, under lms-sync. To remove it as well:'
+	say ''
+	if [ "$OS" = darwin ]; then
+		say '  security delete-generic-password -s lms-sync'
+	else
+		say '  secret-tool clear service lms-sync'
+	fi
 	say ''
 }
 

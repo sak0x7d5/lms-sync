@@ -189,6 +189,10 @@ func setupOn(ctx context.Context, cfg *Config, manifest *Manifest, p *prompter, 
 	fmt.Fprintf(out, "Your answers are saved to %s once the LMS accepts them.\n", cfg.path)
 	fmt.Fprintln(out, "Press Enter to keep what is shown in [brackets].")
 	fmt.Fprintln(out)
+	if cfg.storeErr != nil && cfg.Password == "" {
+		fmt.Fprintf(out, "Your saved password could not be read (%s), so type it again.\n\n",
+			cfg.storeErr.Error())
+	}
 
 	client, err := setupSignIn(ctx, cfg, p, insecure)
 	if err != nil {
@@ -217,11 +221,31 @@ func setupOn(ctx context.Context, cfg *Config, manifest *Manifest, p *prompter, 
 		return setupStopped(out, err, false)
 	}
 
+	if err := setupPasswordStore(ctx, cfg, p); err != nil {
+		return setupStopped(out, err, false)
+	}
+	if cfg.PasswordStore == "os" {
+		// Written to the store first and on its own, so a store that refuses
+		// costs the student nothing: the password goes in the file instead,
+		// and setup still finishes.
+		if err := cfg.savePasswordToStore(); err != nil {
+			fmt.Fprintf(out, "\nThe password could not be kept in the password store (%s),\n"+
+				"so it goes in %s instead.\n", err.Error(), filepath.Base(cfg.path))
+			cfg.PasswordStore = ""
+		}
+	}
 	if err := cfg.Save(); err != nil {
 		return reportErr(err)
 	}
-	fmt.Fprintf(out, "\nSaved. Rename the course folders in %s if you like;\n"+
-		"only the ids matter.\n\n", filepath.Base(cfg.path))
+	fmt.Fprintln(out)
+	if cfg.PasswordStore == "os" {
+		fmt.Fprintf(out, "Saved. Your password is in %s; %s holds your username\n"+
+			"and courses, not the password.\n", cfg.storeName, filepath.Base(cfg.path))
+	} else {
+		fmt.Fprintf(out, "Saved. Your password is in %s.\n", cfg.path)
+	}
+	fmt.Fprintf(out, "Rename the course folders in %s if you like; only the ids matter.\n\n",
+		filepath.Base(cfg.path))
 
 	// From here on setup has done its job, and says so in its exit code: a
 	// first sync with one forbidden file in it is that sync's news, and an
@@ -237,6 +261,43 @@ func setupOn(ctx context.Context, cfg *Config, manifest *Manifest, p *prompter, 
 	}
 	setupNext(out, synced)
 	return 0
+}
+
+// setupPasswordStore decides where the password is kept.
+//
+// The OS store when there is one every kind of run can reach: encrypted, and
+// fetched by lms-sync itself, so neither the file nor an AI app's settings
+// ever hold it. A desktop keyring on Linux is the exception that is asked
+// about — cron has no login session, so a password kept there is one a
+// scheduled sync cannot read. No store at all (Termux, a server) means the
+// file, readable only by this account, as before.
+func setupPasswordStore(ctx context.Context, cfg *Config, p *prompter) error {
+	st := osStore()
+	switch {
+	case st == nil || !storeUsable(st):
+		if cfg.PasswordStore == "os" {
+			fmt.Fprintln(p.out, "\nThis computer's password store cannot be reached now, so your")
+			fmt.Fprintf(p.out, "password goes in %s.\n", filepath.Base(cfg.path))
+		}
+		cfg.PasswordStore = ""
+	case st.NeedsSession():
+		fmt.Fprintf(p.out, "\nKeep your password in %s rather than in %s?\n",
+			st.Name(), filepath.Base(cfg.path))
+		fmt.Fprintln(p.out, "Answer n if you will run lms-sync --sync from cron: a scheduled run")
+		fmt.Fprintln(p.out, "cannot reach the keyring, so it could not sign in.")
+		keep, err := p.confirm(ctx, "Keep it in the keyring", true)
+		if err != nil {
+			return err
+		}
+		if keep {
+			cfg.PasswordStore = "os"
+		} else {
+			cfg.PasswordStore = ""
+		}
+	default:
+		cfg.PasswordStore = "os"
+	}
+	return nil
 }
 
 // setupSignIn asks for the LMS address and the account, and keeps asking
@@ -446,7 +507,8 @@ func setupNext(out io.Writer, synced bool) {
 		fmt.Fprintln(out, "To ask about your courses from an AI app, give it this program:")
 		fmt.Fprintf(out, "    command  %s\n", exe)
 		fmt.Fprintln(out, "    args     --mcp")
-		fmt.Fprintln(out, "Your sign-in is saved beside it, so the app's entry needs nothing else.")
+		fmt.Fprintln(out, "lms-sync finds your sign-in itself, so the app's entry needs nothing else:")
+		fmt.Fprintln(out, "no env or environment block.")
 		fmt.Fprintln(out, "Steps for each app: https://github.com/sak0x7d5/lms-sync/blob/main/docs/ai-assistants.md")
 	}
 }

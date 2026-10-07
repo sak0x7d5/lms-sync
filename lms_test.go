@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -6135,5 +6136,255 @@ func TestThePasswordIsReadWithEchoOff(t *testing.T) {
 	}
 	if !echoOn {
 		t.Error("echo was left off")
+	}
+}
+
+// No test may reach this machine's real password store — CI has none, and a
+// developer's keyring is not a test fixture. Tests that want one install
+// fakeStore themselves.
+func init() { osStore = func() credStore { return nil } }
+
+// ---------------------------------------------------------------------------
+// The OS password store
+// ---------------------------------------------------------------------------
+
+type fakeStore struct {
+	entries map[string]string
+	setErr  error
+	getErr  error
+	session bool
+}
+
+func (*fakeStore) Name() string         { return "Fake Keychain" }
+func (f *fakeStore) NeedsSession() bool { return f.session }
+func (f *fakeStore) Get(account string) (string, error) {
+	if f.getErr != nil {
+		return "", f.getErr
+	}
+	pw, ok := f.entries[account]
+	if !ok {
+		return "", errNoCredential
+	}
+	return pw, nil
+}
+func (f *fakeStore) Set(account, secret string) error {
+	if f.setErr != nil {
+		return f.setErr
+	}
+	f.entries[account] = secret
+	return nil
+}
+func (f *fakeStore) Delete(account string) error {
+	delete(f.entries, account)
+	return nil
+}
+
+// useFakeStore makes st this machine's password store for one test.
+func useFakeStore(t *testing.T, st *fakeStore) *fakeStore {
+	t.Helper()
+	if st.entries == nil {
+		st.entries = map[string]string{}
+	}
+	prev := osStore
+	osStore = func() credStore { return st }
+	t.Cleanup(func() { osStore = prev })
+	return st
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// The point of the store: the password is encrypted and fetched by lms-sync
+// itself, so neither config.toml nor an AI app's settings ever hold it — and
+// a password that was in the file moves out of it.
+func TestSetupKeepsThePasswordInTheOSStoreNotTheFile(t *testing.T) {
+	setupHome(t)
+	st := useFakeStore(t, &fakeStore{})
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv) // the file already holds the password
+	cfg.found = true
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(readFile(t, cfg.path), "correct-horse") {
+		t.Fatal("precondition: the password starts in the file")
+	}
+
+	code, out, _ := runSetup(t, cfg, "", "", "", cfg.Destination, "n")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	account := storeAccount("37103", srv.URL)
+	if st.entries[account] != "correct-horse" {
+		t.Errorf("store holds %v, want the password under %s", st.entries, account)
+	}
+	body := readFile(t, cfg.path)
+	if strings.Contains(body, "correct-horse") {
+		t.Errorf("the password is still in config.toml:\n%s", body)
+	}
+	if !strings.Contains(body, "password_store = 'os'") {
+		t.Errorf("config.toml does not say where the password is:\n%s", body)
+	}
+	if !strings.Contains(out, "Fake Keychain") {
+		t.Errorf("setup did not say where the password went:\n%s", out)
+	}
+
+	// And every surface gets it back the same way.
+	back, err := LoadConfig(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back.LoadStoredPassword()
+	if back.Password != "correct-horse" {
+		t.Errorf("read back %q", back.Password)
+	}
+	if _, pass := back.credentialOrigins(); pass != "Fake Keychain" {
+		t.Errorf("password origin %q, want the store", pass)
+	}
+	if err := back.Validate(); err != nil {
+		t.Errorf("a config whose password is in the store does not validate: %v", err)
+	}
+}
+
+// A store that refuses must not cost the student their setup.
+func TestAStoreThatRefusesFallsBackToTheFile(t *testing.T) {
+	setupHome(t)
+	useFakeStore(t, &fakeStore{setErr: errors.New("keyring is locked")})
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+
+	code, out, _ := runSetup(t, cfg, srv.URL, "37103", "correct-horse", filepath.Join(t.TempDir(), "C"), "n")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	body := readFile(t, cfg.path)
+	if !strings.Contains(body, "correct-horse") || strings.Contains(body, "password_store") {
+		t.Errorf("want the password in the file and no store pointer:\n%s", body)
+	}
+	if !strings.Contains(out, "keyring is locked") {
+		t.Errorf("setup did not say why the store was not used:\n%s", out)
+	}
+}
+
+// A keyring that only a desktop session can reach is invisible to cron, so
+// it is a question rather than a default.
+func TestASessionOnlyKeyringIsAskedAbout(t *testing.T) {
+	setupHome(t)
+	st := useFakeStore(t, &fakeStore{session: true})
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := setupConfig(t)
+
+	code, out, _ := runSetup(t, cfg, srv.URL, "37103", "correct-horse",
+		filepath.Join(t.TempDir(), "C"), "n", "n")
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s", code, out)
+	}
+	if !strings.Contains(out, "cron") {
+		t.Errorf("the question did not say why it is asked:\n%s", out)
+	}
+	if len(st.entries) != 0 || !strings.Contains(readFile(t, cfg.path), "correct-horse") {
+		t.Error("answering no still put the password in the keyring")
+	}
+}
+
+// LMS_PASS still wins for the run, and is never written anywhere: not the
+// file, and not the store.
+func TestTheEnvironmentPasswordWinsOverTheStoreAndIsNeverStored(t *testing.T) {
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	account := storeAccount(cfg.Username, cfg.BaseURL)
+	st := useFakeStore(t, &fakeStore{entries: map[string]string{account: "from-the-store"}})
+	cfg.Password, cfg.PasswordStore = "", "os"
+
+	cfg.LoadStoredPassword()
+	cfg.ApplyEnv("", "from-the-env")
+	if cfg.Password != "from-the-env" {
+		t.Errorf("password %q, want the environment's", cfg.Password)
+	}
+	cfg.Courses = append(cfg.Courses, Course{ID: "new", Folder: "New"}) // a sync saving a new course
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if st.entries[account] != "from-the-store" {
+		t.Errorf("the store now holds %q", st.entries[account])
+	}
+	if strings.Contains(readFile(t, cfg.path), "from-the-env") {
+		t.Error("the environment's password reached config.toml")
+	}
+}
+
+// A store that cannot be read is a reason, not a missing password: the
+// student is told which store and what to do.
+func TestAnUnreadableStoreSaysSo(t *testing.T) {
+	useFakeStore(t, &fakeStore{getErr: errors.New("no session bus")})
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+	cfg.Username, cfg.PasswordStore, cfg.found = "37103", "os", true
+
+	cfg.LoadStoredPassword()
+	err := cfg.Validate()
+	if KindOf(err) != KindConfig || !strings.Contains(Explain(err), "Fake Keychain") {
+		t.Errorf("got %v", Explain(err))
+	}
+	if msg := missingCredentials(cfg, nil); !strings.Contains(msg, "no session bus") ||
+		!strings.Contains(msg, "password store") {
+		t.Errorf("the MCP reply does not mention the store:\n%s", msg)
+	}
+}
+
+// One roll number at two universities is two entries, and a changed
+// username moves the entry rather than leaving a working password behind.
+func TestStoreEntriesAreKeyedByUserAndHost(t *testing.T) {
+	if a, b := storeAccount("37103", "https://lms.iba.edu.pk"), storeAccount("37103", "https://lms.other.edu"); a == b {
+		t.Errorf("both are %q", a)
+	}
+	st := useFakeStore(t, &fakeStore{})
+	cfg := DefaultConfig()
+	cfg.path = filepath.Join(t.TempDir(), "config.toml")
+	cfg.PasswordStore = "os"
+	cfg.SetUsername("37103")
+	cfg.SetPassword("pw")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	cfg.SetUsername("37104")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if _, old := st.entries[storeAccount("37103", cfg.BaseURL)]; old || st.entries[storeAccount("37104", cfg.BaseURL)] != "pw" {
+		t.Errorf("entries %v, want the password moved to the new username", st.entries)
+	}
+}
+
+func TestSignOutRemovesThePasswordAndKeepsTheRest(t *testing.T) {
+	st := useFakeStore(t, &fakeStore{})
+	srv := newFakeSakai(t, "correct-horse")
+	cfg := testConfig(t, srv)
+	cfg.Courses = []Course{{ID: "site-calc", Folder: "Calculus"}}
+	cfg.PasswordStore = "os"
+	cfg.SetPassword("correct-horse")
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	where, err := cfg.ForgetPassword()
+	if err != nil || where != "Fake Keychain" {
+		t.Fatalf("where %q, err %v", where, err)
+	}
+	if len(st.entries) != 0 {
+		t.Errorf("store still holds %v", st.entries)
+	}
+	back, err := LoadConfig(cfg.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back.Password != "" || back.PasswordStore != "" || back.Username != "37103" || len(back.Courses) != 1 {
+		t.Errorf("after sign-out: %q %q %q %v", back.Password, back.PasswordStore, back.Username, back.Courses)
 	}
 }

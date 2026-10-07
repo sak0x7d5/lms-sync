@@ -31,6 +31,7 @@ func run() int {
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
 		doSetup    = flag.Bool("setup", false, "sign in from this terminal, check it works, and save it")
+		doSignOut  = flag.Bool("sign-out", false, "remove the saved LMS password, keep everything else")
 		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
 		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
@@ -66,6 +67,9 @@ func run() int {
 	if *destFlag != "" {
 		cfg.Destination = *destFlag
 	}
+	// Before anything else reads cfg.Password, so no surface has to know
+	// where it was kept.
+	cfg.LoadStoredPassword()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -77,6 +81,9 @@ func run() int {
 	// to mean the one that will be saved, and LMS_PASS never is.
 	if *doSetup {
 		return cliSetup(ctx, cfg, manifest, *insecure)
+	}
+	if *doSignOut {
+		return cliSignOut(cfg)
 	}
 
 	// Environment wins over the file, so a scheduled run can avoid storing
@@ -117,6 +124,7 @@ func usage() {
 
   lms-sync                 open the interface (default)
   lms-sync --setup         sign in from this terminal instead, and check it works
+  lms-sync --sign-out      remove the saved password; courses and library stay
   lms-sync --sync          sync and exit, for scheduled runs
   lms-sync --discover      find your courses and save them
   lms-sync --dry-run       show what would download, write nothing
@@ -403,6 +411,23 @@ func cliDriveLogin(ctx context.Context, cfg *Config) int {
 		fmt.Println("    drive_push = true      in config.toml, for every run")
 		fmt.Println("    lms-sync --sync --push-drive    for one run")
 	}
+	return 0
+}
+
+// cliSignOut removes the saved password and says where it was. It runs on
+// the file's own credentials, like setup: LMS_PASS was never saved, so there
+// is nothing of it to remove.
+func cliSignOut(cfg *Config) int {
+	where, err := cfg.ForgetPassword()
+	if err != nil {
+		return reportErr(err)
+	}
+	if where == "" {
+		fmt.Println("No saved password to remove.")
+	} else {
+		fmt.Printf("Removed your LMS password from %s.\n", where)
+	}
+	fmt.Println("Your courses and library are untouched. lms-sync --setup signs in again.")
 	return 0
 }
 

@@ -61,7 +61,9 @@ address, username, password and where to save, then:
 - **signs in to check them before it saves anything.** A wrong password is
   asked for again. After three refusals it stops, rather than risk your LMS
   locking the account;
-- **lists your courses** and saves everything to `config.toml`;
+- **lists your courses** and saves your settings to `config.toml`, and your
+  password to your computer's password store, where it has one (on Linux it
+  asks first). See [Credentials](configuration.md#credentials);
 - **offers to download your courses** straight away;
 - **prints what to give an AI app**: the program's full path and `--mcp`.
   Your sign-in is in `config.toml`, so the app's entry needs nothing else. See
@@ -243,7 +245,9 @@ It removes the program, the PATH entry or symlink, the shell startup block,
 the daily update check, and the installer's own copy and `update.log`.
 
 It leaves `config.toml`, `manifest.json`, the Drive files and your course
-library alone, and lists whatever is still there. It removes a folder only
+library alone, and lists whatever is still there. A password kept in your
+computer's password store stays too; the uninstaller says how to remove it,
+or run `lms-sync --sign-out` before uninstalling. It removes a folder only
 once it is empty, so it cannot delete your settings or your courses. Deleting
 those is your decision: remove the folder yourself, remembering that
 `config.toml` holds your password. If you used the Drive backup, see

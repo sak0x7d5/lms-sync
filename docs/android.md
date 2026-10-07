@@ -23,7 +23,9 @@ need root.
 
 The installer recognises Termux and links `lms-sync` into `$PREFIX/bin`, which
 is already on your PATH, so it edits no startup file. At the end it offers to
-sign you in, right there in Termux: press Enter. When it asks where to save,
+sign you in, right there in Termux: press Enter. Android gives Termux no
+password store, so your password is kept in `config.toml`, readable only by
+Termux. When it asks where to save,
 Enter takes `/storage/emulated/0/Courses`, the folder the next section
 recommends.
 
