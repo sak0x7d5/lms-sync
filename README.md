@@ -4,19 +4,68 @@
 [![Go](https://img.shields.io/badge/go-1.21%2B-00ADD8)](https://go.dev)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 
-Mirror your course materials from a [Sakai](https://www.sakailms.org/) LMS to a
-folder on your machine — slides, handouts and code, as ordinary local files.
+**Ask AI about your lectures. It answers from your own course files.**
 
-**One file. No Python, no pip, no runtime.** Download the binary, run it, a
-small window opens in your browser. Fill in four fields once and press Sync.
+lms-sync copies everything your university LMS holds for you (slides, outlines,
+announcements and assignment briefs) to a folder on your machine. It makes all
+of it searchable and hands it to Claude or any other MCP assistant, so you can
+ask questions about it.
 
-> Works with Sakai installs that use native form login. If your university
-> signs in through CAS, Shibboleth or another SSO page, this can't
-> authenticate — see [Will this work at my university?](#will-this-work-at-my-university).
+One file, no runtime and no dependencies. Runs on Windows, macOS, Linux and
+Android.
 
----
+<!-- hero GIF: docs/media/hero.gif, made with demo-video/compose.sh -->
+<!-- demo video: drag demo.mp4 into the GitHub editor here; the URL must sit on a line of its own -->
 
-## Use it
+## The problem
+
+Course material is spread over six tabs of a website. Each one sits behind a
+login, and half of it isn't a file at all: due dates live in Assignments, quiz
+topics live in Announcements, and reading lists live on a course's Overview
+page. To ask a chatbot about your own course you have to find, download and
+upload each piece yourself, every time. It takes minutes, and the parts that
+aren't files never get uploaded at all.
+
+## What you can ask
+
+> **What have we covered so far in Statistics, up to measures of central tendency?**
+
+It answers from the course outline and three lecture PDFs and names each file.
+It also notes that the outline lists the mode in week 3 but the uploaded notes
+stop at the median.
+
+> **When is my Statistics assignment due, and what's on it?**
+
+The due date comes from the Assignments tab, in your own time zone. That's a
+web page, not a file, so you'd never think to upload it.
+
+> **I have a programming quiz this week. What's it on, and what array mistakes did my lecturer warn us about?**
+
+This answer combines an announcement with slide 11 of a PowerPoint deck.
+
+Then: **"Quiz me on it."** Questions come from your own slides. Your answers
+are recorded and come back on a spaced-repetition schedule, so practice goes to
+what you keep getting wrong.
+
+## How it works
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/how-it-works-dark.svg">
+    <img src="docs/media/how-it-works.svg" alt="The LMS tabs are synced by lms-sync into a folder on your disk, its text is extracted into a search index, and an AI assistant asks questions of it over MCP" width="760">
+  </picture>
+</p>
+
+1. **Sync.** It signs in to your LMS, finds your courses, and downloads only
+   what is new or changed from each tab. Run it by hand or on a schedule.
+2. **Extract.** PowerPoint, Word, Excel and PDF are each reduced once to
+   plain text, so the whole library can be searched. A plain `grep` can't see
+   inside a `.pptx`.
+3. **Ask.** `lms-sync --mcp` serves the library to your assistant. Answers
+   come from the copy on your disk in milliseconds, and cite the file they
+   came from.
+
+## Quickstart
 
 **macOS, Linux, Android (Termux)**
 
@@ -24,238 +73,17 @@ small window opens in your browser. Fill in four fields once and press Sync.
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
 ```
 
-**Windows** — in PowerShell:
+**Windows** (in PowerShell)
 
 ```powershell
 irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | iex
 ```
 
-Then run `lms-sync`. Your browser opens; fill in the LMS address, username,
-password and where to save, then press **Find my courses** and **Sync**.
-Reopening skips straight to the sync screen — settings are remembered.
+Run `lms-sync`. A page opens in your browser. Enter your LMS address,
+username, password and a folder, then press **Find my courses** and **Sync**.
 
-The installer works out which machine you are on, downloads the one binary
-that matches, checks it against the release's `SHA256SUMS`, puts it in a
-folder of its own, puts `lms-sync` on your PATH and schedules a daily
-[update check](#updates). It is a shell script and does nothing else — read it
-first if you would rather:
-[install.sh](install.sh), [install.ps1](install.ps1).
-
-### Where it goes
-
-| | Binary and settings | On your PATH |
-|---|---|---|
-| Linux, macOS | `~/.local/share/lms-sync/` | `~/.local/bin/lms-sync`, a symlink |
-| Android (Termux) | `~/.local/share/lms-sync/` | `$PREFIX/bin/lms-sync`, a symlink |
-| Windows | `%LOCALAPPDATA%\Programs\lms-sync\` | that folder |
-
-It gets a folder of its own because `config.toml` and `manifest.json` live
-beside the binary, not in your destination. Only course folders go to the
-destination.
-
-> **Set a destination in the interface.** Until you do, courses land in a
-> `Courses` folder inside that same directory — which on Windows and in a
-> hidden `~/.local/share` is not where you want to go looking for them.
-
-### Updates
-
-It keeps itself up to date. The installer registers a daily check with the
-machine's own scheduler: Task Scheduler on Windows, launchd on a Mac, and a
-systemd user timer on Linux (or cron where there is no systemd). Once a day it
-compares the installed binary against the newest release's `SHA256SUMS`, and
-downloads and verifies a new one only when they differ. Your settings and
-download history stay where they are, and a sync or assistant that is running
-keeps going on the old binary until it next starts.
-
-- Each check writes its result to `update.log` in the install folder.
-- To update by hand, run the command the schedule runs:
-  `sh ~/.local/share/lms-sync/install.sh --update`, or on Windows
-  `& "$env:LOCALAPPDATA\Programs\lms-sync\install.ps1" -Update`.
-- `--no-auto-update` (`-NoAutoUpdate`) installs without the daily check.
-  Pinning a release with `--version` also turns it off, because a pinned
-  release that updates itself is no longer pinned.
-- On Termux the check uses cron, which only runs while `crond` does:
-  `pkg install cronie termux-services && sv-enable crond`.
-
-Running the install command again also upgrades in place, and adds the daily
-check to an install made before it existed.
-
-To pass an option, fetch the script and run it:
-
-```bash
-curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh -o install.sh
-sh install.sh --version v1.3.0        # a particular release, never auto-updated
-sh install.sh --install-dir ~/lms-sync
-sh install.sh --no-modify-path        # leave your shell profile alone
-sh install.sh --no-auto-update        # no daily update check
-sh install.sh --uninstall
-```
-
-PowerShell needs the script as a block before it will take a parameter:
-
-```powershell
-& ([scriptblock]::Create((irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1))) -Uninstall
-```
-
-Uninstalling removes the binary, the PATH entry, the symlink and the daily
-update check. It leaves
-`config.toml` and anything else in the folder alone, and tells you what is
-still there — it cannot delete your settings or a synced library.
-
-### Or download it yourself
-
-Every build is on the [Releases](https://github.com/sak0x7d5/lms-sync/releases)
-page:
-
-| Your machine | File |
-|---|---|
-| Windows | `lms-sync-windows-amd64.exe` |
-| Windows on ARM | `lms-sync-windows-arm64.exe` |
-| Mac (Apple silicon) | `lms-sync-darwin-arm64` |
-| Mac (Intel) | `lms-sync-darwin-amd64` |
-| Linux, PC | `lms-sync-linux-amd64` |
-| Linux on ARM — Raspberry Pi, ARM server | `lms-sync-linux-arm64` |
-| Android, in [Termux](#on-your-phone-android) | `lms-sync-linux-arm64` |
-
-Put it in a folder of its own — it keeps `config.toml` and `manifest.json`
-beside itself — and on macOS or Linux `chmod +x` it first.
-
-Every release also publishes `SHA256SUMS`, covering the binaries and both
-installer scripts. To check a download against it:
-
-```bash
-curl -fsSLO https://github.com/sak0x7d5/lms-sync/releases/latest/download/SHA256SUMS
-sha256sum --ignore-missing -c SHA256SUMS
-```
-
-On a Mac that is `shasum -a 256`. If yours is too old for `--ignore-missing`,
-run `shasum -a 256 lms-sync-darwin-arm64` and compare the line by eye.
-
-### Unsigned downloads
-
-The binaries are not code-signed, so a browser download warns about them.
-`SHA256SUMS` is what to check instead.
-
-The one-liners above avoid this entirely — a file fetched by `curl` carries no
-`com.apple.quarantine` attribute, and the PowerShell path does not go through
-SmartScreen. It only comes up when you download from the Releases page.
-
-**macOS** — *"cannot be opened because the developer cannot be verified"*.
-Right-click the file and choose **Open**, or:
-
-```bash
-xattr -d com.apple.quarantine ./lms-sync-darwin-arm64
-```
-
-**Windows** — SmartScreen says *"Windows protected your PC"*. Choose
-**More info**, then **Run anyway**.
-
-### On your phone (Android)
-
-Termux is a Linux userland, so the `linux-arm64` binary is the one Android
-runs — there is no separate Android build and nothing to compile on the
-phone. Install [Termux](https://termux.dev) (the F-Droid build; the Play
-Store one is unmaintained), then:
-
-```bash
-pkg install curl
-termux-setup-storage        # once — Android asks for the storage permission
-
-curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
-lms-sync
-```
-
-The installer recognises Termux and links into `$PREFIX/bin`, which is already
-on your PATH, so nothing is written to a shell profile here.
-
-The interface opens in your phone's browser, the same as on a laptop.
-
-**Set the destination to somewhere under `~/storage/shared`** — say
-`/storage/emulated/0/Courses`, which is what the picker on your phone calls
-*Internal storage ▸ Courses*. This matters more on a phone than anywhere
-else, because the folder courses would otherwise go to is inside Termux's own
-private data. Termux's own home directory is inside the app's
-private data, which nothing else on the phone is allowed to read: slides
-synced there cannot be opened by a PDF reader, a file manager, or anything
-you might share them to.
-
-`pkg install poppler` makes PDFs searchable, exactly as on a desktop. There is
-no folder-chooser button on Android — no Termux install has a display to put
-one on — so the destination is typed rather than picked.
-
-## Command line
-
-The interface is optional. Every function works headless, which is what you
-want for a scheduled run:
-
-```
-lms-sync                 open the interface (default)
-lms-sync --sync          sync and exit
-lms-sync --discover      find courses, save them, exit
-lms-sync --dry-run       show what would download, write nothing
-lms-sync --probe         report which tabs your LMS offers, and how
-lms-sync --probe --save-pages ./pages
-                         also write the raw tool pages, for diagnosing a tab
-lms-sync --extract       make synced files searchable, without going online
-lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
-lms-sync --drive-login   sign in to Google Drive for the backup (once)
-lms-sync --push-drive    copy the library to Drive after this sync
-lms-sync --dest PATH     override the destination
-lms-sync --config PATH   use a config file elsewhere
-lms-sync --insecure      skip TLS verification (last resort)
-lms-sync --no-browser    start the interface without opening a browser
-lms-sync --addr HOST:PORT   bind the interface to a fixed address
-lms-sync --version       print the version and exit
-```
-
-Exit codes: `0` success, `1` some files failed, `2` bad credentials or
-configuration, `130` interrupted. Enough for a scheduler to act on.
-
-**Windows** — Task Scheduler → Daily → Program
-`%LOCALAPPDATA%\Programs\lms-sync\lms-sync.exe`, arguments `--sync`,
-"Start in" set to that folder.
-
-**macOS / Linux** — `0 19 * * * $HOME/.local/bin/lms-sync --sync`
-
-Spell the path out: cron runs with a PATH of little more than `/usr/bin:/bin`,
-so `lms-sync` on its own is not found there even though it works in your
-shell. No `cd` is needed — the tool finds its config beside its own binary,
-not in the working directory.
-
-## Use it with an AI assistant
-
-`--mcp` serves your synced library to any assistant that speaks MCP, so you can
-ask about a course instead of hunting through folders. It answers from the
-mirror on your disk, which is why it answers in milliseconds — a crawl takes
-minutes, far too long to sit inside a question. One tool, `sync_courses`, goes
-online to fetch new material; everything else needs no password and no network.
-
-A sync makes the text searchable as it goes (`grep` cannot see inside a
-PowerPoint), so there is nothing extra to run:
-
-```
-lms-sync --sync
-```
-
-`lms-sync --extract` does that pass on its own, which is what you want after
-installing `pdftotext` — it picks up the PDFs it previously had to skip.
-
-### Setting it up
-
-Point your client at the binary. The shape is the same everywhere; only the
-file differs.
-
-**Claude Code** — `.mcp.json` in your project, or run `claude mcp add`.
-**Claude Desktop** — `claude_desktop_config.json`:
-`~/Library/Application Support/Claude/` on macOS,
-`%APPDATA%\Claude\` on Windows.
-Cursor uses the same `mcpServers` block. **opencode does not** — its keys are
-different enough that a copied block registers nothing at all; see
-[opencode](#opencode) below.
-
-If you have already run the tool once, `config.toml` sits beside the binary
-and holds your destination and credentials. Point at the binary and you are
-done:
+Then point your assistant at it. For Claude Desktop, add this to
+`claude_desktop_config.json`:
 
 ```json
 {
@@ -268,415 +96,100 @@ done:
 }
 ```
 
-Use an absolute path. A client starts this binary from its own working
-directory, not from yours — the destination is resolved against the config
-file beside the binary, never against wherever the client happened to be.
+For Claude Code, Cursor and opencode, see [docs/assistants.md](docs/assistants.md).
+For the installer's options and manual downloads, see [docs/install.md](docs/install.md).
 
-If you used the installer, that path is
-`~/.local/share/lms-sync/lms-sync` on macOS and Linux, or
-`%LOCALAPPDATA%\Programs\lms-sync\lms-sync.exe` on Windows. Point at the
-real binary rather than the `~/.local/bin` symlink: both work, but the real
-one is the folder this section keeps talking about.
+## Features
 
-**Prefer this form if you have a `config.toml`.** The alternative below
-repeats settings that already exist in it, and repeated settings drift: change
-your destination in the interface a term from now and a hardcoded `--dest`
-keeps pointing at the old folder, so your assistant reads a library nothing is
-filling any more. Nothing reports that — it just looks like a course stopped
-having material.
+- **Six tabs, not just Resources:** Overview, Syllabus, Announcements,
+  Assignments and Drop Box too. Pages that hold text and no files are saved as
+  pages, and links to material off the LMS are kept in a `Links.md`.
+- **Search inside documents:** pptx, docx, xlsx, PDF, and the saved pages.
+- **Study workflows for your assistant:** `prep_for_class`, `quiz_me`,
+  `explain_from_my_material`, `catch_up` and `study_plan`.
+- **Spaced repetition:** quiz answers are recorded, missed questions come back
+  tomorrow, and `weak_spots` ranks topics by how often you miss them.
+- **Fetch on request:** "anything new in Statistics?" makes the assistant sync
+  just that course and list what changed.
+- **Stays current:** a scheduled `--sync` checks for new material, and the
+  installer updates the binary daily against the release's checksums.
+- **Works on your phone:** the same binary runs under Termux on Android.
+- **Optional Google Drive backup:** a one-way copy that includes your quiz
+  history.
+- **An `index.html` of everything you have**, newest first, with a filter box.
 
-#### Without a config file
+## Built to be trusted
 
-For a machine where the binary has never been run — a second library, or a
-setup you would rather keep entirely in the client — pass everything in:
+It holds your university password and talks to a server that can lock your
+account, so some things are rules, each one backed by a test:
 
-```json
-{
-  "mcpServers": {
-    "lms": {
-      "command": "/full/path/to/lms-sync",
-      "args": ["--mcp", "--dest", "/full/path/to/your/Courses"],
-      "env": {
-        "LMS_USER": "your-username",
-        "LMS_PASS": "your-password"
-      }
-    }
-  }
-}
-```
+- **No dependencies.** The Go standard library only, so `go.mod` has
+  nothing to fetch, vendor or audit.
+- **It never opens a quiz.** On some Sakai versions, simply loading a Tests &
+  Quizzes link starts a timed attempt, so that tool is refused before any of
+  its URLs are known.
+- **It never retries a wrong password.** Retrying is how accounts get locked.
+  A failed sign-in also returns HTTP 200 with the login form, so the session
+  is checked rather than the status code being trusted.
+- **It only reads.** There is no upload or delete path, and it only follows
+  links on the LMS's own content paths.
+- **Your password stays where you put it.** A password from `LMS_PASS` is
+  never written to the config file, and the local interface is bound to
+  `127.0.0.1` with a random token.
+- **Nothing half-written.** Downloads, settings and the download record are
+  all written to a temporary file and then renamed, so a crash can't leave a
+  corrupt or truncated file behind.
+- **166 tests** against a fake Sakai server that reproduces the real quirks.
+  The fake records every request, so the tests can check what was *not*
+  fetched.
 
-`--dest` is needed here because with no config file a relative destination
-resolves to `Courses` beside the binary, which is rarely where you want it.
-Both paths absolute. Environment variables win over the file wherever both
-are set.
-
-**`env` is optional, and worth understanding before you fill it in.** Seven of
-the eight tools only read the folder on your disk — they never connect to
-anything, and they work with no credentials at all. The password buys you one
-tool: `sync_courses`, which fetches new material so you can ask for it in
-conversation instead of dropping to a terminal.
-
-So if you would rather not put a password in a client's config file, leave
-`env` out. Keep `lms-sync --sync` on a schedule instead and the assistant
-still sees everything, just as of the last run.
-
-If you do fill it in, it stays there: a password that arrived in the
-environment is never written into `config.toml`, even when a sync saves that
-file to record newly discovered courses. The saved file names the variable
-instead, so one copy stays one copy.
-
-#### opencode
-
-opencode reads `opencode.json` — in the repository root, or
-`~/.config/opencode/opencode.json` — and three of its keys differ from the
-block above: servers live under `mcp` rather than `mcpServers`, `command` is a
-single array holding the binary *and* its arguments, and environment variables
-go in `environment`, not `env`. A block copied from a Claude config is not
-rejected, it is simply not read, so the server never appears and nothing says
-why.
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "lms": {
-      "type": "local",
-      "enabled": true,
-      "command": ["/full/path/to/lms-sync", "--mcp"],
-      "environment": {
-        "LMS_USER": "your-username",
-        "LMS_PASS": "your-password"
-      }
-    }
-  }
-}
-```
-
-Add `"--dest", "/full/path/to/your/Courses"` to `command` if there is no
-`config.toml` beside the binary. On Android that path matters more than
-anywhere else: see [On your phone](#on-your-phone-android).
-
-### What it offers
-
-It offers eight tools. Four read the mirror: `list_courses`, `find_material`
-(searches the text of every slide, document and saved page), `read_material`
-and `whats_new`. Three keep your study history: `record_answer`, `due_reviews`
-and `weak_spots`. And `sync_courses` is the only one that goes online, so the
-assistant can fetch new material when you ask instead of you dropping to a
-terminal.
-
-It also offers study workflows as prompts, which most clients show as a menu:
-**prep_for_class**, **quiz_me**, **explain_from_my_material**, **catch_up**
-and **study_plan**.
-
-`quiz_me` builds questions from your own slides, in your lecturer's notation —
-and records how each answer went. Those answers come back on a spacing
-schedule, and `study_plan` uses them to say where an hour should actually go,
-rather than towards whatever is most comfortable to re-read. That history
-lives in `<destination>/.lms-study/` and is the one folder here that cannot be
-rebuilt from the LMS.
-
-PDFs need [poppler](https://poppler.freedesktop.org/) for their text —
-`pdftotext` on your PATH: `apt install poppler-utils` on Debian or Ubuntu
-(including a Raspberry Pi), `brew install poppler` on a Mac, `pkg install
-poppler` in Termux. Without it everything else still works and the tool tells
-you which files it could not read.
-
-## Build from source
-
-```bash
-git clone https://github.com/sak0x7d5/lms-sync
-cd lms-sync
-go build
-```
-
-No dependencies — the standard library only, so there is nothing to fetch,
-vendor or audit. `go test ./...` runs the suite against a fake Sakai server.
-
-Cross-compile for everything from one machine:
-
-```bash
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o lms-sync.exe
-GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-mac
-GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-arm64
-```
-
-`CGO_ENABLED=0` (the default when cross-compiling) is what makes those static,
-which is why the `linux/arm64` one runs under Termux as well as on a Raspberry
-Pi: it depends on no libc at all, Android's included. Any other architecture Go
-targets builds the same way — `linux/arm` for a 32-bit phone or an older Pi.
-
-**`go install` is deliberately not offered**, even though the module path
-would allow it. It puts the binary in `~/go/bin`, a folder shared with every
-other Go program you have — and this tool writes `config.toml`, with your LMS
-password in it, beside its own executable. It would also report its version as
-`1.0.0-dev`, because `go install` cannot stamp one. Build it here, or use the
-installer.
-
----
+[How it works, in detail](docs/how-it-works.md)
 
 ## Will this work at my university?
 
-Sakai is open source, so the parts this relies on are identical everywhere:
-Resources live at `/access/content/group/<site-id>/` as a plain directory
-index, courses appear as `/portal/site/<id>` links, and the login fields are
-`eid` and `pw`. Only the hostname differs — `lms.iba.edu.pk`,
-`lms.lums.edu.pk`, and so on.
+lms-sync speaks **Sakai** with its native username-and-password login. It
+does not support Canvas, Moodle or Blackboard, or a campus single sign-on page.
 
-**Authentication is what varies.** Sakai can delegate login to CAS,
-Shibboleth or a campus SSO. When it does, no scripted form post can
-authenticate — the flow is a chain of redirects, and 2FA rules it out
-entirely.
+| | University | LMS | Status |
+|---|---|---|---|
+| <img src="docs/media/logos/iba.png" alt="IBA logo" height="40"> | IBA Karachi | `lms.iba.edu.pk` | ✅ Works. Used every day. |
+| <img src="docs/media/logos/lums.png" alt="LUMS logo" height="32"> | LUMS | `lms.lums.edu.pk` | 🟡 Should work. Same Sakai login form, not tested yet. |
 
-**Ten-second check.** Open `https://<your-lms>/portal/xlogin` in a private
-window — Sakai's own login page:
+<sub>Not affiliated with or endorsed by these institutions.</sub>
+
+**Ten-second check:** open `https://<your-lms>/portal/xlogin` in a private
+window.
 
 | What you see | Result |
 |---|---|
 | A username/password form, and your normal credentials work | ✅ Supported |
-| Redirect to another domain or a branded campus sign-in | ❌ Not supported |
+| A redirect to another domain or a branded campus sign-in | ❌ Not supported |
 | A "Log in with Microsoft/Google" button | ❌ Not supported |
 
+Sakai is open source, so everything else this tool relies on is the same on
+every install: Resources live at `/access/content/group/<site-id>/` as a plain
+directory index, courses appear as `/portal/site/<id>` links, and the login
+fields are `eid` and `pw`. Only the hostname changes. If your university uses
+SSO, the login is a chain of redirects and often 2FA, and no scripted form
+post can get through it.
+
 `/access/login`, `/portal/xlogin` and `/portal/relogin` are all tried
-automatically. Pin one with `login_path` in `config.toml` if needed.
+automatically. To pin one, set `login_path` in `config.toml`. If it works at
+your university, a PR adding it to the table helps the next student.
 
-Confirmed working: IBA Karachi. A PR adding your institution helps the next
-person.
+## Documentation
 
----
-
-## Configuration
-
-`config.toml` sits beside the binary and is written by the interface, so you
-rarely touch it. If you used the installer that is
-`~/.local/share/lms-sync/` on macOS, Linux and Termux, or
-`%LOCALAPPDATA%\Programs\lms-sync\` on Windows.
-
-```toml
-base_url    = 'https://lms.example.edu'
-username    = 'your-username'
-password    = 'your-password'
-destination = 'D:\University\Courses'   # single quotes keep '\' literal
-```
-
-| Key | Default | Meaning |
-|---|---|---|
-| `base_url` | — | your LMS; a bare hostname is accepted |
-| `username` | — | LMS login, often a roll number rather than an email |
-| `password` | — | or set `LMS_PASS` in the environment instead |
-| `destination` | `Courses` | where files are saved |
-| `timeout` | `60` | seconds per request |
-| `delay` | `200` | milliseconds between requests |
-| `retries` | `3` | attempts on timeout / 429 / 5xx |
-| `login_path` | auto | pin the login endpoint |
-| `extensions` | common types | which files to download |
-| `sections` | all six below | which tabs to mirror |
-| `keep_pages` | `false` | also save the captured page, not just the files a tab links to |
-| `timezone` | this computer's | zone for due dates and posting times, e.g. `'Asia/Karachi'`; set it on a phone, where Termux has none and dates would be UTC |
-| `drive_push` | `false` | copy the library to Google Drive after each sync |
-| `drive_folder` | `lms-sync` | folder name in your Drive |
-| `drive_client_id` | built in | only if you want to use your own Google project |
-| `drive_client_secret` | built in | as above |
-
-`LMS_USER` and `LMS_PASS` override the file, so a scheduled run need not
-store a password on disk.
-
-**Never commit `config.toml`.** It's git-ignored. A password pushed once stays
-readable in git history even after the file is deleted.
-
----
-
-## Keeping a copy in the cloud
-
-Two ways, and the first one needs no setup at all.
-
-### Put the library in a synced folder
-
-If you already run Google Drive for Desktop, Dropbox or OneDrive, point the
-destination at a folder inside it:
-
-```toml
-destination = 'G:\My Drive\Uni\Courses'
-```
-
-That's the whole change. Everything works as normal — the files just happen to
-land somewhere that syncs itself, so they show up on your phone and your other
-laptop.
-
-Two things to know:
-
-- **Turn off "stream files" / online-only for that folder.** Drive and OneDrive
-  can show files that aren't really on disk until you open them. `--extract`
-  can't read a placeholder, so your library quietly stops being searchable.
-  Right-click the folder → *Available offline* (Drive) or *Always keep on this
-  device* (OneDrive).
-- Part-finished downloads (`.part`) sync too, then vanish. Harmless, but your
-  cloud client may mention them.
-
-This is the better option when it's available to you. A purpose-built sync
-client handles conflicts, partial writes and being offline far better than
-anything this tool would do.
-
-### Push to Google Drive
-
-For a machine with no Drive client — a server running a scheduled `--sync`, a
-work laptop you can't install things on — lms-sync can upload to Drive itself.
-
-Click **Connect Google Drive** in the interface, or run:
-
-```
-lms-sync --drive-login
-```
-
-Once. After that every sync copies new and changed files up on its own —
-scheduled runs, the interface, and any AI assistant that starts a sync, none of
-which can ask you to sign in.
-
-It is **one way**: your disk is the original, Drive is a copy, and nothing is
-ever read back down. Editing a file in Drive won't reach your laptop, and the
-next push will overwrite it.
-
-lms-sync asks for the `drive.file` scope, which means it can only ever see
-files it put there itself. The rest of your Drive is invisible to it, including
-to a bug in this program.
-
-`.lms-study` — your quiz history — is included, and it's the reason this
-feature exists. Every slide can be downloaded again from the LMS. A year of
-recorded answers cannot.
-
-To turn it off, untick the box in the interface or set `drive_push = false`.
-Deleting `drive-token.json` revokes this machine's access; to revoke it
-everywhere, remove lms-sync at
-[myaccount.google.com/permissions](https://myaccount.google.com/permissions).
-
-<details>
-<summary>Using your own Google project instead</summary>
-
-The released binaries carry an OAuth client so that connecting takes one
-click. If you'd rather not share that client's API quota — or you're building
-from source, where it's empty — make your own:
-
-1. [console.cloud.google.com](https://console.cloud.google.com/) → create a project
-2. Enable the **Google Drive API**
-3. Credentials → Create credentials → OAuth client ID → **Desktop app**
-4. Add to `config.toml`:
-
-```toml
-drive_client_id     = '....apps.googleusercontent.com'
-drive_client_secret = '...'
-```
-
-`LMS_DRIVE_CLIENT_ID` and `LMS_DRIVE_CLIENT_SECRET` work too, if you'd rather
-keep them out of the file.
-
-</details>
-
----
-
-## How it works
-
-1. **Log in.** Native Sakai form auth, with a cookie jar for the session.
-2. **Discover.** Course links on the portal page yield the site ids.
-3. **Look at the tabs.** Each course lists its own tools, so only the tabs a
-   course actually has are visited.
-4. **Walk or capture.** Resources and Drop Box are directory indexes and
-   recurse. Syllabus has no files — its content is captured as a page.
-5. **Download.** Only new or changed items, tracked in `manifest.json`.
-
-It only ever reads. There is no upload or delete path, so it cannot damage an
-instructor's folder — worth knowing, since Sakai's WebDAV interface *can*.
-
-### Which tabs
-
-| Tab | What you get |
+| | |
 |---|---|
-| Resources | the files, in the course folder itself |
-| Overview | what the instructor typed on the course home page |
-| Syllabus | the linked files — usually the course outline PDF |
-| Announcements | the posts, as a page you can read offline |
-| Assignments | the briefs, which are usually the PDFs you actually need |
-| Drop Box | your own Drop Box folder |
-
-**Overview matters most on the courses that look empty.** Where an instructor
-never touched Resources, it is often the only place anything was posted at all
-— a reading list, a marks breakdown, a room change, links to lecture
-recordings.
-
-Every run also writes **`index.html`** at the top of your courses folder: one
-page listing every file you have, newest first, with a box that filters as you
-type. Open that rather than digging through folders.
-
-Both of these are in the interface — tick the tabs you want, and there is a
-switch for the page. A tab like Syllabus is nearly always a wrapper around a
-PDF, so only the linked files are kept. If your instructors type notes straight into a tab, set
-`keep_pages = true` to save the page as well. Either way, a tab that links to
-no files always gets its page, so nothing is ever lost silently.
-
-New courses are picked up on their own — you don't have to re-run
-`--discover` at the start of a semester. Folder names you've changed are kept,
-and a course is never removed from your config automatically.
-
-Everything else is left alone. **Tests & Quizzes is never opened**: on some
-Sakai versions the link into an assessment is an ordinary page load that
-*begins an attempt*, and there is nothing there to mirror anyway.
-
-Installs differ, so if a tab you expected is missing, ask the server:
-
-```bash
-./lms-sync --probe
-```
-
-That reports each course's tabs and which endpoints answered, and downloads
-nothing.
-
-### Error handling
-
-Failures are classified by what you have to do about them — `auth`,
-`network`, `tls`, `session`, `server`, `config`, `filesystem`, `cancelled` —
-and each carries a hint. This is not decoration: an earlier version reported
-a TLS failure as "credentials rejected", and an hour went into checking a
-password that had never been sent.
-
-- **A wrong password is never mistaken for success.** Sakai answers a failed
-  login with HTTP 200 and the login form again, so the status code proves
-  nothing; the session is verified instead. There's a test for exactly this.
-- **Auth failures are never retried.** Retrying a rejected password is how
-  accounts get locked.
-- **Timeouts, 429 and 5xx are retried** with exponential backoff, honouring
-  `Retry-After`. 4xx are answers, not failures.
-- **One bad file doesn't end the run.** Instructors link resources students
-  can't read; those are counted and skipped.
-- **Session expiry is its own error**, distinct from a bad password.
-- **A sync an assistant starts reports how it ended.** `sync_courses` can be
-  limited to one course ("ITC" works — initials, part of the name, or the
-  folder), waits up to 20 seconds for the run to finish, and then lists exactly
-  which files are new or changed. A run still going after that is reported as
-  still going, and the next call waits for it; the call after a run finishes is
-  the one that says whether it worked, where it wrote, and what failed. A refused login is reported on
-  every call and never attempted again — retrying a rejected password is how
-  accounts get locked, and a reply that just says "sync started" is how a
-  wrong password stays invisible.
-- **Downloads are atomic** — written to `.part`, then renamed. An interrupted
-  run never leaves a truncated file that looks complete.
-- **Config and manifest writes are atomic too**, so a crash mid-write can't
-  corrupt them.
-- **A corrupt manifest costs one slow run**, not a crash.
-- **Absurd config values are clamped**, so a hand-edited `retries = 9999`
-  can't turn the tool into a hammer.
-- **Stop actually stops** — cancellation propagates through every request.
-
-### The interface
-
-A local web page served by the binary itself, embedded with `go:embed`. It
-binds to `127.0.0.1` on a random port with a random token in the URL, so
-nothing else on your machine can drive a form holding your university
-password. Progress streams over Server-Sent Events.
-
----
+| [Installing](docs/install.md) | Install locations, updates, installer options, manual downloads, Android, building from source |
+| [Using it with an AI assistant](docs/assistants.md) | Claude Code, Claude Desktop, Cursor, opencode; every tool and prompt |
+| [Configuration](docs/configuration.md) | Command-line flags, exit codes, scheduling, every `config.toml` key |
+| [Cloud backup](docs/drive-backup.md) | A synced folder, or pushing to Google Drive |
+| [How it works](docs/how-it-works.md) | The sync pipeline, which tabs are mirrored, error handling |
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
 
-Downloaded material belongs to your instructors and your institution. This is
-for your own offline access; don't redistribute what you pull.
+The material you download belongs to your instructors and your university. It's
+for your own offline use, so don't redistribute it.
