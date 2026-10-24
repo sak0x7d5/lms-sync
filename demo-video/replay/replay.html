@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Replay</title>
+<!--
+  One real claude.ai chat, replayed. render.mjs injects window.CHAT (from
+  extract-chat.py) and window.SCENE, then calls seek(v) for every frame.
+
+  Everything on screen is a pure function of v, the video time: no CSS
+  animation, no setTimeout, no state carried between frames. That is what
+  makes a frame reproducible and the timer honest.
+
+  Two clocks:
+    r  real seconds since the question was sent, from chat.json
+    v  video seconds
+  The timer always shows r. Quiet stretches longer than SCENE.gap play
+  faster, and the badge says by how much while they do.
+-->
+<style>
+  :root {
+    --bg: #1f1e1d; --panel: #262624; --line: #3a3936; --text: #ece9e2;
+    --dim: #a19d94; --user: #34332f; --accent: #d97757; --ok: #6fbf73;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg);
+    color: var(--text); font: 26px/1.55 "Segoe UI", system-ui, sans-serif; }
+
+  #top { position: absolute; inset: 0 0 auto 0; height: 92px; display: flex; align-items: center;
+    justify-content: space-between; padding: 0 56px; border-bottom: 1px solid var(--line); background: var(--bg); z-index: 3; }
+  #label { color: var(--dim); font-size: 22px; letter-spacing: .02em; }
+  #label b { color: var(--text); font-weight: 600; }
+  #clock { display: flex; align-items: baseline; gap: 18px; }
+  #speed { font-size: 20px; font-weight: 700; color: #1f1e1d; background: #e8c547; border-radius: 8px;
+    padding: 2px 12px; visibility: hidden; }
+  #timer { font: 600 44px/1 "Cascadia Mono", Consolas, monospace; color: var(--ok); min-width: 190px; text-align: right; }
+  #timerNote { color: var(--dim); font-size: 18px; }
+
+  #scroll { position: absolute; top: 92px; bottom: 190px; left: 0; right: 0; overflow: hidden; }
+  #chat { position: absolute; left: 50%; width: 1180px; margin-left: -590px; padding: 40px 0 30px; }
+
+  .human { display: flex; justify-content: flex-end; margin: 10px 0 34px; }
+  .human div { background: var(--user); border-radius: 22px; padding: 16px 26px; max-width: 900px; white-space: pre-wrap; }
+
+  .tool { display: flex; align-items: center; gap: 16px; margin: 10px 0; color: var(--dim); font-size: 23px; }
+  .tool .ic { width: 28px; height: 28px; flex: none; display: grid; place-items: center; }
+  .tool .spin { width: 22px; height: 22px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; }
+  .tool .tick { color: var(--ok); font-weight: 700; }
+  .tool .what { color: var(--text); }
+  .tool.files { color: var(--dim); font-size: 20px; margin-left: 44px; margin-top: -6px; margin-bottom: 8px; }
+
+  .answer { margin: 18px 0 30px; }
+  .answer h1, .answer h2, .answer h3 { font-size: 30px; margin: 22px 0 8px; }
+  .answer p { margin: 0 0 14px; }
+  .answer ul, .answer ol { margin: 0 0 14px 34px; }
+  .answer li { margin: 3px 0; }
+  .answer code { font-family: "Cascadia Mono", Consolas, monospace; font-size: .88em; background: #302f2c; padding: 1px 6px; border-radius: 5px; }
+  .answer table { border-collapse: collapse; margin: 6px 0 16px; font-size: 22px; }
+  .answer td, .answer th { border: 1px solid var(--line); padding: 6px 12px; text-align: left; }
+  .caret { display: inline-block; width: 12px; height: 26px; background: var(--accent); vertical-align: -4px; margin-left: 3px; }
+  .thinking { color: var(--dim); font-style: italic; margin: 10px 0; font-size: 23px; }
+
+  #composer { position: absolute; bottom: 50px; left: 50%; width: 1180px; margin-left: -590px; min-height: 96px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 26px; padding: 26px 32px; font-size: 26px; }
+  #composer .ph { color: #6f6b64; }
+  #composer .kc { display: inline-block; width: 2px; height: 30px; background: var(--text); vertical-align: -6px; margin-left: 1px; }
+
+  #caption { position: absolute; left: 50%; bottom: 210px; transform: translateX(-50%); max-width: 1500px; text-align: center;
+    background: rgba(0,0,0,.82); color: #fff; font-weight: 600; font-size: 40px; line-height: 1.3; padding: 14px 30px;
+    border-radius: 14px; z-index: 4; visibility: hidden; }
+</style>
+</head>
+<body>
+<div id="top">
+  <div id="label"></div>
+  <div id="clock"><span id="speed"></span><span id="timerNote"></span><span id="timer">0:00.0</span></div>
+</div>
+<div id="scroll"><div id="chat"></div></div>
+<div id="composer"></div>
+<div id="caption"></div>
+<script>
+"use strict";
+const CHAT = window.CHAT, SCENE = Object.assign({
+  gap: 3,            // quiet stretches longer than this play faster, labelled
+  wpm: null,         // typing speed; default ~14 chars/s with jitter
+  label: "<b>lms-sync</b> &nbsp;·&nbsp; replayed from a real Claude session",
+  captions: [],      // [{from, to, text}] in REAL seconds (negative = while typing the first question)
+  speedups: [],      // [{from, to, x}] extra labelled speed-ups in real seconds, e.g. a long answer
+  holdEnd: 2.5,
+}, window.SCENE || {});
+
+// --- tool names, as a student would read them. Never the protocol's name. ---
+const TOOL_LABEL = {
+  find_material: i => `Searching your course files for “${i.query ?? ""}”`,
+  read_material: i => `Reading ${base(i.path || "a file")}`,
+  list_courses: () => "Listing your courses",
+  whats_new: () => "Checking what's new",
+  sync_courses: i => i.course ? `Fetching new material for ${i.course}` : "Fetching new material from the LMS",
+  due_reviews: () => "Checking what's due for review",
+  weak_spots: () => "Looking at your weak spots",
+  record_answer: () => "Recording how that went",
+};
+function base(p) { return String(p).split(/[\\/]/).pop(); }
+function toolLabel(name, input) {
+  const n = String(name || "");
+  const key = Object.keys(TOOL_LABEL).find(k => n === k || n.endsWith(k));
+  return key ? TOOL_LABEL[key](input || {}) : `Using ${n}`;
+}
+// File names a search turned up: find_material lists each hit as "- Course/…/file".
+function hitsOf(text) {
+  const seen = [];
+  for (const m of String(text || "").matchAll(/^- (.+\/.+)$/gm)) {
+    const b = base(m[1].trim());
+    if (!seen.includes(b)) seen.push(b);
+  }
+  return seen;
+}
+
+// --- deterministic jitter ---
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32); }
+
+// --- the real timeline ---
+const msgs = CHAT.messages;
+const steps = [];          // flattened, each with real times r0/r1
+const keys = [];           // real times of keystrokes
+const humans = [];
+let estimated = [];
+
+msgs.forEach((m, mi) => {
+  if (m.sender === "human") {
+    const text = m.steps.filter(s => s.kind === "text").map(s => s.text).join("\n").trim();
+    humans.push({ mi, text, send: m.t });
+    return;
+  }
+  const next = msgs.slice(mi + 1).find(x => x.t != null);
+  m.steps.forEach((s, si) => {
+    const after = m.steps.slice(si + 1).find(x => x.t != null);
+    let r0 = s.t ?? m.t, r1 = s.t_end;
+    if (r1 == null && (s.kind === "text" || s.kind === "thinking")) {
+      r1 = after ? after.t : next ? next.t : null;
+      if (r1 == null) { estimated.push(`${s.kind} in message ${mi}`); r1 = r0 + s.text.length / 60; }
+    }
+    steps.push({ ...s, mi, r0, r1: r1 ?? r0 });
+  });
+});
+// tool results close their call
+for (const s of steps) if (s.kind === "tool_call") {
+  const res = steps.find(x => x.kind === "tool_result" && (x.id ? x.id === s.id : x.r0 >= s.r0 && x.mi === s.mi));
+  s.done = res ? res.r0 : s.r0;
+  s.files = res ? hitsOf(res.text) : [];
+  if (s.input?.path) s.files = [];
+}
+
+// Typing. The export knows when a message was sent, not how long it took to
+// type, so the first question is typed before the clock starts (r < 0,
+// the timer reads 0:00.0). Later questions are typed in the real gap before
+// they were sent, never longer than that gap.
+const rand = rng(7);
+humans.forEach((h, i) => {
+  const ivals = [...h.text].map(c => (c === " " ? 0.11 : 0.055) + rand() * 0.06);
+  let dur = ivals.reduce((a, b) => a + b, 0);
+  const prevEnd = i === 0 ? -Infinity : Math.max(...steps.filter(s => s.mi < h.mi).map(s => Math.max(s.r1, s.done ?? 0)));
+  const room = (h.send - prevEnd) * 0.8;
+  if (dur > room) { const k = room / dur; ivals.forEach((_, j) => ivals[j] *= k); dur = room; }
+  h.start = h.send - dur - 0.35;           // a beat between the last key and Enter
+  h.times = []; let t = h.start;
+  for (const d of ivals) { t += d; h.times.push(t); keys.push(t); }
+});
+
+const rStart = humans.length ? humans[0].start - 0.8 : 0;
+const rLast = Math.max(0, ...steps.map(s => Math.max(s.r1, s.done ?? 0)));
+const rEnd = rLast + SCENE.holdEnd;
+
+// Busy = something moves at 1x. Everything else is quiet and may be sped up.
+const busy = [];
+for (const h of humans) busy.push([h.start - 0.4, h.send + 0.8]);
+for (const s of steps) {
+  if (s.kind === "text" || s.kind === "thinking") busy.push([s.r0 - 0.3, s.r1 + 0.6]);
+  else busy.push([s.r0 - 0.3, s.r0 + 0.9]);
+  if (s.kind === "tool_call") busy.push([s.done - 0.2, s.done + 0.9]);
+}
+for (const c of SCENE.captions) busy.push([c.from, c.from + 1.2]);
+busy.push([rLast, rEnd]);
+busy.sort((a, b) => a[0] - b[0]);
+const merged = [];
+for (const [a, b] of busy) {
+  const A = Math.max(a, rStart), B = Math.min(b, rEnd);
+  if (B <= A) continue;
+  if (merged.length && A <= merged.at(-1)[1]) merged.at(-1)[1] = Math.max(merged.at(-1)[1], B);
+  else merged.push([A, B]);
+}
+// Segments of [rStart, rEnd] with a playback speed each.
+const segs = [];
+let cur = rStart;
+const pushSeg = (a, b, x) => { if (b > a) segs.push({ r0: a, r1: b, x }); };
+for (const [a, b] of merged) {
+  if (a > cur) {
+    const len = a - cur;
+    pushSeg(cur, a, len > SCENE.gap ? Math.max(2, Math.ceil(len / SCENE.gap)) : 1);
+  }
+  pushSeg(Math.max(a, cur), b, 1);
+  cur = Math.max(cur, b);
+}
+pushSeg(cur, rEnd, 1);
+// Manual speed-ups (labelled the same way) split whatever they overlap.
+for (const u of SCENE.speedups) {
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    const a = Math.max(s.r0, u.from), b = Math.min(s.r1, u.to);
+    if (b <= a) continue;
+    const parts = [];
+    if (a > s.r0) parts.push({ r0: s.r0, r1: a, x: s.x });
+    parts.push({ r0: a, r1: b, x: Math.max(s.x, u.x) });
+    if (b < s.r1) parts.push({ r0: b, r1: s.r1, x: s.x });
+    segs.splice(i, 1, ...parts); i += parts.length - 1;
+  }
+}
+let vAcc = 0;
+for (const s of segs) { s.v0 = vAcc; vAcc += (s.r1 - s.r0) / s.x; s.v1 = vAcc; }
+const duration = vAcc;
+
+function realAt(v) {
+  const s = segs.find(s => v < s.v1) || segs.at(-1);
+  return { r: Math.min(s.r1, s.r0 + (v - s.v0) * s.x), x: s.x };
+}
+function videoAt(r) {
+  const s = segs.find(s => r < s.r1) || segs.at(-1);
+  return s.v0 + (Math.min(r, s.r1) - s.r0) / s.x;
+}
+
+// --- markdown, enough of it for a chat answer ---
+function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function inline(s) {
+  return esc(s).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1<i>$2</i>").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+}
+function md(src) {
+  const out = []; let list = null, table = null;
+  const close = () => { if (list) { out.push(`</${list}>`); list = null; } if (table) { out.push("</table>"); table = null; } };
+  for (const line of src.split("\n")) {
+    let m;
+    if ((m = line.match(/^(#{1,3})\s+(.*)/))) { close(); out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); }
+    else if ((m = line.match(/^\s*[-*•]\s+(.*)/))) { if (list !== "ul") { close(); out.push("<ul>"); list = "ul"; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== "ol") { close(); out.push("<ol>"); list = "ol"; } out.push(`<li>${inline(m[1])}</li>`); }
+    else if (/^\s*\|.*\|\s*$/.test(line)) {
+      if (/^\s*\|[\s:|-]+\|\s*$/.test(line)) continue;
+      if (!table) { close(); out.push("<table>"); table = true; }
+      out.push("<tr>" + line.trim().slice(1, -1).split("|").map(c => `<td>${inline(c.trim())}</td>`).join("") + "</tr>");
+    }
+    else if (!line.trim()) close();
+    else { close(); out.push(`<p>${inline(line)}</p>`); }
+  }
+  close();
+  return out.join("");
+}
+
+function fmt(r) {
+  const t = Math.max(0, r), m = Math.floor(t / 60), s = t - m * 60;
+  return `${m}:${s.toFixed(1).padStart(4, "0")}`;
+}
+
+// --- one frame ---
+const $ = id => document.getElementById(id);
+$("label").innerHTML = SCENE.label;
+
+function seek(v) {
+  const { r, x } = realAt(v);
+  $("timer").textContent = fmt(r);
+  $("timerNote").textContent = r <= 0 ? "starts when the question is sent" : "real time";
+  $("speed").textContent = `${x}× speed`;
+  $("speed").style.visibility = x > 1 ? "visible" : "hidden";
+
+  // composer: the question being typed, if any
+  const typing = humans.find(h => r >= h.start && r < h.send);
+  if (typing) {
+    const n = typing.times.filter(t => t <= r).length;
+    $("composer").innerHTML = esc(typing.text.slice(0, n)) + '<span class="kc"></span>';
+  } else $("composer").innerHTML = '<span class="ph">Ask about your courses…</span>';
+
+  // the conversation so far
+  const html = [];
+  for (let mi = 0; mi < msgs.length; mi++) {
+    const h = humans.find(h => h.mi === mi);
+    if (h) { if (r >= h.send) html.push(`<div class="human"><div>${esc(h.text)}</div></div>`); continue; }
+    let answer = "", streaming = false;
+    const flush = () => { // the caret rides inside the last element as a private-use character
+      if (answer) html.push(`<div class="answer">${md(answer + (streaming ? "\uE000" : "")).replace("\uE000", '<span class="caret"></span>')}</div>`);
+      answer = ""; };
+    for (const s of steps.filter(s => s.mi === mi && r >= s.r0)) {
+      if (s.kind === "text") {
+        const f = s.r1 > s.r0 ? Math.min(1, (r - s.r0) / (s.r1 - s.r0)) : 1;
+        answer += (answer ? "\n\n" : "") + s.text.slice(0, Math.round(s.text.length * f));
+        streaming = f < 1;
+      } else if (s.kind === "tool_call") {
+        flush();
+        const done = r >= s.done;
+        const ic = done ? '<span class="tick">✓</span>'
+          : `<span class="spin" style="transform:rotate(${(v * 400) % 360}deg)"></span>`;
+        html.push(`<div class="tool"><span class="ic">${ic}</span><span class="what">${esc(toolLabel(s.tool, s.input))}</span></div>`);
+        if (done && s.files.length) {
+          const shown = s.files.slice(0, 4).map(esc).join(" · ") + (s.files.length > 4 ? ` · +${s.files.length - 4} more` : "");
+          html.push(`<div class="tool files">${shown}</div>`);
+        }
+      } else if (s.kind === "thinking" && r < s.r1) {
+        flush(); html.push(`<div class="thinking">Thinking…</div>`);
+      }
+    }
+    flush();
+  }
+  $("chat").innerHTML = html.join("");
+  // keep the newest line in view
+  const view = $("scroll").clientHeight, h = $("chat").scrollHeight;
+  $("chat").style.top = Math.min(0, view - h) + "px";
+
+  const cap = SCENE.captions.find(c => r >= c.from && r < c.to);
+  $("caption").textContent = cap ? cap.text : "";
+  $("caption").style.visibility = cap ? "visible" : "hidden";
+}
+
+window.seek = seek;
+window.REPLAY = {
+  duration,
+  keys: keys.map(videoAt),
+  sends: humans.map(h => videoAt(h.send)),
+  segments: segs,
+  realEnd: rLast,
+  estimated,
+};
+seek(0);
+</script>
+</body>
+</html>

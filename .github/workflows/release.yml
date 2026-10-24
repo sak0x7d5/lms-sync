@@ -81,7 +81,7 @@ jobs:
       # network, and a copy that cannot drift from the binaries beside it.
       # They are checksummed below too, so the script itself can be verified.
       - name: Add the installers
-        run: cp repo/install.sh repo/install.ps1 dist/
+        run: cp repo/scripts/install.sh repo/scripts/install.ps1 dist/
 
       # Named after what reads it: `sha256sum -c` on Linux and
       # `shasum -a 256 -c` on a Mac take the same format. Generated from

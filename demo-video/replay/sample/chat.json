@@ -1,0 +1,81 @@
+{
+  "name": "SAMPLE (synthetic, not a real chat)",
+  "uuid": "sample",
+  "started_at": "2026-10-20T10:00:00Z",
+  "model": null,
+  "messages": [
+    {
+      "sender": "human",
+      "t": 0.0,
+      "steps": [
+        {
+          "t": 0.0,
+          "t_end": null,
+          "kind": "text",
+          "text": "list all the topics covered in statistics up till now"
+        }
+      ],
+      "attachments": []
+    },
+    {
+      "sender": "assistant",
+      "t": 1.0,
+      "steps": [
+        {
+          "t": 2.0,
+          "t_end": 2.8,
+          "kind": "text",
+          "text": "I'll check your Statistics material."
+        },
+        {
+          "t": 3.2,
+          "t_end": null,
+          "kind": "tool_call",
+          "tool": "university-sync:find_material",
+          "id": "t1",
+          "input": {
+            "query": "statistics",
+            "course": "Introduction to Statistics"
+          },
+          "message": null
+        },
+        {
+          "t": 4.1,
+          "t_end": null,
+          "kind": "tool_result",
+          "tool": "university-sync:find_material",
+          "id": "t1",
+          "error": false,
+          "text": "3 matches\n\n- Introduction to Statistics/Syllabus/Course Outline.pdf\n  snippet\n- Introduction to Statistics/Lecture Notes/Measures of Center.pdf\n  snippet\n- Introduction to Statistics/Lecture Notes/Organization and Representation of Data.pdf\n  snippet"
+        },
+        {
+          "t": 5.0,
+          "t_end": null,
+          "kind": "tool_call",
+          "tool": "university-sync:read_material",
+          "id": "t2",
+          "input": {
+            "path": "Introduction to Statistics/Syllabus/Course Outline.pdf"
+          },
+          "message": null
+        },
+        {
+          "t": 13.5,
+          "t_end": null,
+          "kind": "tool_result",
+          "tool": "university-sync:read_material",
+          "id": "t2",
+          "error": false,
+          "text": "(outline text)"
+        },
+        {
+          "t": 14.0,
+          "t_end": 29.0,
+          "kind": "text",
+          "text": "Here's what your Statistics course has covered so far, from the outline and the notes uploaded:\n\n## Weeks 1–2: Data\n- Population vs sample, descriptive vs inferential\n- Qualitative and quantitative variables\n- Frequency tables, histograms and the **ogive**\n\n## Weeks 3–5: Summarising data\n- Mean, median and mode (grouped and ungrouped)\n- Quartiles, box plots and outliers\n- Variance, standard deviation, z-scores\n- Chebyshev's theorem and the empirical rule\n\nThis is a sample answer used to test the renderer."
+        }
+      ],
+      "attachments": []
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "gap": 3,
+  "captions": [
+    { "from": -3, "to": 0, "text": "Same question. Just ask." },
+    { "from": 3, "to": 13, "text": "It searches your own lecture files" },
+    { "from": 14, "to": 30, "text": "Answers from what was actually uploaded" }
+  ],
+  "speedups": []
+}

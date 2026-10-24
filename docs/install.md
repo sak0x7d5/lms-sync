@@ -37,7 +37,7 @@ The installer:
 It needs no administrator rights and no `sudo`. It never stops to ask a
 question: every choice is a flag (see [Installer options](#installer-options)).
 It is a plain script, so read it first if you would rather:
-[install.sh](../install.sh), [install.ps1](../install.ps1).
+[install.sh](../scripts/install.sh), [install.ps1](../scripts/install.ps1).
 
 ## Where it goes
 
