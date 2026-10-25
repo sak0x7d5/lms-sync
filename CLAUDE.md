@@ -786,7 +786,7 @@ Do not add `Claude-Session:` or `Co-Authored-By:` trailers to commit messages, a
 
 ## Tests
 
-All in [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`, a portal tool menu that names registrations only in icon classes, a syllabus tool behind an iframe, and a course whose Syllabus tab is enabled but empty. Every request is recorded, so a test can assert what was *not* fetched (`srv.requested`). Extend that fake rather than reaching for the network; there are no live-server tests.
+One `_test.go` per source file it covers (`sync_test.go`, `mcp_test.go`, `deadlines_test.go`, …); the shared fakes, fixtures and helpers are in [testhelpers_test.go](testhelpers_test.go), except the Drive fake, which lives in `drive_test.go`. `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`, a portal tool menu that names registrations only in icon classes, a syllabus tool behind an iframe, and a course whose Syllabus tab is enabled but empty. Every request is recorded, so a test can assert what was *not* fetched (`srv.requested`). Extend that fake rather than reaching for the network; there are no live-server tests.
 
 `testConfig` pins `Sections` to `resources` on purpose: the older tests are
 about Resources behaviour, and a change to the shipped defaults must not
