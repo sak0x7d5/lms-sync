@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 var (
@@ -203,6 +205,13 @@ type artifact struct {
 	body  []byte   // rendered content; nil for a download
 	key   string   // manifest key; defaults to url, which is what downloads use
 	parts []string // path under the course folder
+
+	// quiet marks bookkeeping written beside the material — a tab's
+	// .items.json — rather than material. It is saved exactly like a page,
+	// temp-then-rename and hash freshness included, but never counted or
+	// reported: a sync announcing it would tell a student that something
+	// new had arrived every time a submission state was read.
+	quiet bool
 }
 
 func (a artifact) manifestKey() string {
@@ -410,6 +419,11 @@ func (r *syncRun) course(ctx context.Context, course Course) error {
 		if err := r.manifest.Save(); err != nil {
 			r.report(Event{Type: "warn", Message: err.Error()})
 		}
+		// The course is as current as the LMS now. What is reported about it
+		// — whether Lab 5 was handed in — says "as of" this.
+		if err := markSynced(r.dest, filepath.Base(courseDir), time.Now()); err != nil {
+			r.report(Event{Type: "warn", Message: err.Error()})
+		}
 	}
 	return nil
 }
@@ -447,14 +461,18 @@ func (r *syncRun) save(ctx context.Context, a artifact, sec section,
 
 	if info, err := os.Stat(path); err == nil {
 		if e, ok := r.manifest.Get(key); ok && current(e, info, a) {
-			r.res.Current++
+			if !a.quiet {
+				r.res.Current++
+			}
 			return nil
 		}
 	}
 
 	if r.dryRun {
-		r.res.New++
-		r.reportFile(course, sec, rel)
+		if !a.quiet {
+			r.res.New++
+			r.reportFile(course, sec, rel)
+		}
 		return nil
 	}
 
@@ -471,7 +489,9 @@ func (r *syncRun) save(ctx context.Context, a artifact, sec section,
 		if KindOf(err) == KindCancelled {
 			return err
 		}
-		r.res.Failed++
+		if !a.quiet {
+			r.res.Failed++
+		}
 		r.report(Event{Type: "warn", Course: course.Folder, Section: sec.Name(),
 			Path: rel, Message: err.Error(), New: r.res.New,
 			Current: r.res.Current, Failed: r.res.Failed})
@@ -479,9 +499,53 @@ func (r *syncRun) save(ctx context.Context, a artifact, sec section,
 	}
 
 	r.manifest.Set(key, e)
+	if a.quiet {
+		return nil
+	}
 	r.res.New++
 	r.reportFile(course, sec, rel)
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// When each course was last synced
+// ---------------------------------------------------------------------------
+//
+// A submission state is only as fresh as the sync that read it, so anything
+// reporting one has to say when that was — per course. A sync can be limited
+// to one course, so the time of the last run says nothing about the others,
+// and index.html, rewritten by every run, would date ITP's states by a sync
+// that only touched Calculus.
+//
+// Derived and disposable, so it lives in the text index's folder.
+
+const syncedFile = "synced.json"
+
+func syncedPath(dest string) string { return filepath.Join(textDir(dest), syncedFile) }
+
+// markSynced records that one course folder finished a crawl at t.
+func markSynced(dest, folder string, t time.Time) error {
+	times := loadSynced(dest)
+	times[folder] = t.UTC().Format(time.RFC3339)
+	body, err := json.MarshalIndent(times, "", "  ") // map keys are sorted
+	if err != nil {
+		return failf(KindFS, "record when "+folder+" was synced", "", err)
+	}
+	_, err = writeRendered(syncedPath(dest), append(body, '\n'))
+	return err
+}
+
+// loadSynced reads when each course folder last finished a crawl. A file
+// that will not parse is as good as none: the next sync writes it again.
+func loadSynced(dest string) map[string]string {
+	times := map[string]string{}
+	if body, err := os.ReadFile(syncedPath(dest)); err == nil {
+		_ = json.Unmarshal(body, &times)
+	}
+	if times == nil {
+		times = map[string]string{}
+	}
+	return times
 }
 
 func (r *syncRun) reportFile(course Course, sec section, rel string) {

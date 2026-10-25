@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -276,7 +277,17 @@ func (c *Client) Login(ctx context.Context, username, password string) error {
 // reported as a bad password.
 func (c *Client) Authenticated(ctx context.Context) (bool, error) {
 	if body, err := c.getText(ctx, c.base+"/direct/session/current.json"); err == nil {
-		if strings.Contains(body, `"userId"`) && !strings.Contains(body, `"userId":""`) {
+		// Read as JSON, not searched as text. A logged-out session is not an
+		// error here and not the login form: it is HTTP 200 with
+		// "userId": null — and the text check this replaced, `"userId"`
+		// present and not "", read that as signed in, so on an install with
+		// the Entity Broker on, a wrong password was reported as success.
+		// Only a real id settles it; anything else falls through to the page.
+		var session struct {
+			UserID *string `json:"userId"`
+		}
+		if json.Unmarshal([]byte(body), &session) == nil &&
+			session.UserID != nil && strings.TrimSpace(*session.UserID) != "" {
 			return true, nil
 		}
 	} else if k := KindOf(err); k == KindCancelled || k == KindTLS || k == KindNetwork {

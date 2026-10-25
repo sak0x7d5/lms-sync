@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ---------------------------------------------------------------------------
@@ -298,6 +300,15 @@ type pageSection struct {
 	// is optional: most installs have it disabled, and the captured page is
 	// then the only route.
 	fromAPI func(context.Context, *Client, string) ([]capturedItem, error)
+
+	// group sorts the tab's items under headings by what they are, read from
+	// their titles. Nil leaves them as one list in the server's order.
+	group func(title string) string
+
+	// apiOnly means there is no page to fall back on when the Entity Broker
+	// does not answer. A rendered Calendar is a month grid of navigation, and
+	// capturing it would file chrome as coursework.
+	apiOnly bool
 }
 
 func (s pageSection) ID() string   { return s.id }
@@ -309,7 +320,8 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 	var items []capturedItem
 	if s.fromAPI != nil {
 		got, err := s.fromAPI(ctx, c, siteID)
-		if err == nil {
+		switch {
+		case err == nil && len(got) == 0:
 			// An empty answer is an answer, not a silence. Falling through to
 			// the rendered page here would scrape a tool whose entire content
 			// is the sentence "There are currently no assignments at this
@@ -317,11 +329,20 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 			// most courses have no assignments. A *failure* is the other
 			// case entirely, since the Entity Broker is switched off on many
 			// installs, and does fall through.
-			if len(got) == 0 {
-				return nil, emptyTab(s.name, siteID)
-			}
+			return nil, emptyTab(s.name, siteID)
+		case err == nil:
 			items = got
+		case s.apiOnly:
+			// Nothing to fall back on. The failure is reported as what it is:
+			// a broker that is switched off answers not-found, which the Sync
+			// loop counts as a skip, and anything worse stays a failure.
+			return nil, err
 		}
+	}
+	if len(items) == 0 && s.apiOnly {
+		return nil, failf(KindNotFound, "read "+s.name+" for "+siteID,
+			"The "+s.name+" tab is only read through the LMS's Entity Broker, "+
+				"which did not answer here.", nil)
 	}
 	if len(items) == 0 {
 		got, err := c.capturePage(ctx, s.tool)
@@ -348,7 +369,7 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 	var out []artifact
 	if s.keepPage || len(files) == 0 {
 		out = append(out, artifact{
-			body:  renderCaptured(s.name, items, local),
+			body:  renderCaptured(s.name, items, local, s.group),
 			key:   s.id + ":" + siteID,
 			parts: []string{s.name, s.file},
 		})
@@ -362,6 +383,18 @@ func (s pageSection) Collect(ctx context.Context, c *Client, siteID string,
 			body:  renderLinks(s.name, refs),
 			key:   s.id + ":links:" + siteID,
 			parts: []string{s.name, "Links.md"},
+		})
+	}
+
+	// The same items again, as data: due dates, submission states, dates
+	// read out of announcements. Bookkeeping rather than material, so it is
+	// written quietly — a sync must not announce it as something new.
+	if data := renderItemData(s.id, items, local, s.group); data != nil {
+		out = append(out, artifact{
+			body:  data,
+			key:   s.id + ":items:" + siteID,
+			parts: []string{s.name, itemDataFile},
+			quiet: true,
 		})
 	}
 
@@ -389,6 +422,11 @@ type capturedItem struct {
 	Body        string   // HTML, as the instructor authored it
 	Attachments []string // absolute URLs
 	pageURL     string   // where Body came from, so its links can be resolved
+
+	// facts is what the item says that a program can act on — a due date, a
+	// submission state, a date typed into an announcement. Only the Entity
+	// Broker routes fill it; see itemfacts.go.
+	facts itemFacts
 }
 
 // localNames maps each attachment URL to the filename it is saved under.
@@ -586,6 +624,11 @@ func (c *Client) announcementsFromAPI(ctx context.Context, siteID string) ([]cap
 		if isEmptyItem(item) {
 			continue
 		}
+		// Read before the byline is added: the byline carries the posting
+		// date, which is not a date the announcement is about.
+		posted, _ := createdAt(e.Created)
+		item.facts = announcementFacts(item.Title, e.Body, posted, c.loc)
+
 		// Who posted it, and nothing at all about when this ran: a rendered
 		// page is hashed to decide freshness, so anything varying between
 		// runs would rewrite the file and report it as new every time.
@@ -623,10 +666,15 @@ const (
 // brief's own URL is reported, so it downloads like any other file.
 func (c *Client) assignmentsFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
 	var entries []struct {
-		Title        string          `json:"title"`
-		Instructions string          `json:"instructions"`
-		Due          string          `json:"dueTimeString"`
-		Attachments  []apiAttachment `json:"attachments"`
+		Title          string          `json:"title"`
+		Instructions   string          `json:"instructions"`
+		Due            string          `json:"dueTimeString"`
+		Close          string          `json:"closeTimeString"`
+		SubmissionType string          `json:"submissionType"`
+		Attachments    []apiAttachment `json:"attachments"`
+		// The student's own submissions. Kept raw, because absent, null and
+		// an array mean three different things; see submissionState.
+		Submissions json.RawMessage `json:"submissions"`
 	}
 	if err := c.entityList(ctx, "assignment", siteID, &entries); err != nil {
 		return nil, err
@@ -643,16 +691,112 @@ func (c *Client) assignmentsFromAPI(ctx context.Context, siteID string) ([]captu
 		if isEmptyItem(item) {
 			continue
 		}
+		item.facts = assignmentFacts(e.Due, e.Close, e.SubmissionType,
+			e.Instructions, e.Submissions)
+
 		// The server's own absolute timestamp, in the student's zone. A due
 		// date is half of what an assignment is, and this is identical on
 		// every run — unlike anything worked out from the clock.
+		var head strings.Builder
 		if due := dueOn(e.Due, c.loc); due != "" {
-			item.Body = "<p><strong>Due:</strong> " + html.EscapeString(due) + "</p>\n" + item.Body
+			head.WriteString("<p><strong>Due:</strong> " + html.EscapeString(due) + "</p>\n")
 		}
+		if t, ok := rfc3339(item.facts.Close); ok {
+			head.WriteString("<p><strong>Late submissions accepted until:</strong> " +
+				html.EscapeString(formatWhen(t, c.loc)) + "</p>\n")
+		}
+		if line := submissionLine(item.facts, c.loc); line != "" {
+			head.WriteString("<p><strong>Your submission:</strong> " +
+				html.EscapeString(line) + "</p>\n")
+		}
+		item.Body = head.String() + item.Body
 		out = append(out, item)
 	}
 	return out, nil
 }
+
+// calendarFromAPI reads the Calendar tab through the Entity Broker.
+//
+// What it adds is the deadlines no other tab holds as data. Tests & Quizzes
+// posts each quiz's due date here, so a quiz's deadline arrives without this
+// tool going anywhere near the quiz tool itself; and an instructor can add an
+// exam by hand. The calendar also repeats every assignment's due date, and
+// those are skipped: the assignment's own record is the authority, and on a
+// real install the calendar copy of one was a day off from it.
+//
+// The links in an event's description — a quiz event links to the quiz — are
+// never followed. Only reported attachments are ever fetched, and the
+// allowlist would refuse a quiz URL even if one were.
+func (c *Client) calendarFromAPI(ctx context.Context, siteID string) ([]capturedItem, error) {
+	var entries []struct {
+		Title        string `json:"title"`
+		Type         string `json:"type"`
+		Description  string `json:"description"`
+		AssignmentID string `json:"assignmentId"`
+		FirstTime    struct {
+			Time int64 `json:"time"` // epoch milliseconds
+		} `json:"firstTime"`
+	}
+	// Asked for by range rather than left to the server's default, which is
+	// not documented and has differed between versions.
+	now := time.Now()
+	query := "firstDate=" + now.AddDate(0, 0, -calendarDaysBack).Format("2006-01-02") +
+		"&lastDate=" + now.AddDate(0, 0, calendarDaysAhead).Format("2006-01-02")
+	if err := c.entityListQuery(ctx, "calendar", siteID, query, &entries); err != nil {
+		return nil, err
+	}
+
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].FirstTime.Time != entries[j].FirstTime.Time {
+			return entries[i].FirstTime.Time < entries[j].FirstTime.Time
+		}
+		return entries[i].Title < entries[j].Title
+	})
+
+	var out []capturedItem
+	mirrored := 0
+	for _, e := range entries {
+		if strings.TrimSpace(e.AssignmentID) != "" {
+			mirrored++
+			continue
+		}
+		if e.FirstTime.Time <= 0 || strings.TrimSpace(e.Title) == "" {
+			continue
+		}
+		start := time.UnixMilli(e.FirstTime.Time)
+		kind := strings.TrimSpace(e.Type)
+
+		var head strings.Builder
+		head.WriteString("<p><strong>When:</strong> " + html.EscapeString(formatWhen(start, c.loc)) + "</p>\n")
+		if kind != "" {
+			head.WriteString("<p><strong>Type:</strong> " + html.EscapeString(kind) + "</p>\n")
+		}
+		item := capturedItem{
+			Title:   strings.TrimSpace(e.Title),
+			Body:    head.String() + e.Description,
+			pageURL: c.base + "/",
+			facts: itemFacts{
+				Start:     stamp(start),
+				EventType: kind,
+				Mentions:  mentionsIn(e.Title + "\n" + readableText(e.Description)),
+			},
+		}
+		out = append(out, item)
+	}
+
+	if len(out) == 0 && mirrored > 0 {
+		// Not empty, but nothing the Assignments tab does not already hold.
+		return nil, failf(KindNotFound, "read Calendar for "+siteID,
+			"Its only events are assignment due dates, which the Assignments tab already holds.", nil)
+	}
+	return out, nil
+}
+
+// How much of the calendar to ask for: the term so far, and the year ahead.
+const (
+	calendarDaysBack  = 180
+	calendarDaysAhead = 365
+)
 
 // isEmptyItem reports whether an entry carries nothing worth writing down.
 func isEmptyItem(item capturedItem) bool {
@@ -1067,7 +1211,19 @@ func localiseLinks(body, pageURL string, local map[string]string) string {
 // freshness is decided by hashing it. Nothing here may include a timestamp, a
 // run id, or anything else that varies per run, or every run would rewrite
 // the file and report it as new.
-func renderCaptured(title string, items []capturedItem, local map[string]string) []byte {
+//
+// Each item's downloaded files are listed under that item. They used to be
+// one sorted pile at the foot of the page, which on a course posting labs and
+// homeworks through the one Assignments tool left nothing on disk saying that
+// ITP_lab_03.pdf was Lab 3, or when it was due. The pile remains only for a
+// file no item claims.
+//
+// With group set, items are filed under a heading per kind and numbered in
+// order within it, since the server's own order is whatever the instructor
+// last edited.
+func renderCaptured(title string, items []capturedItem, local map[string]string,
+	group func(string) string) []byte {
+
 	var b strings.Builder
 	b.WriteString("<!doctype html>\n<meta charset=\"utf-8\">\n")
 	fmt.Fprintf(&b, "<title>%s</title>\n", html.EscapeString(title))
@@ -1075,32 +1231,135 @@ func renderCaptured(title string, items []capturedItem, local map[string]string)
 		"margin:2rem auto;padding:0 1rem}h2{margin-top:2rem}</style>\n")
 	fmt.Fprintf(&b, "<h1>%s</h1>\n", html.EscapeString(title))
 
-	for _, item := range items {
+	claimed := map[string]bool{}
+	writeItem := func(item capturedItem, heading string) {
 		if t := strings.TrimSpace(item.Title); t != "" {
-			fmt.Fprintf(&b, "<h2>%s</h2>\n", html.EscapeString(t))
+			fmt.Fprintf(&b, "<%s>%s</%s>\n", heading, html.EscapeString(t), heading)
 		}
 		body := localiseLinks(stripHandlers(item.Body), item.pageURL, local)
 		b.WriteString(strings.TrimSpace(body))
 		b.WriteString("\n")
+
+		var names []string
+		for _, a := range item.Attachments {
+			// Keyed exactly as attachmentURLs keyed them.
+			name, ok := local[strings.TrimSpace(unescapeEntities(a))]
+			if !ok || claimed[name] {
+				continue
+			}
+			claimed[name] = true
+			names = append(names, name)
+		}
+		writeFileList(&b, names)
 	}
 
-	// The downloaded files, listed plainly. The captured markup often buries
-	// them in the tool's own layout, and this is the half of the page a
+	if group == nil {
+		for _, item := range items {
+			writeItem(item, "h2")
+		}
+	} else {
+		byKind := map[string][]capturedItem{}
+		for _, item := range items {
+			k := group(item.Title)
+			byKind[k] = append(byKind[k], item)
+		}
+		// A heading only says something when there is more than one kind:
+		// a course of nothing but "Lab n" gets no "Labs" heading over the lot.
+		heading := "h3"
+		if len(byKind) == 1 {
+			heading = "h2"
+		}
+		for _, kind := range kindOrder {
+			list := byKind[kind]
+			if len(list) == 0 {
+				continue
+			}
+			sort.SliceStable(list, func(i, j int) bool {
+				ni, oki := titleNumber(list[i].Title)
+				nj, okj := titleNumber(list[j].Title)
+				if oki != okj {
+					return oki // numbered items first
+				}
+				return oki && ni < nj
+			})
+			if heading == "h3" {
+				fmt.Fprintf(&b, "<h2>%s</h2>\n", html.EscapeString(kind))
+			}
+			for _, item := range list {
+				writeItem(item, heading)
+			}
+		}
+	}
+
+	// Files no item claimed, listed plainly. The captured markup often buries
+	// them in the tool's own layout, and they are the half of the page a
 	// student actually came for.
-	if len(local) > 0 {
-		names := make([]string, 0, len(local))
-		for _, n := range local {
-			names = append(names, n)
+	var rest []string
+	for _, n := range local {
+		if !claimed[n] {
+			rest = append(rest, n)
 		}
-		sort.Strings(names)
-		b.WriteString("<h2>Files</h2>\n<ul>\n")
-		for _, n := range names {
-			fmt.Fprintf(&b, "<li><a href=\"%s\">%s</a></li>\n",
-				html.EscapeString(url.PathEscape(n)), html.EscapeString(n))
-		}
-		b.WriteString("</ul>\n")
+	}
+	if len(rest) > 0 {
+		sort.Strings(rest)
+		b.WriteString("<h2>Files</h2>\n")
+		writeFileList(&b, rest)
 	}
 	return []byte(b.String())
+}
+
+func writeFileList(b *strings.Builder, names []string) {
+	if len(names) == 0 {
+		return
+	}
+	b.WriteString("<ul>\n")
+	for _, n := range names {
+		fmt.Fprintf(b, "<li><a href=\"%s\">%s</a></li>\n",
+			html.EscapeString(url.PathEscape(n)), html.EscapeString(n))
+	}
+	b.WriteString("</ul>\n")
+}
+
+// kindOrder is the order assignmentKind's headings appear in.
+var kindOrder = []string{"Labs", "Homework", "Assignments", "Projects", "Quizzes", "Other"}
+
+// assignmentKind says what an assignment is, from its title.
+//
+// Sakai has no notion of a lab: an instructor who posts labs and homeworks
+// through the one Assignments tool gives them nothing but a title to tell
+// them apart by. The first word that names a kind decides it, so "ITP Lab 3"
+// is a lab and "HW2" is homework; a title naming none is "Other".
+func assignmentKind(title string) string {
+	words := strings.FieldsFunc(strings.ToLower(title), func(r rune) bool {
+		return r < 'a' || r > 'z'
+	})
+	for _, w := range words {
+		switch w {
+		case "lab", "labs", "laboratory":
+			return "Labs"
+		case "homework", "homeworks", "hw":
+			return "Homework"
+		case "assignment", "assignments":
+			return "Assignments"
+		case "project", "projects":
+			return "Projects"
+		case "quiz", "quizzes":
+			return "Quizzes"
+		}
+	}
+	return "Other"
+}
+
+var titleNumberRe = regexp.MustCompile(`\d+`)
+
+// titleNumber is the first number in a title, so Lab 10 sorts after Lab 9.
+func titleNumber(title string) (int, bool) {
+	m := titleNumberRe.FindString(title)
+	if m == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m)
+	return n, err == nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,6 +1392,14 @@ var pageSections = []struct {
 	// answered is the whole diagnosis.
 	apiPrefix string
 	fromAPI   func(context.Context, *Client, string) ([]capturedItem, error)
+
+	// group, when set, files the tab's items under headings by kind. See
+	// assignmentKind.
+	group func(title string) string
+
+	// apiOnly marks a tab with no rendered page worth capturing; see
+	// pageSection.apiOnly.
+	apiOnly bool
 }{
 	{
 		// Sakai calls the Overview tool "Site Information Display", and its
@@ -1184,6 +1451,21 @@ var pageSections = []struct {
 		apiPrefix: "assignment",
 		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
 			return c.assignmentsFromAPI(ctx, siteID)
+		},
+		group: assignmentKind,
+	},
+	{
+		// The deadlines no other tab holds as data: Tests & Quizzes posts each
+		// quiz's due date here, and an instructor can add an exam by hand.
+		// Read through the Entity Broker only — the rendered tool is a month
+		// grid of navigation, and the quiz tool itself is never approached.
+		id: "calendar", name: "Calendar", file: "Calendar.html", textIsContent: true,
+		regs:      []string{"sakai.schedule"},
+		titles:    []string{"calendar", "schedule"},
+		apiPrefix: "calendar",
+		apiOnly:   true,
+		fromAPI: func(ctx context.Context, c *Client, siteID string) ([]capturedItem, error) {
+			return c.calendarFromAPI(ctx, siteID)
 		},
 	},
 }
@@ -1276,7 +1558,7 @@ func (c *Client) sectionsFor(ctx context.Context, siteID string, cfg *Config) ([
 		if t, ok := find(tools, ps.regs, ps.titles); ok {
 			out = append(out, pageSection{id: ps.id, name: ps.name, file: ps.file,
 				tool: t, keepPage: cfg.KeepPages || ps.textIsContent,
-				fromAPI: ps.fromAPI})
+				fromAPI: ps.fromAPI, group: ps.group, apiOnly: ps.apiOnly})
 		}
 	}
 	if enabled["dropbox"] {

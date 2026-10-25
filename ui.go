@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -72,6 +73,7 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 	mux.HandleFunc("/api/sync", s.auth(s.handleSync))
 	mux.HandleFunc("/api/stop", s.auth(s.handleStop))
 	mux.HandleFunc("/api/browse", s.auth(s.handleBrowse))
+	mux.HandleFunc("/api/open", s.auth(s.handleOpen))
 	mux.HandleFunc("/api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("/api/drive/connect", s.auth(s.handleDriveConnect))
 	// Deliberately NOT behind s.auth. Google builds this request, not the
@@ -175,6 +177,7 @@ type configPayload struct {
 	Version     string        `json:"version"`
 	DefaultLMS  string        `json:"default_lms"`
 	CanBrowse   bool          `json:"can_browse"`
+	CanOpen     bool          `json:"can_open"`
 
 	// Whether the backup can be offered at all, and whether it already has
 	// an account. Sent so the page can show one button that says the right
@@ -238,6 +241,7 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		Version:     version,
 		DefaultLMS:  DefaultLMS,
 		CanBrowse:   canBrowse,
+		CanOpen:     canOpen,
 
 		CanDrive:       s.cfg.driveConfigured(),
 		DriveConnected: s.cfg.driveConnected(),
@@ -435,6 +439,43 @@ func (s *server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"path": path})
+}
+
+// canOpen is canBrowse's twin: whether this machine has anything that can
+// open a folder. A phone has none, and a button that cannot work is worse
+// than no button.
+var canOpen = func() bool {
+	for _, argv := range showCommands(runtime.GOOS, isTermux(), showFolder, ".") {
+		if _, err := exec.LookPath(argv[0]); err == nil {
+			return true
+		}
+	}
+	return false
+}()
+
+// handleOpen opens the library in the file manager — the saved destination,
+// not whatever is typed in the form, since that is where the files are.
+func (s *server) handleOpen(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	cfg := *s.cfg
+	s.mu.Unlock()
+
+	dest, err := cfg.DestinationPath()
+	if err != nil {
+		writeErr(w, statusFor(err), err.Error(), hintOf(err))
+		return
+	}
+	if _, err := os.Stat(dest); err != nil {
+		writeErr(w, http.StatusNotFound, "Nothing has been synced to "+dest+" yet.",
+			"The first sync makes the folder.")
+		return
+	}
+	if _, err := show(dest); err != nil {
+		writeErr(w, http.StatusInternalServerError,
+			"Could not open a window here. Your library is at "+dest, "")
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"path": dest})
 }
 
 // handleDriveConnect starts a Google sign-in and hands the page the URL to

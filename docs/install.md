@@ -1,19 +1,11 @@
 # Installing lms-sync
 
-[← back to the README](../README.md)
+How to install, update and remove lms-sync, and how to check a download.
+Back to the [README](../README.md).
 
-- [The one-line install](#the-one-line-install)
-- [Where it goes](#where-it-goes)
-- [Updates](#updates)
-- [Installer options](#installer-options)
-- [Or download it yourself](#or-download-it-yourself)
-- [Unsigned downloads](#unsigned-downloads)
-- [On your phone (Android)](#on-your-phone-android)
-- [Build from source](#build-from-source)
+## Install
 
-## The one-line install
-
-**macOS, Linux, Android (Termux)**
+**macOS, Linux and Android (Termux)** — in a terminal:
 
 ```bash
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
@@ -25,187 +17,281 @@ curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install
 irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | iex
 ```
 
-Then run `lms-sync`. Your browser opens; fill in the LMS address, username,
-password and where to save, then press **Find my courses** and **Sync**.
-Reopening skips straight to the sync screen — settings are remembered.
+On Windows, the window you installed from can run `lms-sync` straight away.
+Windows that were already open cannot find it until you reopen them. On macOS
+and Linux the installer tells you if you need a new terminal. Then run
+`lms-sync` and carry on from [Quick start](../README.md#quick-start).
 
-The installer works out which machine you are on, downloads the one binary
-that matches, checks it against the release's `SHA256SUMS`, puts it in a
-folder of its own, puts `lms-sync` on your PATH and schedules a daily
-[update check](#updates). It is a shell script and does nothing else — read it
-first if you would rather:
+On a phone, start with [lms-sync on Android](android.md#install) instead:
+there are two steps before this command.
+
+The installer:
+
+1. works out which machine you are on and downloads the one binary that
+   matches;
+2. checks it against the release's `SHA256SUMS`, and stops if it does not
+   match;
+3. puts it in a folder of its own and puts `lms-sync` on your PATH;
+4. schedules a daily [update check](#updates).
+
+It needs no administrator rights and no `sudo`. It never stops to ask a
+question: every choice is a flag (see [Installer options](#installer-options)).
+It is a plain script, so read it first if you would rather:
 [install.sh](../scripts/install.sh), [install.ps1](../scripts/install.ps1).
 
 ## Where it goes
 
-| | Binary and settings | On your PATH |
+| | Program and settings | On your PATH |
 |---|---|---|
-| Linux, macOS | `~/.local/share/lms-sync/` | `~/.local/bin/lms-sync`, a symlink |
+| macOS, Linux | `~/.local/share/lms-sync/` | `~/.local/bin/lms-sync`, a symlink |
 | Android (Termux) | `~/.local/share/lms-sync/` | `$PREFIX/bin/lms-sync`, a symlink |
 | Windows | `%LOCALAPPDATA%\Programs\lms-sync\` | that folder |
 
-It gets a folder of its own because `config.toml` and `manifest.json` live
-beside the binary, not in your destination. Only course folders go to the
-destination.
+If `XDG_DATA_HOME` is set, macOS and Linux use `$XDG_DATA_HOME/lms-sync/`
+instead.
 
-> **Set a destination in the interface.** Until you do, courses land in a
-> `Courses` folder inside that same directory — which on Windows and in a
-> hidden `~/.local/share` is not where you want to go looking for them.
+lms-sync keeps its settings beside its own program file, which is why it gets a
+folder of its own. That folder holds:
+
+| File | What it is |
+|---|---|
+| `lms-sync` or `lms-sync.exe` | the program |
+| `config.toml` | your settings, including your LMS password — see [Configuration](configuration.md#where-the-file-lives) |
+| `manifest.json` | what has already been downloaded, so a sync fetches only what is new or changed |
+| `drive-token.json`, `drive-push.json` | only if you use the [Google Drive backup](cloud-backup.md#push-to-google-drive) |
+| `install.sh` or `install.ps1` | a verified copy of the installer, which the daily update runs |
+| `update.log` | the result of the last update check |
+
+Your courses go wherever you set **where to save** in the interface — see
+[What you get](../README.md#what-you-get) for what arrives there. Set it on
+the first run. Until you do, courses land in a `Courses` folder inside the
+install folder above, which is hidden on macOS and Linux and awkward to find
+on Windows.
+
+**Your PATH.** On Windows the install folder is added to your user PATH;
+nothing outside your own profile is touched. On macOS and Linux, if
+`~/.local/bin` is not already on your PATH, the installer adds it in a marked
+block in your shell's startup file: `~/.zshrc`, `~/.bashrc` (plus
+`~/.bash_profile` or `~/.profile`), fish's `config.fish`, or otherwise
+`~/.profile`. [Uninstalling](#uninstall) takes the block out again. On Termux,
+`$PREFIX/bin` is already on your PATH, so no file is edited.
+
+**Already have lms-sync in a folder of its own?** On macOS and Linux the
+installer looks for a folder lms-sync already runs from — the one `lms-sync` on
+your PATH points to, or `~/lms-sync` — and installs into it if it holds
+`config.toml` or `manifest.json`. On Windows, pass `-InstallDir` with that
+folder. Either way your settings and download history carry on; installing
+somewhere new would make every file look new and download your whole library
+again.
 
 ## Updates
 
-It keeps itself up to date. The installer registers a daily check with the
-machine's own scheduler: Task Scheduler on Windows, launchd on a Mac, and a
-systemd user timer on Linux (or cron where there is no systemd). Once a day it
-compares the installed binary against the newest release's `SHA256SUMS`, and
-downloads and verifies a new one only when they differ. Your settings and
-download history stay where they are, and a sync or assistant that is running
-keeps going on the old binary until it next starts.
+lms-sync keeps itself up to date. The installer registers a daily check with
+your machine's own scheduler:
+
+| Machine | Scheduler |
+|---|---|
+| Windows | Task Scheduler |
+| macOS | launchd |
+| Linux | a systemd user timer, or cron where there is no systemd |
+| Android (Termux) | cron, which Termux lacks until you install it — see [Android](android.md#updates) |
+
+Once a day it compares your installed program with the newest release's
+`SHA256SUMS`. Only when they differ does it download the new one, and it
+verifies that before swapping it in. Your settings and download history stay
+where they are. A sync or AI app already using lms-sync keeps running the old
+version until it next starts.
 
 - Each check writes its result to `update.log` in the install folder.
-- To update by hand, run the command the schedule runs:
-  `sh ~/.local/share/lms-sync/install.sh --update`, or on Windows
-  `& "$env:LOCALAPPDATA\Programs\lms-sync\install.ps1" -Update`.
-- `--no-auto-update` (`-NoAutoUpdate`) installs without the daily check.
-  Pinning a release with `--version` also turns it off, because a pinned
-  release that updates itself is no longer pinned.
-- On Termux the check uses cron, which only runs while `crond` does:
-  `pkg install cronie termux-services && sv-enable crond`.
+- To update now, run what the schedule runs:
 
-Running the install command again also upgrades in place, and adds the daily
-check to an install made before it existed.
+  ```bash
+  sh ~/.local/share/lms-sync/install.sh --update
+  ```
+
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\lms-sync\install.ps1" -Update
+  ```
+
+  On Windows, use this form rather than the shorter `& '…\install.ps1' -Update`
+  the installer prints: by default Windows refuses to run a script that way.
+
+- To install without the daily check, pass `--no-auto-update`
+  (`-NoAutoUpdate` on Windows).
+- Pinning a release with `--version` (`-Version`) also turns the check off. A
+  pinned release that updates itself is no longer pinned.
+- Running the install command again also upgrades in place. It adds the daily
+  check to an install made before the check existed.
+
+On Windows, close lms-sync before running the install command again — the
+interface, and any AI app using it. The installer will not replace a program
+that is running. The daily update does not need this: it swaps the file even
+while lms-sync runs.
 
 ## Installer options
 
-To pass an option, fetch the script and run it:
+Pass options through the one-liner, after `sh -s --`:
+
+```bash
+curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh -s -- --version v1.3.0
+```
+
+Or fetch the script and run it:
 
 ```bash
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh -o install.sh
-sh install.sh --version v1.3.0        # a particular release, never auto-updated
 sh install.sh --install-dir ~/lms-sync
-sh install.sh --no-modify-path        # leave your shell profile alone
-sh install.sh --no-auto-update        # no daily update check
-sh install.sh --uninstall
+sh install.sh --help
 ```
 
 PowerShell needs the script as a block before it will take a parameter:
 
 ```powershell
+& ([scriptblock]::Create((irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1))) -Version v1.3.0
+```
+
+| macOS, Linux, Termux | Windows | Environment variable | What it does |
+|---|---|---|---|
+| `--version TAG` | `-Version TAG` | `LMS_SYNC_VERSION` | install a particular release, e.g. `v1.3.0`; it is never updated automatically |
+| `--install-dir DIR` | `-InstallDir DIR` | `LMS_SYNC_INSTALL_DIR` | where the program and its settings live |
+| `--bin-dir DIR` | — | `LMS_SYNC_BIN_DIR` | where the symlink that puts it on your PATH goes |
+| `--no-modify-path` | `-NoModifyPath` | `LMS_SYNC_NO_MODIFY_PATH` | leave your shell startup file (Windows: your PATH) alone |
+| `--no-auto-update` | `-NoAutoUpdate` | `LMS_SYNC_NO_AUTO_UPDATE` | do not schedule the [daily update check](#updates) |
+| `--skip-checksum` | `-SkipChecksum` | — | install without checking `SHA256SUMS` — see [Verify a download](#verify-a-download) |
+| `--update` | `-Update` | — | bring an existing install up to the newest release; this is what the daily check runs |
+| `--uninstall` | `-Uninstall` | — | [remove it](#uninstall) |
+| `-h`, `--help` | — | — | list these options |
+
+A flag wins over its environment variable. `install.sh` reads all five
+variables; `install.ps1` reads only `LMS_SYNC_NO_AUTO_UPDATE`. Windows has no
+`--bin-dir` because it puts the install folder itself on your PATH.
+
+## Uninstall
+
+```bash
+curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh -s -- --uninstall
+```
+
+```powershell
 & ([scriptblock]::Create((irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1))) -Uninstall
 ```
 
-Uninstalling removes the binary, the PATH entry, the symlink and the daily
-update check. It leaves
-`config.toml` and anything else in the folder alone, and tells you what is
-still there — it cannot delete your settings or a synced library.
+Or run the copy the installer kept:
 
-## Or download it yourself
+```bash
+sh ~/.local/share/lms-sync/install.sh --uninstall
+```
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\lms-sync\install.ps1" -Uninstall
+```
+
+If you installed with `--install-dir` (`-InstallDir`), pass it again. On
+Windows, close lms-sync and any AI app using it first.
+
+It removes the program, the PATH entry or symlink, the shell startup block,
+the daily update check, and the installer's own copy and `update.log`.
+
+It leaves `config.toml`, `manifest.json`, the Drive files and your course
+library alone, and lists whatever is still there. It removes a folder only
+once it is empty, so it cannot delete your settings or your courses. Deleting
+those is your decision: remove the folder yourself, remembering that
+`config.toml` holds your password. If you used the Drive backup, see
+[Keeping a copy in the cloud](cloud-backup.md#push-to-google-drive) for
+revoking its access. A scheduled sync you set up yourself is also yours to
+remove.
+
+## Download a binary yourself
 
 Every build is on the [Releases](https://github.com/sak0x7d5/lms-sync/releases)
-page:
+page. The download table under [Quick start](../README.md#quick-start) says
+which file is yours. On a phone, use the installer instead — see
+[Android](android.md#install).
 
-| Your machine | File |
-|---|---|
-| Windows | `lms-sync-windows-amd64.exe` |
-| Windows on ARM | `lms-sync-windows-arm64.exe` |
-| Mac (Apple silicon) | `lms-sync-darwin-arm64` |
-| Mac (Intel) | `lms-sync-darwin-amd64` |
-| Linux, PC | `lms-sync-linux-amd64` |
-| Linux on ARM — Raspberry Pi, ARM server | `lms-sync-linux-arm64` |
-| Android, in [Termux](#on-your-phone-android) | `lms-sync-linux-arm64` |
+1. Put the file in a folder of its own. It keeps its settings beside itself
+   (see [Where it goes](#where-it-goes)).
+2. On macOS or Linux, make it runnable: `chmod +x lms-sync-darwin-arm64`
+   (use your file's name).
+3. [Verify it](#verify-a-download), then run it. A browser download may warn
+   you first: see [Unsigned-download warnings](#unsigned-download-warnings).
 
-Put it in a folder of its own — it keeps `config.toml` and `manifest.json`
-beside itself — and on macOS or Linux `chmod +x` it first.
+A binary you download yourself does not update itself. To upgrade, download
+the new one into the same folder, so it keeps your settings and download
+history. Or switch to the installer, which can
+[adopt that folder](#where-it-goes).
 
-Every release also publishes `SHA256SUMS`, covering the binaries and both
-installer scripts. To check a download against it:
+## Verify a download
+
+Every release since v1.3.0 publishes `SHA256SUMS`, with a checksum for each
+binary and for both installers. The installer checks against it for you. It
+refuses a release with no `SHA256SUMS` — anything before v1.3.0 — unless you
+pass `--skip-checksum` (`-SkipChecksum`), which installs without checking.
+
+To check a file you downloaded yourself, save `SHA256SUMS` from the same
+release into the same folder. The links below are for the newest release; for
+an older one, take it from that release's page.
+
+**Linux:**
 
 ```bash
 curl -fsSLO https://github.com/sak0x7d5/lms-sync/releases/latest/download/SHA256SUMS
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-On a Mac that is `shasum -a 256`. If yours is too old for `--ignore-missing`,
-run `shasum -a 256 lms-sync-darwin-arm64` and compare the line by eye.
+It prints `OK` beside your file.
 
-## Unsigned downloads
+**macOS:** the same, with `shasum -a 256 --ignore-missing -c SHA256SUMS` as
+the second line. If yours is too old for `--ignore-missing`, run
+`shasum -a 256 lms-sync-darwin-arm64` and compare the result with that file's
+line in `SHA256SUMS` by eye.
 
-The binaries are not code-signed, so a browser download warns about them.
-`SHA256SUMS` is what to check instead.
+**Windows:**
 
-The one-liners above avoid this entirely — a file fetched by `curl` carries no
-`com.apple.quarantine` attribute, and the PowerShell path does not go through
-SmartScreen. It only comes up when you download from the Releases page.
-
-**macOS** — *"cannot be opened because the developer cannot be verified"*.
-Right-click the file and choose **Open**, or:
-
-```bash
-xattr -d com.apple.quarantine ./lms-sync-darwin-arm64
+```powershell
+iwr https://github.com/sak0x7d5/lms-sync/releases/latest/download/SHA256SUMS -OutFile SHA256SUMS
+(Get-FileHash .\lms-sync-windows-amd64.exe -Algorithm SHA256).Hash
+Select-String 'lms-sync-windows-amd64.exe' .\SHA256SUMS
 ```
+
+The two checksums should match. PowerShell prints its one in capitals; that
+makes no difference.
+
+## Unsigned-download warnings
+
+The binaries are not code-signed, so your browser and your operating system
+warn about a file downloaded from the Releases page. `SHA256SUMS` is what to
+check instead ([Verify a download](#verify-a-download)).
+
+The installer one-liners avoid the warning entirely. A file fetched by `curl`
+carries no `com.apple.quarantine` flag, and the PowerShell installer does not
+go through SmartScreen.
+
+**macOS** — *"cannot be opened because the developer cannot be verified"*, or
+on newer versions *"Apple could not verify … is free of malware"*.
+
+- On macOS 15 (Sequoia) and later, right-click → **Open** no longer gets past
+  it. Try to open the file once, then go to **System Settings → Privacy &
+  Security**, scroll down and choose **Open Anyway**.
+- On earlier versions, right-click the file and choose **Open**.
+- Or, on any version, clear the flag in Terminal:
+
+  ```bash
+  xattr -d com.apple.quarantine ./lms-sync-darwin-arm64
+  ```
 
 **Windows** — SmartScreen says *"Windows protected your PC"*. Choose
 **More info**, then **Run anyway**.
 
-## On your phone (Android)
+## Why there is no go install
 
-Termux is a Linux userland, so the `linux-arm64` binary is the one Android
-runs — there is no separate Android build and nothing to compile on the
-phone. Install [Termux](https://termux.dev) (the F-Droid build; the Play
-Store one is unmaintained), then:
+The module path would allow `go install`, but it is deliberately not offered.
+It puts the binary in `~/go/bin`, a folder shared with every other Go program
+you have. lms-sync then writes `config.toml` — your LMS password included —
+beside itself, in that shared folder.
 
-```bash
-pkg install curl
-termux-setup-storage        # once — Android asks for the storage permission
+It would also report its version as `1.0.0-dev`. So does any build made
+outside the release workflow, unless you stamp a version in.
 
-curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
-lms-sync
-```
-
-The installer recognises Termux and links into `$PREFIX/bin`, which is already
-on your PATH, so nothing is written to a shell profile here.
-
-The interface opens in your phone's browser, the same as on a laptop.
-
-**Set the destination to somewhere under `~/storage/shared`** — say
-`/storage/emulated/0/Courses`, which is what the picker on your phone calls
-*Internal storage ▸ Courses*. This matters more on a phone than anywhere
-else: Termux's own home directory is inside the app's private data, which
-nothing else on the phone is allowed to read, so slides synced there cannot
-be opened by a PDF reader, a file manager, or anything you might share them
-to.
-
-`pkg install poppler` makes PDFs searchable, exactly as on a desktop. There is
-no folder-chooser button on Android — no Termux install has a display to put
-one on — so the destination is typed rather than picked.
-
-## Build from source
-
-```bash
-git clone https://github.com/sak0x7d5/lms-sync
-cd lms-sync
-go build
-```
-
-No dependencies — the standard library only, so there is nothing to fetch,
-vendor or audit. `go test ./...` runs the suite against a fake Sakai server.
-
-Cross-compile for everything from one machine:
-
-```bash
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o lms-sync.exe
-GOOS=darwin  GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-mac
-GOOS=linux   GOARCH=arm64 go build -ldflags="-s -w" -o lms-sync-arm64
-```
-
-`CGO_ENABLED=0` (the default when cross-compiling) is what makes those static,
-which is why the `linux/arm64` one runs under Termux as well as on a Raspberry
-Pi: it depends on no libc at all, Android's included. Any other architecture Go
-targets builds the same way — `linux/arm` for a 32-bit phone or an older Pi.
-
-**`go install` is deliberately not offered**, even though the module path
-would allow it. It puts the binary in `~/go/bin`, a folder shared with every
-other Go program you have — and this tool writes `config.toml`, with your LMS
-password in it, beside its own executable. It would also report its version as
-`1.0.0-dev`, because `go install` cannot stamp one. Build it here, or use the
-installer.
+Use the installer, or [build from source](../README.md#build-from-source) into
+a folder of its own ([CONTRIBUTING.md](../CONTRIBUTING.md#stamp-a-version)
+shows how to stamp a version).
