@@ -30,6 +30,8 @@ func run() int {
 		doExtract  = flag.Bool("extract", false, "read text out of already-synced files, and exit")
 		doMCP      = flag.Bool("mcp", false, "serve the library to an AI assistant over MCP, on stdio")
 		doOpen     = flag.Bool("open", false, "open the library, or one course (--open ITC), in the file manager")
+		doConnect  = flag.Bool("connect", false, "choose the AI apps that can use your library (--connect cursor,claude-code skips the list)")
+		disconnect = flag.Bool("disconnect", false, "remove lms-sync from AI apps (--disconnect all)")
 		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
 		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
@@ -55,6 +57,13 @@ func run() int {
 	cfgPath := *configPath
 	if cfgPath == "" {
 		cfgPath = filepath.Join(base, "config.toml")
+	}
+
+	// Before the config is loaded: connecting an app only needs to know
+	// where that file is, and a config with a typo in it must not stop a
+	// student telling Claude where the library lives.
+	if *doConnect || *disconnect {
+		return cliConnect(cfgPath, flag.Arg(0), *disconnect)
 	}
 
 	cfg, err := LoadConfig(cfgPath)
@@ -116,6 +125,9 @@ func usage() {
   lms-sync --extract       make synced files searchable, without going online
   lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
   lms-sync --open [COURSE] open your library, or one course, in the file manager
+  lms-sync --connect [APPS] choose the AI apps that can use your library
+                           (APPS: cursor,claude-code,...  or "list" to just look)
+  lms-sync --disconnect APPS  remove it from those apps ("all" for every one)
   lms-sync --drive-login   sign in to Google Drive (once; everything else is silent)
 
 Options:
@@ -461,4 +473,137 @@ func cliOpen(cfg *Config, course string) int {
 		return reportErr(failf(KindNotFound, "open a window", noOpenerHint(), err))
 	}
 	return 0
+}
+
+// cliConnect writes lms-sync into the AI apps' own configs.
+//
+// With no argument it asks, as a checklist; with ids it does exactly those
+// and asks nothing, which is the form a script or an installer run without a
+// terminal can use. "list" only looks.
+func cliConnect(cfgPath, arg string, disconnect bool) int {
+	exe, err := exePath()
+	if err != nil {
+		return reportErr(failf(KindFS, "find this program", "", err))
+	}
+	// `go run .` builds into a temporary folder that is deleted on exit;
+	// an app pointed there would fail to start from tomorrow on.
+	if strings.Contains(exe, "go-build") {
+		return reportErr(failf(KindConfig, "connect a temporary build",
+			"This copy of lms-sync is one `go run` will delete. Run `go build` and then the built binary's --connect.", nil))
+	}
+	e := realConnectEnv()
+	argv := mcpArgv(exe, cfgPath)
+	statuses := allStatuses(e, exe)
+	arg = strings.TrimSpace(arg)
+
+	if strings.EqualFold(arg, "list") {
+		for _, st := range statuses {
+			fmt.Printf("%-16s %-26s %s\n", st.Client.ID, st.Client.Name, statusNote(st))
+		}
+		return 0
+	}
+
+	want := map[string]bool{}
+	for _, st := range statuses {
+		want[st.Client.ID] = st.Connected
+	}
+
+	switch {
+	case disconnect:
+		if arg == "" {
+			return reportErr(failf(KindConfig, "--disconnect needs the apps to remove",
+				"For example: lms-sync --disconnect cursor   or   lms-sync --disconnect all", nil))
+		}
+		ids, err := pickIDs(statuses, arg, func(st clientStatus) bool { return st.Connected })
+		if err != nil {
+			return reportErr(err)
+		}
+		for _, id := range ids {
+			want[id] = false
+		}
+	case arg != "":
+		ids, err := pickIDs(statuses, arg, func(st clientStatus) bool { return st.Detected || st.Connected })
+		if err != nil {
+			return reportErr(err)
+		}
+		// Ids name what to connect; nothing unnamed is removed.
+		for _, id := range ids {
+			want[id] = true
+		}
+	default:
+		list := &pickList{}
+		for _, st := range statuses {
+			list.items = append(list.items, pickItem{
+				Label: st.Client.Name,
+				Note:  statusNote(st),
+				On:    st.Connected || st.Detected,
+			})
+		}
+		if !runPicker(list) {
+			fmt.Println("Nothing was changed. Run `lms-sync --connect` whenever you want to set this up.")
+			return 0
+		}
+		for i, st := range statuses {
+			want[st.Client.ID] = list.items[i].On
+		}
+	}
+
+	results := applyChoice(e, statuses, want, argv)
+	if len(results) == 0 {
+		fmt.Println("Nothing to change.")
+		return 0
+	}
+	failedAny := false
+	fmt.Println()
+	for _, r := range results {
+		fmt.Println(describeResult(r))
+		failedAny = failedAny || r.Outcome == outFailed
+	}
+
+	var reopen []string
+	for _, r := range results {
+		if r.Outcome == outConnected || r.Outcome == outUpdated || r.Outcome == outRemoved {
+			reopen = append(reopen, "  "+r.Client.Name+": "+r.Client.Reopen)
+		}
+	}
+	if len(reopen) > 0 {
+		fmt.Println("\nApps read this when they start, so:")
+		fmt.Println(strings.Join(reopen, "\n"))
+	}
+	if _, err := os.Stat(cfgPath); err != nil && !disconnect {
+		fmt.Println("\nThere is no config.toml beside lms-sync yet, so there is nothing for the apps to search.")
+		fmt.Println("Run lms-sync once: it asks for your LMS address and sign-in, and syncs.")
+	}
+	if failedAny {
+		return 1
+	}
+	return 0
+}
+
+// pickIDs reads "cursor,claude-code" or "all". "all" means every app the
+// filter accepts, so --connect all never writes into an app that is not on
+// the machine.
+func pickIDs(statuses []clientStatus, arg string, all func(clientStatus) bool) ([]string, error) {
+	var clients []*aiClient
+	for _, st := range statuses {
+		clients = append(clients, st.Client)
+	}
+	var ids []string
+	for _, f := range strings.FieldsFunc(arg, func(r rune) bool { return r == ',' || r == ' ' }) {
+		if strings.EqualFold(f, "all") {
+			for _, st := range statuses {
+				if all(st) {
+					ids = append(ids, st.Client.ID)
+				}
+			}
+			continue
+		}
+		c := clientByID(clients, f)
+		if c == nil {
+			return nil, failf(KindConfig, fmt.Sprintf("no AI app called %q", f),
+				"The apps on this machine are: "+clientIDs(clients), nil)
+		}
+		ids = append(ids, c.ID)
+	}
+	return ids, nil
 }

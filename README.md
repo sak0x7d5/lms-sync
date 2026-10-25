@@ -128,39 +128,15 @@ Press **Find my courses**. That saves your settings and lists your courses. Then
 
 ### 4. Connect Claude
 
-**Claude Desktop on Windows** — paste this into PowerShell and press Enter. It adds lms-sync to Claude's settings and keeps everything else in them; the old file is saved as `claude_desktop_config.json.bak`.
-
-```powershell
-& {
-  $ErrorActionPreference = 'Stop'
-  $f = "$env:APPDATA\Claude\claude_desktop_config.json"
-  $raw = if (Test-Path $f) { [IO.File]::ReadAllText($f) }
-  $c = if ($raw) { $raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-  if (-not $c.mcpServers) { $c | Add-Member mcpServers ([pscustomobject]@{}) -Force }
-  $c.mcpServers | Add-Member university-courses ([pscustomobject]@{ command = "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe"; args = @('--mcp') }) -Force
-  if ($raw) { Copy-Item $f "$f.bak" -Force } else { New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null }
-  [IO.File]::WriteAllText($f, ($c | ConvertTo-Json -Depth 32))
-  "Added university-courses to $f"
-}
-```
-
-Then quit Claude completely and open it again. Closing the window isn't enough: right-click the Claude icon by the clock (you may need the **^** arrow) and choose **Quit**.
-
-**Claude Desktop on a Mac** — add the entry by hand: [Claude Desktop](docs/ai-assistants.md#claude-desktop) has the steps. Then press ⌘Q and reopen Claude.
-
-**Claude Code** — `--scope user` makes it available in every project:
+The installer already asked which AI apps to connect: Claude Desktop, Claude Code, ChatGPT desktop and Codex, Cursor, VS Code, Gemini, and [more](docs/ai-assistants.md#connect-your-ai-app). If you skipped that, or installed another app since, run:
 
 ```bash
-claude mcp add --scope user university-courses -- ~/.local/share/lms-sync/lms-sync --mcp
+lms-sync --connect
 ```
 
-On Windows, in PowerShell (the quotes around `--` matter there):
+Tick your apps with the arrow keys and space, then press Enter. Then quit the app completely and open it again. Closing Claude's window isn't enough: right-click its icon by the clock (you may need the **^** arrow) and choose **Quit**, or press ⌘Q on a Mac.
 
-```powershell
-claude mcp add --scope user university-courses '--' "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe" --mcp
-```
-
-**Check it worked.** Start a new chat and ask *"Which courses are in my library?"* The first time Claude uses one of lms-sync's tools, it asks your permission: choose **Allow**. Only fetching new material goes online; everything else just reads your folder. You should see your course folders listed. If not, see [When it doesn't work](docs/ai-assistants.md#when-it-doesnt-work). Cursor, opencode and other setups are in [Using lms-sync with an AI assistant](docs/ai-assistants.md#connect-your-ai-app).
+**Check it worked.** Start a new chat and ask *"Which courses are in my library?"* The first time Claude uses one of lms-sync's tools, it asks your permission: choose **Allow**. Only fetching new material goes online; everything else just reads your folder. You should see your course folders listed. If not, see [When it doesn't work](docs/ai-assistants.md#when-it-doesnt-work). Setting an app up by hand is in [Using lms-sync with an AI assistant](docs/ai-assistants.md#connect-your-ai-app).
 
 <details>
 <summary><strong>Prefer to download it yourself?</strong></summary>

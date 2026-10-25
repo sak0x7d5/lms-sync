@@ -18,6 +18,8 @@ Give one mode per command. If you give two, only one of them runs.
 | `lms-sync --extract` | Makes files you have already synced searchable. Never goes online. Run it after installing poppler. See [The searchable copy](how-it-works.md#the-searchable-copy). |
 | `lms-sync --open [COURSE]` | Prints where your library is and opens it in File Explorer or Finder. Name a course (`--open ITC`: its folder name, part of it, or its initials) to open that course's folder instead. Put any options before the course name. |
 | `lms-sync --mcp` | Serves your library to an AI app. The app runs this for you; see [Using lms-sync with an AI assistant](ai-assistants.md). |
+| `lms-sync --connect [APPS]` | Lists the AI apps on this computer to tick, and writes lms-sync into the ones you choose; unticking one removes it. Name apps (`--connect cursor,claude-code`, or `all` for every app found) to skip the list, or `--connect list` to only look. See [Connect your AI app](ai-assistants.md#connect-your-ai-app). |
+| `lms-sync --disconnect APPS` | Removes lms-sync from those apps' settings, or from every app with `all`. |
 | `lms-sync --drive-login` | Signs in to Google Drive for the backup, once. It does not turn the backup on. See [Push to Google Drive](cloud-backup.md#push-to-google-drive). |
 | `lms-sync --version` | Prints the version and exits. |
 

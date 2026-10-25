@@ -149,8 +149,15 @@ jobs:
           # one whenever this tag is a prerelease — so an rc would verify the
           # last stable build and report success without ever having run the
           # thing being released.
-          sh install.sh --version "$TAG"
+          #
+          # --no-connect although CI is set anyway: this job must never wait
+          # on a checklist, whatever a runner image does with its terminal.
+          sh install.sh --version "$TAG" --no-connect
           export PATH="$HOME/.local/bin:$PATH"
+
+          # The status half of --connect: it prints what is connected and
+          # exits 0, with no terminal to ask anything on.
+          lms-sync --connect list </dev/null
 
           got=$(lms-sync --version)
           want="lms-sync ${TAG#v}"
@@ -176,7 +183,7 @@ jobs:
                 "$HOME/.zshrc" 2>/dev/null | grep -c 'lms-sync installer' || true
           }
           before=$(marks)
-          sh install.sh --version "$TAG"
+          sh install.sh --version "$TAG" --no-connect
           if [ "$(marks)" != "$before" ]; then
             echo "a second run changed the profiles: $before then $(marks)"; exit 1
           fi
@@ -197,7 +204,7 @@ jobs:
           *-*) echo "prerelease: the update path follows /releases/latest, so it is not checked" ;;
           *)
             dir="$HOME/.local/share/lms-sync"
-            sh install.sh
+            sh install.sh --no-connect
             if [ "$(uname -s)" = Darwin ]; then
               test -f "$HOME/Library/LaunchAgents/io.github.sak0x7d5.lms-sync.update.plist" ||
                 { echo "no launchd agent was registered"; exit 1; }
@@ -249,7 +256,7 @@ jobs:
           # -Version pins the tag under test: without it the installer resolves
           # /releases/latest, which is never this tag when this tag is a
           # prerelease.
-          & ([scriptblock]::Create($text)) -Version $env:TAG
+          & ([scriptblock]::Create($text)) -Version $env:TAG -NoConnect
 
           # Rebuilt from the registry rather than trusted from the session:
           # this is the real check that the *user* PATH got the entry.
@@ -260,13 +267,18 @@ jobs:
           $want = "lms-sync " + $env:TAG.TrimStart('v')
           if ($got -ne $want) { throw "expected '$want', got '$got'" }
 
+          # The status half of --connect: it prints what is connected and
+          # exits 0, with nothing to ask.
+          & lms-sync --connect list
+          if ($LASTEXITCODE -ne 0) { throw "lms-sync --connect list exited $LASTEXITCODE" }
+
           $dir = Join-Path $env:LOCALAPPDATA 'Programs\lms-sync'
           $out = (& lms-sync --extract 2>&1 | Out-String)
           if ($out -notlike "*$(Join-Path $dir 'config.toml')*") {
             throw "config did not resolve to the install dir: $out"
           }
 
-          & ([scriptblock]::Create($text)) -Version $env:TAG
+          & ([scriptblock]::Create($text)) -Version $env:TAG -NoConnect
 
           Set-Content -Path (Join-Path $dir 'config.toml') -Value "password = 'x'"
           & ([scriptblock]::Create($text)) -Uninstall
@@ -280,7 +292,7 @@ jobs:
           # The daily update, on a stable tag only: the unpinned install and
           # -Update both follow /releases/latest, which a prerelease is not.
           if (-not $env:TAG.Contains('-')) {
-            & ([scriptblock]::Create($text))
+            & ([scriptblock]::Create($text)) -NoConnect
             if (-not (Get-ScheduledTask -TaskName 'lms-sync update' -ErrorAction SilentlyContinue)) {
               throw 'no update task was registered'
             }

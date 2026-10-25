@@ -32,10 +32,16 @@ The installer:
 2. checks it against the release's `SHA256SUMS`, and stops if it does not
    match;
 3. puts it in a folder of its own and puts `lms-sync` on your PATH;
-4. schedules a daily [update check](#updates).
+4. schedules a daily [update check](#updates);
+5. asks which AI apps to connect, with the ones it found already ticked ([what
+   that changes](ai-assistants.md#connect-your-ai-app)).
 
-It needs no administrator rights and no `sudo`. It never stops to ask a
-question: every choice is a flag (see [Installer options](#installer-options)).
+It needs no administrator rights and no `sudo`. Step 5 is the only question it
+asks, and only when it is run in a terminal. Under `curl | sh` it reads your
+keyboard from the terminal directly. It is skipped in CI, by `--update` and the
+daily check, and with `--no-connect`. Skipping it changes nothing: run
+`lms-sync --connect` whenever you like. Every other choice is a flag (see
+[Installer options](#installer-options)).
 It is a plain script, so read it first if you would rather:
 [install.sh](../scripts/install.sh), [install.ps1](../scripts/install.ps1).
 
@@ -157,6 +163,8 @@ PowerShell needs the script as a block before it will take a parameter:
 | `--bin-dir DIR` | — | `LMS_SYNC_BIN_DIR` | where the symlink that puts it on your PATH goes |
 | `--no-modify-path` | `-NoModifyPath` | `LMS_SYNC_NO_MODIFY_PATH` | leave your shell startup file (Windows: your PATH) alone |
 | `--no-auto-update` | `-NoAutoUpdate` | `LMS_SYNC_NO_AUTO_UPDATE` | do not schedule the [daily update check](#updates) |
+| `--no-connect` | `-NoConnect` | `LMS_SYNC_NO_CONNECT` | do not ask which AI apps to connect |
+| `--connect APPS` | `-Connect APPS` | `LMS_SYNC_CONNECT` | connect these apps without asking, e.g. `cursor,claude-code` ([ids](ai-assistants.md#connect-your-ai-app)) |
 | `--skip-checksum` | `-SkipChecksum` | — | install without checking `SHA256SUMS` — see [Verify a download](#verify-a-download) |
 | `--update` | `-Update` | — | bring an existing install up to the newest release; this is what the daily check runs |
 | `--uninstall` | `-Uninstall` | — | [remove it](#uninstall) |
@@ -167,6 +175,15 @@ variables; `install.ps1` reads only `LMS_SYNC_NO_AUTO_UPDATE`. Windows has no
 `--bin-dir` because it puts the install folder itself on your PATH.
 
 ## Uninstall
+
+First take lms-sync out of your AI apps, because the uninstaller does not edit
+their settings:
+
+```bash
+lms-sync --disconnect all
+```
+
+Then:
 
 ```bash
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh -s -- --uninstall

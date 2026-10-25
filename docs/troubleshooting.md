@@ -68,7 +68,8 @@ A scheduled run can act on the exit code instead. See [Exit codes](command-line.
 
 - **PDFs are not searchable.** Install poppler, then run `lms-sync --extract`. See [Searchable PDFs](ai-assistants.md#searchable-pdfs). A scanned PDF has no text at all.
 - **Search stopped finding things in a Google Drive or OneDrive folder.** Keep the library available offline. See [Use a synced folder](cloud-backup.md#use-a-synced-folder).
-- **Your AI app does not show lms-sync, or finds no courses.** See [When it doesn't work](ai-assistants.md#when-it-doesnt-work).
+- **Your AI app does not show lms-sync, or finds no courses.** Run `lms-sync --connect list` to see which apps it is in, then see [When it doesn't work](ai-assistants.md#when-it-doesnt-work).
+- **`lms-sync --connect` left an app's file alone.** That file has comments in it or is already broken, so nothing was changed. Paste the entry it printed by hand.
 - **Claude won't start, or shows a settings error, after connecting.** The settings file is broken, usually by a missing comma or brace. Copy `%APPDATA%\Claude\claude_desktop_config.json.bak` back over `claude_desktop_config.json`, or fix the comma or brace ([how the file fits together](ai-assistants.md#claude-desktop)). Then quit and reopen Claude. Its logs are in `%APPDATA%\Claude\logs` (`mcp-server-university-courses.log`), or `~/Library/Logs/Claude` on a Mac.
 - **The assistant keeps saying the sign-in was refused, even after you fixed it.** Quit and reopen your AI app. It keeps the settings it started with.
 - **The assistant says something is not there that was just posted.** Ask it to sync that course first. See [Syncing from a conversation](ai-assistants.md#syncing-from-a-conversation).
