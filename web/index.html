@@ -6,154 +6,378 @@
 <title>lms-sync</title>
 <style>
   :root{
-    --bg:#f6f7f9; --panel:#fff; --ink:#14181f; --muted:#5d6673;
-    --line:#e2e6ec; --accent:#2f6fed; --ok:#1a7f4b; --warn:#a86200; --bad:#b4232a;
-    --radius:10px;
+    --bg:#f4f5f8; --panel:#fff; --panel-2:#f8f9fb; --ink:#12161d; --muted:#5f6876;
+    --faint:#97a0ad; --line:#e3e7ed; --accent:#3b6cf6; --accent-ink:#fff;
+    --accent-soft:color-mix(in srgb,var(--accent) 12%,transparent);
+    --ok:#18845a; --warn:#b26a00; --bad:#c92a33;
+    --shadow:0 1px 2px rgba(16,24,40,.05),0 4px 16px rgba(16,24,40,.06);
+    --radius:12px;
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    color-scheme:light;
   }
   @media (prefers-color-scheme:dark){
-    :root{--bg:#14171c;--panel:#1b1f26;--ink:#e8ecf2;--muted:#98a2b3;
-          --line:#2b313b;--accent:#5b8dff;--ok:#4ac07f;--warn:#e0a33a;--bad:#ff6b6b}
+    :root{--bg:#0f1217;--panel:#171b22;--panel-2:#1c212a;--ink:#e9edf3;--muted:#9aa4b2;
+          --faint:#667080;--line:#272d37;--accent:#6b93ff;--accent-ink:#0b1020;
+          --ok:#46c38a;--warn:#e6a940;--bad:#ff6b72;
+          --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 20px rgba(0,0,0,.25);color-scheme:dark}
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
-  .wrap{max-width:720px;margin:0 auto;padding:28px 20px 60px}
-  header{display:flex;align-items:baseline;gap:10px;margin-bottom:22px}
-  h1{font-size:19px;margin:0;letter-spacing:-.01em}
-  .ver{color:var(--muted);font-size:12px}
+  body{margin:0;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5;
+       -webkit-font-smoothing:antialiased}
+  .hidden{display:none !important}
+  button{font:inherit;font-size:14px;font-weight:600;padding:8px 14px;border-radius:9px;
+         border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer;
+         transition:border-color .15s,background .15s,transform .05s;white-space:nowrap}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:active:not(:disabled){transform:translateY(1px)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+  button.primary:hover:not(:disabled){filter:brightness(1.07)}
+  button.danger{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 45%,var(--line))}
+  button.icon{padding:8px 10px;line-height:0}
+  button.link{background:none;border:none;color:var(--accent);padding:0;font-weight:500;
+              text-decoration:underline;font-size:13px}
+  svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;
+      stroke-linecap:round;stroke-linejoin:round}
+
+  /* ---- header ---- */
+  .top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 85%,transparent);
+       backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .top-in{max-width:1180px;margin:0 auto;padding:12px 20px;display:flex;align-items:center;gap:10px}
+  .brand{display:flex;align-items:center;gap:10px}
+  .logo{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;color:#fff;
+        background:linear-gradient(135deg,#4f7dff,#7a4dff)}
+  .logo svg{width:17px;height:17px}
+  .brand b{font-size:16px;letter-spacing:-.01em;white-space:nowrap}
+  /* Nothing to sync or open until there are courses. */
+  body.setup #sync,body.setup #open,body.setup .open-item{display:none !important}
+  .open-item{display:none !important}
+  .ver{color:var(--faint);font-size:12px}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-size:12.5px;font-weight:600;
+        padding:4px 10px;border-radius:99px;background:var(--panel);border:1px solid var(--line);
+        color:var(--muted);margin-left:6px;white-space:nowrap}
+  .pill i{width:7px;height:7px;border-radius:50%;background:var(--faint)}
+  .pill.run{color:var(--accent)} .pill.run i{background:var(--accent);animation:pulse 1.2s infinite}
+  .pill.ok{color:var(--ok)} .pill.ok i{background:var(--ok)}
+  .pill.bad{color:var(--bad)} .pill.bad i{background:var(--bad)}
+  .spacer{flex:1}
+  .menu{position:relative}
+  .menu-list{position:absolute;right:0;top:calc(100% + 6px);min-width:180px;background:var(--panel);
+             border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:5px;z-index:30}
+  .menu-list button{display:flex;width:100%;border:0;background:none;text-align:left;font-weight:500;
+                    gap:9px;align-items:center;padding:8px 10px}
+  .menu-list button:hover:not(:disabled){background:var(--panel-2)}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:22px 20px 60px}
+
+  /* ---- banner ---- */
+  .banner{border-radius:10px;padding:11px 40px 11px 14px;margin-bottom:16px;font-size:13.5px;
+          white-space:pre-wrap;display:none;position:relative;animation:drop .2s ease-out}
+  .banner .dismiss{position:absolute;top:6px;right:8px;background:none;border:0;color:inherit;
+          font-size:18px;line-height:1;cursor:pointer;opacity:.6;padding:2px 6px}
+  .banner .dismiss:hover{opacity:1}
+  .banner.err{display:block;background:color-mix(in srgb,var(--bad) 11%,var(--panel));
+              border:1px solid color-mix(in srgb,var(--bad) 50%,transparent)}
+  .banner.ok{display:block;background:color-mix(in srgb,var(--ok) 11%,var(--panel));
+             border:1px solid color-mix(in srgb,var(--ok) 45%,transparent)}
+  .banner.info{display:block;background:var(--panel);border:1px solid var(--line)}
+
+  /* ---- settings: a centred card on first run, a drawer afterwards ---- */
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-        padding:20px;margin-bottom:16px}
-  label{display:block;font-size:12px;font-weight:600;color:var(--muted);
-        text-transform:uppercase;letter-spacing:.04em;margin-bottom:5px}
+        box-shadow:var(--shadow)}
+  #settings{padding:24px}
+  body.setup #settings{max-width:560px;margin:24px auto 0}
+  .intro h2{margin:0 0 4px;font-size:22px;letter-spacing:-.02em}
+  .intro p{margin:0 0 20px;color:var(--muted)}
+  .drawer-head{display:none;align-items:center;margin-bottom:16px}
+  .drawer-head h2{margin:0;font-size:17px}
+  body.dash #settings{position:fixed;top:0;right:0;bottom:0;width:min(440px,100%);margin:0;
+       border-radius:0;border-width:0 0 0 1px;overflow-y:auto;z-index:50;
+       transform:translateX(105%);transition:transform .25s ease}
+  body.dash #settings.open{transform:none}
+  body.dash .intro{display:none}
+  body.dash .drawer-head{display:flex}
+  #scrim{position:fixed;inset:0;background:rgba(10,14,20,.35);z-index:40;opacity:0;
+         pointer-events:none;transition:opacity .25s}
+  #scrim.open{opacity:1;pointer-events:auto}
+  .step{display:flex;gap:12px;margin-bottom:6px}
+  .step-n{flex:none;width:24px;height:24px;border-radius:50%;background:var(--accent-soft);
+          color:var(--accent);font-size:12.5px;font-weight:700;display:grid;place-items:center;margin-top:1px}
+  body.dash .step-n{display:none}
+  .step-body{flex:1;min-width:0}
+  .step-title{font-weight:650;margin-bottom:10px}
+  label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px}
   input[type=text],input[type=password]{
-    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:7px;
-    background:var(--bg);color:var(--ink);font:inherit;font-size:14px}
+    width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;
+    background:var(--panel-2);color:var(--ink);font:inherit;font-size:14px}
   input:focus{outline:2px solid var(--accent);outline-offset:-1px;border-color:transparent}
   .field{margin-bottom:14px}
-  .hint{font-size:12px;color:var(--muted);margin-top:4px}
+  .hint{font-size:12px;color:var(--muted);margin-top:5px}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  button{font:inherit;font-size:14px;font-weight:600;padding:9px 16px;border-radius:7px;
-         border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
-  button:hover:not(:disabled){border-color:var(--accent)}
-  button:disabled{opacity:.5;cursor:not-allowed}
-  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-  .spacer{flex:1}
-  #log{background:var(--bg);border:1px solid var(--line);border-radius:7px;padding:12px;
+  .checks{display:flex;flex-wrap:wrap;gap:6px}
+  .chk{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--ink);
+       padding:5px 10px;border:1px solid var(--line);border-radius:99px;cursor:pointer;margin:0;
+       background:var(--panel-2)}
+  .chk:has(input:checked){border-color:color-mix(in srgb,var(--accent) 60%,var(--line));
+       background:var(--accent-soft)}
+  .chk input{margin:0;accent-color:var(--accent)}
+  .check{display:flex;align-items:center;gap:8px;font-weight:500;font-size:14px;color:var(--ink);cursor:pointer}
+  .check input{margin:0;accent-color:var(--accent)}
+  .picker{display:flex;gap:8px;align-items:center}
+  .picker input{flex:1;min-width:0}
+  .picker button{white-space:nowrap;flex:none}
+  hr{border:0;border-top:1px solid var(--line);margin:18px 0}
+  .found{font-size:13px;color:var(--muted);margin-top:12px}
+  .found span{display:inline-block;background:var(--panel-2);border:1px solid var(--line);
+              border-radius:99px;padding:3px 10px;margin:3px 4px 0 0;color:var(--ink)}
+
+  /* ---- dashboard ---- */
+  body.setup #dash{display:none}
+  .dash-head{display:flex;align-items:flex-end;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+  .dash-head h1{margin:0;font-size:24px;letter-spacing:-.02em}
+  .dash-head .sub{color:var(--muted);font-size:13.5px;overflow-wrap:anywhere}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+  .stat{padding:14px 16px}
+  .stat .k{font-size:12px;font-weight:600;color:var(--muted)}
+  .stat .v{font-size:30px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums;line-height:1.2}
+  .stat.new .v{color:var(--accent)}
+  .stat.bad .v{color:var(--bad)}
+  .bar{height:6px;border-radius:99px;background:var(--panel-2);border:1px solid var(--line);
+       overflow:hidden;margin-top:8px}
+  .bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#4f7dff,#7a4dff);
+         transition:width .4s ease}
+  .grid{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:18px;align-items:start}
+  .section-title{font-size:13px;font-weight:650;color:var(--muted);margin:0 0 10px;
+                 display:flex;align-items:center;gap:8px}
+  .courses{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+  .course{padding:14px 15px;transition:border-color .25s,box-shadow .25s,transform .25s}
+  .course.syncing{border-color:color-mix(in srgb,var(--accent) 65%,var(--line));
+                  box-shadow:0 0 0 3px var(--accent-soft),var(--shadow)}
+  .course.err{border-color:color-mix(in srgb,var(--bad) 55%,var(--line))}
+  .course-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:10px}
+  .course-name{font-weight:650;font-size:14px;line-height:1.35;flex:1;min-width:0;overflow-wrap:anywhere}
+  .badge{flex:none;font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:99px;
+         background:var(--panel-2);color:var(--faint);border:1px solid var(--line);white-space:nowrap}
+  .course.syncing .badge{color:var(--accent);border-color:transparent;background:var(--accent-soft);
+                         animation:pulse 1.2s infinite}
+  .course.done .badge{color:var(--ok);border-color:transparent;
+                      background:color-mix(in srgb,var(--ok) 13%,transparent)}
+  .course.err .badge{color:var(--bad);border-color:transparent;
+                     background:color-mix(in srgb,var(--bad) 13%,transparent)}
+  .tabs{display:flex;flex-wrap:wrap;gap:5px}
+  .tab{font-size:11.5px;font-weight:550;padding:2px 8px;border-radius:6px;background:var(--panel-2);
+       color:var(--faint);border:1px solid var(--line);transition:all .25s}
+  .tab.on{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 55%,var(--line));
+          background:var(--accent-soft)}
+  .tab.seen{color:var(--ink)}
+  .tab.got{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,var(--line))}
+  .tab.skip{opacity:.45;text-decoration:line-through}
+  .tab.err{color:var(--bad);border-color:color-mix(in srgb,var(--bad) 50%,var(--line))}
+  .last{font-size:12px;color:var(--muted);margin-top:10px;white-space:nowrap;overflow:hidden;
+        text-overflow:ellipsis;min-height:18px}
+  .feed-card{padding:6px;max-height:560px;overflow-y:auto}
+  .feed-empty{color:var(--faint);font-size:13px;padding:22px 12px;text-align:center}
+  .item{display:flex;gap:10px;align-items:center;padding:8px 9px;border-radius:9px;animation:slide .35s ease-out}
+  .item:hover{background:var(--panel-2)}
+  .ext{flex:none;width:38px;height:38px;border-radius:8px;display:grid;place-items:center;
+       font-size:10px;font-weight:800;letter-spacing:.02em;color:#fff;background:#7d8696}
+  .ext.pdf{background:#e5484d} .ext.ppt{background:#f76b15} .ext.doc{background:#3b6cf6}
+  .ext.xls{background:#18845a} .ext.htm{background:#8e4ec6} .ext.md{background:#5f6876}
+  .item-body{min-width:0;flex:1}
+  .item-name{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .item-sub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  details{margin-top:18px}
+  summary{cursor:pointer;font-size:13px;font-weight:650;color:var(--muted);user-select:none}
+  #log{margin-top:10px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;
        height:260px;overflow-y:auto;font-family:ui-monospace,"Cascadia Code",Consolas,monospace;
        font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
   #log:empty::after{content:"Ready.";color:var(--muted)}
-  .checks{display:flex;flex-wrap:wrap;gap:6px 14px;margin:2px 0 4px}
-  .check{display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer}
-  .check input{margin:0}
   .l-course{color:var(--accent);font-weight:600;margin-top:8px}
-  .l-section{color:var(--ink);font-weight:600}
+  .l-section{font-weight:600}
   .l-skip{color:var(--muted)}
   .l-file{color:var(--ok)}
   .l-warn{color:var(--warn)}
   .l-error{color:var(--bad);font-weight:600}
   .l-done{color:var(--muted);margin-top:8px}
-  .stats{display:flex;gap:18px;font-size:13px;color:var(--muted);margin-top:12px}
-  .stats b{color:var(--ink);font-variant-numeric:tabular-nums}
-  .banner{border-radius:7px;padding:11px 13px;margin-bottom:14px;font-size:13.5px;
-          white-space:pre-wrap;display:none;position:relative;padding-right:34px}
-  .banner .dismiss{position:absolute;top:6px;right:8px;background:none;border:0;
-          color:inherit;font-size:18px;line-height:1;cursor:pointer;opacity:.6;padding:2px 6px}
-  .banner .dismiss:hover{opacity:1}
-  .banner.err{display:block;background:color-mix(in srgb,var(--bad) 12%,transparent);
-              border:1px solid var(--bad)}
-  .banner.ok{display:block;background:color-mix(in srgb,var(--ok) 12%,transparent);
-             border:1px solid var(--ok)}
-  .courses{font-size:13px;color:var(--muted);margin-top:10px}
-  .courses span{display:inline-block;background:var(--bg);border:1px solid var(--line);
-                border-radius:20px;padding:3px 10px;margin:3px 4px 0 0;color:var(--ink)}
-  .link{background:none;border:none;color:var(--accent);padding:0;font-weight:500;
-        text-decoration:underline;cursor:pointer;font-size:13px}
-  .picker{display:flex;gap:8px;align-items:center}
-  .picker input{flex:1;min-width:0}
-  .picker button{white-space:nowrap;flex:none}
-  .hidden{display:none}
+
+  @keyframes pulse{50%{opacity:.45}}
+  @keyframes slide{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:none}}
+  @keyframes drop{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation:none !important;transition:none !important}
+  }
+  @media (max-width:900px){
+    .grid{grid-template-columns:1fr}
+    /* The feed is what moves; on a narrow screen it goes above the cards. */
+    .grid>div:last-child{order:-1}
+    .feed-card{max-height:300px}
+  }
+  @media (max-width:560px){
+    .top-in,.wrap{padding-left:16px;padding-right:16px}
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .ver{display:none}
+    .top-in{gap:8px}
+    .top-in>button{padding:8px 12px}
+    .pill{margin-left:0}
+    #open{display:none !important}
+    body.dash .open-item.ok{display:flex !important}
+    .stat .v{font-size:24px}
+    #settings{padding:18px}
+  }
+  @media (max-width:420px){
+    .brand b{display:none}
+  }
 </style>
 </head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>lms-sync</h1><span class="ver" id="ver"></span>
+<body class="setup">
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <div class="logo"><svg viewBox="0 0 24 24"><path d="M4 19.5V6a2 2 0 0 1 2-2h12v13H6a2 2 0 0 0-2 2.5Z"/><path d="M6 20h12"/><path d="m9 10 2 2 4-4"/></svg></div>
+      <b>lms-sync</b><span class="ver" id="ver"></span>
+    </div>
+    <span class="pill" id="pill"><i></i><span id="pill-text">Ready</span></span>
     <div class="spacer"></div>
-    <button class="link" id="toggleSettings">Settings</button>
-  </header>
+    <button id="open" class="hidden" title="Open your course folder">Open folder</button>
+    <button class="primary" id="sync">Sync now</button>
+    <button class="danger hidden" id="stop">Stop</button>
+    <div class="menu">
+      <button class="icon" id="more" title="More" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+      </button>
+      <div class="menu-list hidden" id="menu">
+        <button class="open-item" id="open2"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg>Open folder</button>
+        <button id="dry"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>Dry run</button>
+        <button id="toggleSettings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>Settings</button>
+      </div>
+    </div>
+  </div>
+</header>
 
+<div id="scrim"></div>
+
+<main class="wrap">
   <div class="banner" id="banner"></div>
 
-  <div class="card" id="settings">
-    <div class="field">
-      <label for="base">LMS address</label>
-      <input type="text" id="base" spellcheck="false" autocapitalize="off">
-      <div class="hint">Your university's LMS. A bare hostname works.</div>
+  <section class="card" id="settings">
+    <div class="intro">
+      <h2>Bring your courses home</h2>
+      <p>Sign in once. lms-sync keeps every course from your LMS in a folder on this computer, ready for your AI to answer from.</p>
     </div>
-    <div class="field">
-      <label for="user">Username</label>
-      <input type="text" id="user" spellcheck="false" autocapitalize="off">
-      <div class="hint">Your LMS login — often a roll number, not an email.</div>
+    <div class="drawer-head">
+      <h2>Settings</h2><div class="spacer"></div>
+      <button class="icon" id="closeSettings" title="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
     </div>
-    <div class="field">
-      <label for="pass">Password</label>
-      <input type="password" id="pass" autocomplete="current-password">
-    </div>
-    <div class="field">
-      <label for="dest">Save files to</label>
-      <div class="picker">
-        <input type="text" id="dest" spellcheck="false">
-        <button type="button" id="browse" class="hidden">Browse…</button>
-      </div>
-      <div class="hint">Only course folders go here. The program and its settings stay where you put the binary.</div>
-    </div>
-    <div class="field">
-      <label>Tabs to mirror</label>
-      <div class="checks" id="sections"></div>
-      <div class="hint">A tab is only visited when the course actually has it.</div>
-    </div>
-    <div class="field">
-      <label class="check"><input type="checkbox" id="keep"> Also save each tab's page</label>
-      <div class="hint">Most Syllabus tabs are just a link to a PDF, so only the files are
-        kept. Turn this on if your instructors type notes into the tab itself.</div>
-    </div>
-    <div class="field hidden" id="drive-field">
-      <label>Google Drive backup</label>
-      <div class="picker">
-        <label class="check"><input type="checkbox" id="drive-push"> Copy my library to Drive after each sync</label>
-        <button type="button" id="drive-connect">Connect…</button>
-      </div>
-      <div class="hint" id="drive-hint">One way only — your disk stays the original and nothing is
-        ever read back down. lms-sync can only ever see the files it puts there itself.</div>
-    </div>
-    <div class="row">
-      <button id="save">Save</button>
-      <button id="discover">Find my courses</button>
-    </div>
-    <div class="courses" id="courses"></div>
-  </div>
 
-  <div class="card">
-    <div class="row" style="margin-bottom:14px">
-      <button class="primary" id="sync">Sync</button>
-      <button id="dry">Dry run</button>
-      <button id="stop" disabled>Stop</button>
-      <span class="spacer"></span>
-      <button id="open" class="hidden" title="Open your course folder">Open folder</button>
+    <div class="step">
+      <div class="step-n">1</div>
+      <div class="step-body">
+        <div class="step-title">Sign in to your LMS</div>
+        <div class="field">
+          <label for="base">LMS address</label>
+          <input type="text" id="base" spellcheck="false" autocapitalize="off">
+          <div class="hint">Your university's LMS. A bare hostname works.</div>
+        </div>
+        <div class="field">
+          <label for="user">Username</label>
+          <input type="text" id="user" spellcheck="false" autocapitalize="off">
+          <div class="hint">Your LMS login — often a roll number, not an email.</div>
+        </div>
+        <div class="field">
+          <label for="pass">Password</label>
+          <input type="password" id="pass" autocomplete="current-password">
+        </div>
+      </div>
     </div>
-    <div id="log"></div>
+
+    <div class="step">
+      <div class="step-n">2</div>
+      <div class="step-body">
+        <div class="step-title">Choose where your library lives</div>
+        <div class="field">
+          <label for="dest">Save files to</label>
+          <div class="picker">
+            <input type="text" id="dest" spellcheck="false">
+            <button type="button" id="browse" class="hidden">Browse…</button>
+          </div>
+          <div class="hint">Only course folders go here. The program and its settings stay where you put the binary.</div>
+        </div>
+        <div class="field">
+          <label>Tabs to mirror</label>
+          <div class="checks" id="sections"></div>
+          <div class="hint">A tab is only visited when the course actually has it.</div>
+        </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" id="keep"> Also save each tab's page</label>
+          <div class="hint">Most Syllabus tabs are just a link to a PDF, so only the files are
+            kept. Turn this on if your instructors type notes into the tab itself.</div>
+        </div>
+        <div class="field hidden" id="drive-field">
+          <label>Google Drive backup</label>
+          <div class="picker">
+            <label class="check"><input type="checkbox" id="drive-push"> Copy my library to Drive after each sync</label>
+            <button type="button" id="drive-connect">Connect…</button>
+          </div>
+          <div class="hint" id="drive-hint">One way only — your disk stays the original and nothing is
+            ever read back down. lms-sync can only ever see the files it puts there itself.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="step-n">3</div>
+      <div class="step-body">
+        <div class="step-title">Find your courses</div>
+        <div class="row">
+          <button class="primary" id="discover">Find my courses</button>
+          <button id="save">Save</button>
+        </div>
+        <div class="found" id="courses"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="dash">
+    <div class="dash-head">
+      <div>
+        <h1 id="headline">Your library</h1>
+        <div class="sub" id="sub">Press Sync now to fetch anything new.</div>
+      </div>
+    </div>
+
     <div class="stats">
-      <div>New <b id="s-new">0</b></div>
-      <div>Current <b id="s-cur">0</b></div>
-      <div>Failed <b id="s-fail">0</b></div>
+      <div class="card stat new"><div class="k" id="k-new">New</div><div class="v" id="s-new">0</div></div>
+      <div class="card stat"><div class="k">Up to date</div><div class="v" id="s-cur">0</div></div>
+      <div class="card stat bad"><div class="k">Failed</div><div class="v" id="s-fail">0</div></div>
+      <div class="card stat"><div class="k">Courses</div><div class="v"><span id="s-done">0</span><span style="color:var(--faint);font-size:.6em"> / <span id="s-total">0</span></span></div>
+        <div class="bar"><i id="bar"></i></div></div>
     </div>
-  </div>
-</div>
+
+    <div class="grid">
+      <div>
+        <div class="section-title">Courses</div>
+        <div class="courses" id="grid"></div>
+      </div>
+      <div>
+        <div class="section-title" id="feed-title">Just arrived</div>
+        <div class="card feed-card" id="feed"><div class="feed-empty" id="feed-empty">Files appear here the moment they arrive.</div></div>
+      </div>
+    </div>
+
+    <details id="details">
+      <summary>Details</summary>
+      <div id="log"></div>
+    </details>
+  </section>
+</main>
 
 <script>
 const token = new URLSearchParams(location.search).get("t") || "";
 const $ = id => document.getElementById(id);
 let running = false;
+let dryRun = false;
+let runFailed = false;
+let allSections = [], chosen = [];
 
 const api = (path, opts = {}) => fetch(path + (path.includes("?") ? "&" : "?") + "t=" + token, {
   ...opts, headers: { "Content-Type": "application/json", "X-Token": token, ...(opts.headers||{}) }
@@ -167,7 +391,7 @@ function banner(msg, kind) {
     const x = document.createElement("button");
     x.type = "button";
     x.className = "dismiss";
-    x.textContent = "\u00d7";
+    x.textContent = "×";
     x.title = "Dismiss";
     x.onclick = () => banner("", "");
     b.appendChild(x);
@@ -200,14 +424,71 @@ function line(text, cls) {
   if (atBottom) log.scrollTop = log.scrollHeight;
 }
 
+function pill(text, kind) {
+  $("pill").className = "pill" + (kind ? " " + kind : "");
+  $("pill-text").textContent = text;
+}
+
 function setRunning(on) {
   running = on;
-  $("sync").disabled = on;
+  $("sync").classList.toggle("hidden", on);
+  $("stop").classList.toggle("hidden", !on);
   $("dry").disabled = on;
-  $("stop").disabled = !on;
   $("discover").disabled = on;
   $("browse").disabled = on;
+  if (on) pill(dryRun ? "Dry run" : "Syncing", "run");
 }
+
+// Counters tick up to their new value rather than jumping, which is most of
+// what makes a sync look alive. Under reduced motion the CSS stops nothing
+// here, so the step is skipped outright.
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const wide = matchMedia("(min-width: 901px)");
+function count(id, to) {
+  const el = $(id), from = +el.textContent || 0;
+  if (from === to) return;
+  if (reduceMotion || Math.abs(to - from) > 400) { el.textContent = to; return; }
+  const t0 = performance.now(), dur = 350;
+  const step = now => {
+    const k = Math.min(1, (now - t0) / dur);
+    el.textContent = Math.round(from + (to - from) * k);
+    if (k < 1 && el._target === to) requestAnimationFrame(step);
+  };
+  el._target = to;
+  requestAnimationFrame(step);
+}
+
+// ---- modes: a first-run setup card, then the dashboard -----------------
+
+function mode(name) {
+  document.body.className = name;
+  if (name === "setup") closeSettings();
+}
+function openSettings() {
+  if (document.body.className !== "dash") return;
+  $("settings").classList.add("open");
+  $("scrim").classList.add("open");
+}
+function closeSettings() {
+  $("settings").classList.remove("open");
+  $("scrim").classList.remove("open");
+}
+$("closeSettings").onclick = closeSettings;
+$("scrim").onclick = closeSettings;
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closeSettings(); hideMenu(); } });
+
+function hideMenu() { $("menu").classList.add("hidden"); $("more").setAttribute("aria-expanded", "false"); }
+$("more").onclick = e => {
+  e.stopPropagation();
+  const open = $("menu").classList.toggle("hidden") === false;
+  $("more").setAttribute("aria-expanded", String(open));
+};
+document.addEventListener("click", hideMenu);
+$("toggleSettings").onclick = () => {
+  hideMenu();
+  if (document.body.className === "dash") openSettings();
+  else $("base").focus();
+};
 
 async function loadConfig() {
   try {
@@ -222,28 +503,32 @@ async function loadConfig() {
     // The server decides: a button that cannot open anything is worse than none.
     $("browse").classList.toggle("hidden", !c.can_browse);
     $("open").classList.toggle("hidden", !c.can_open);
+    $("open2").classList.toggle("ok", !!c.can_open);
     showSections(c.all_sections || [], c.sections || []);
     $("keep").checked = !!c.keep_pages;
     showDrive(c);
     showCourses(c.courses || []);
-    // Configured already? Collapse settings and get out of the way.
-    if (c.configured && (c.courses || []).length) $("settings").classList.add("hidden");
+    if (c.destination) $("sub").textContent = "Saving to " + c.destination;
+    // Configured already? Skip the setup card and go straight to the library.
+    mode(c.configured && (c.courses || []).length ? "dash" : "setup");
     setRunning(c.running);
   } catch (e) { fail(e); }
 }
 
 // The tab list comes from the server rather than being hard-coded here, so
 // adding a tab in Go makes it appear in the interface on its own.
-function showSections(all, chosen) {
+function showSections(all, sel) {
+  allSections = all;
+  chosen = sel;
   const el = $("sections");
   el.innerHTML = "";
   all.forEach(sec => {
     const label = document.createElement("label");
-    label.className = "check";
+    label.className = "chk";
     const box = document.createElement("input");
     box.type = "checkbox";
     box.value = sec.id;
-    box.checked = chosen.indexOf(sec.id) > -1;
+    box.checked = sel.indexOf(sec.id) > -1;
     label.appendChild(box);
     label.appendChild(document.createTextNode(sec.name));
     el.appendChild(label);
@@ -255,16 +540,144 @@ function chosenSections() {
            .map(b => b.value);
 }
 
+// ---- course cards ------------------------------------------------------
+
+// One record per course folder, which is the name every event carries.
+let cards = {};
+let order = [];
+let active = null;
+
+function tabNames() {
+  return allSections.filter(s => chosen.indexOf(s.id) > -1).map(s => s.name);
+}
+
 function showCourses(list) {
-  const el = $("courses");
-  el.innerHTML = "";
-  if (!list.length) { el.textContent = "No courses yet — use “Find my courses”."; return; }
+  const found = $("courses");
+  found.innerHTML = "";
+  if (!list.length) found.textContent = "No courses yet — use “Find my courses”.";
   list.forEach(c => {
     const s = document.createElement("span");
     s.textContent = c.Folder || c.folder;
-    el.appendChild(s);
+    found.appendChild(s);
   });
+
+  $("grid").innerHTML = "";
+  cards = {}; order = []; active = null;
+  list.forEach(c => addCard(c.Folder || c.folder));
+  progress();
 }
+
+function addCard(name) {
+  const el = document.createElement("div");
+  el.className = "card course";
+  const top = document.createElement("div");
+  top.className = "course-top";
+  const title = document.createElement("div");
+  title.className = "course-name";
+  title.textContent = name;
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.textContent = "Ready";
+  top.append(title, badge);
+  const tabs = document.createElement("div");
+  tabs.className = "tabs";
+  const chips = {};
+  tabNames().forEach(t => {
+    const chip = document.createElement("span");
+    chip.className = "tab";
+    chip.textContent = t;
+    chips[t] = chip;
+    tabs.appendChild(chip);
+  });
+  const last = document.createElement("div");
+  last.className = "last";
+  el.append(top, tabs, last);
+  $("grid").appendChild(el);
+  cards[name] = { el, badge, chips, last, n: 0, state: "", tab: null };
+  order.push(name);
+  $("s-total").textContent = order.length;
+  return cards[name];
+}
+
+function setCard(card, state, text) {
+  card.state = state;
+  card.el.className = "card course" + (state ? " " + state : "");
+  card.badge.textContent = text;
+}
+
+function finishCard(name) {
+  const card = cards[name];
+  if (!card || card.state !== "syncing") return;
+  if (card.tab && card.chips[card.tab]) card.chips[card.tab].classList.remove("on");
+  setCard(card, card.failed ? "err" : "done",
+    card.failed ? "Problem" : card.n ? "✓ " + card.n + " new" : "✓ Up to date");
+}
+
+function progress() {
+  const total = order.length;
+  const done = order.filter(n => cards[n].state === "done" || cards[n].state === "err").length;
+  $("s-done").textContent = done;
+  $("bar").style.width = total ? (100 * done / total) + "%" : "0";
+}
+
+function resetCards() {
+  order.forEach(n => {
+    const c = cards[n];
+    c.n = 0; c.failed = false; c.tab = null;
+    c.last.textContent = "";
+    Object.values(c.chips).forEach(ch => ch.className = "tab");
+    setCard(c, "", "Waiting");
+  });
+  active = null;
+  progress();
+}
+
+// ---- the feed ----------------------------------------------------------
+
+function extClass(name) {
+  const m = /\.([a-z0-9]+)$/i.exec(name);
+  const ext = m ? m[1].toLowerCase() : "";
+  const map = { pdf: "pdf", ppt: "ppt", pptx: "ppt", doc: "doc", docx: "doc",
+                xls: "xls", xlsx: "xls", csv: "xls", html: "htm", htm: "htm", md: "md" };
+  return [map[ext] || "", (ext || "file").slice(0, 4).toUpperCase()];
+}
+
+function feed(course, section, path) {
+  $("feed-empty").classList.add("hidden");
+  const parts = path.split(/[\\/]/);
+  const name = parts.pop();
+  const [cls, label] = extClass(name);
+  const item = document.createElement("div");
+  item.className = "item";
+  const ext = document.createElement("div");
+  ext.className = "ext " + cls;
+  ext.textContent = label;
+  const body = document.createElement("div");
+  body.className = "item-body";
+  const n = document.createElement("div");
+  n.className = "item-name";
+  n.textContent = name;
+  n.title = path;
+  const sub = document.createElement("div");
+  sub.className = "item-sub";
+  sub.textContent = [course, section].filter(Boolean).join(" · ");
+  body.append(n, sub);
+  item.append(ext, body);
+  const box = $("feed");
+  box.insertBefore(item, $("feed-empty").nextSibling);
+  // A first sync can bring hundreds of files; the feed is for watching, the
+  // folder is the record.
+  const items = box.querySelectorAll(".item");
+  if (items.length > 60) items[items.length - 1].remove();
+}
+
+function clearFeed() {
+  $("feed").querySelectorAll(".item").forEach(i => i.remove());
+  $("feed-empty").classList.remove("hidden");
+  $("feed-empty").textContent = "Files appear here the moment they arrive.";
+}
+
+// ---- settings ----------------------------------------------------------
 
 async function save(quiet) {
   const body = JSON.stringify({
@@ -286,9 +699,12 @@ async function save(quiet) {
   $("pass").placeholder = c.configured ? "•••••••• (saved)" : "";
   // The server drops anything it does not recognise and never leaves the list
   // empty, so redraw from what it actually stored.
+  const tabsChanged = (c.sections || []).join() !== chosen.join();
   showSections(c.all_sections || [], c.sections || []);
   $("keep").checked = !!c.keep_pages;
   showDrive(c);
+  if (c.destination) $("sub").textContent = "Saving to " + c.destination;
+  if (tabsChanged && !running) showCourses(c.courses || []);
   if (!quiet) banner("Settings saved.", "ok");
 }
 
@@ -328,7 +744,7 @@ $("drive-connect").onclick = async () => {
       tab.location.href = data.url;
     } else {
       // Popups blocked entirely. Better a link than a dead button.
-      banner("Your browser blocked the sign-in tab. Open this to continue: " + data.url, "");
+      banner("Your browser blocked the sign-in tab. Open this to continue: " + data.url, "info");
     }
     banner("Finish signing in on the Google tab, then come back here.", "ok");
   } catch (e) {
@@ -343,9 +759,9 @@ $("drive-connect").onclick = async () => {
 // sign-in worked when it next asks. Re-checking when the student switches
 // back is what makes the button update by itself.
 //
-// Deliberately not loadConfig(): that one refills every field and collapses
-// the panel, so alt-tabbing away mid-edit would throw away whatever had been
-// typed and not yet saved.
+// Deliberately not loadConfig(): that one refills every field and resets the
+// view, so alt-tabbing away mid-edit would throw away whatever had been typed
+// and not yet saved.
 window.addEventListener("focus", async () => {
   try {
     const r = await api("/api/config");
@@ -376,6 +792,7 @@ $("browse").onclick = async () => {
 };
 
 // The saved destination is what opens, since that is where the files are.
+$("open2").onclick = () => { hideMenu(); $("open").onclick(); };
 $("open").onclick = async () => {
   try {
     const r = await api("/api/open", { method: "POST" });
@@ -391,8 +808,6 @@ $("save").onclick = async () => {
   try { await save(false); } catch (e) { fail(e); }
 };
 
-$("toggleSettings").onclick = () => $("settings").classList.toggle("hidden");
-
 $("discover").onclick = async () => {
   banner("", "");
   try {
@@ -402,20 +817,25 @@ $("discover").onclick = async () => {
     const r = await api("/api/discover", { method: "POST" });
     const data = await r.json();
     if (!r.ok) throw new Error((data.error || "discovery failed") + (data.hint ? "\n\n" + data.hint : ""));
-    showCourses(data.courses || []);
-    banner("Found " + (data.courses || []).length + " course(s).", "ok");
+    const list = data.courses || [];
+    showCourses(list);
+    banner("Found " + list.length + " course(s)." + (list.length ? " Press Sync now to fetch them." : ""), "ok");
+    if (list.length) { mode("dash"); closeSettings(); }
   } catch (e) {
     fail(e);
   } finally {
-    $("discover").disabled = false;
+    $("discover").disabled = running;
     $("discover").textContent = "Find my courses";
   }
 };
 
+// ---- running a sync ----------------------------------------------------
+
 async function startSync(dry) {
+  hideMenu();
   banner("", "");
   $("log").innerHTML = "";
-  $("s-new").textContent = $("s-cur").textContent = $("s-fail").textContent = "0";
+  ["s-new", "s-cur", "s-fail"].forEach(id => { $(id).textContent = "0"; $(id)._target = 0; });
   try {
     await save(true);
     const r = await api("/api/sync?dry=" + (dry ? "1" : "0"), { method: "POST" });
@@ -423,6 +843,14 @@ async function startSync(dry) {
       const e = await r.json().catch(() => ({}));
       throw new Error((e.error || "could not start") + (e.hint ? "\n\n" + e.hint : ""));
     }
+    dryRun = dry;
+    runFailed = false;
+    closeSettings();
+    resetCards();
+    clearFeed();
+    $("k-new").textContent = dry ? "Would download" : "New";
+    $("feed-title").textContent = dry ? "Would download" : "Just arrived";
+    $("headline").textContent = dry ? "Dry run" : "Syncing…";
     setRunning(true);
     line(dry ? "Dry run — nothing will be written." : "Syncing…", "l-done");
   } catch (e) { fail(e); }
@@ -432,33 +860,108 @@ $("sync").onclick = () => startSync(false);
 $("dry").onclick = () => startSync(true);
 $("stop").onclick = () => api("/api/stop", { method: "POST" });
 
+function courseCard(name) {
+  return cards[name] || null;
+}
+
 // Server-Sent Events: the stream stays open for the life of the page and
 // reconnects itself if the connection drops.
 const es = new EventSource("/api/events?t=" + token);
 es.onmessage = ev => {
   let e; try { e = JSON.parse(ev.data); } catch { return; }
+  let card = courseCard(e.course);
+  // The course list is refreshed at the start of every run, so a course added
+  // this semester can turn up before the page has heard of it.
+  if (!card && e.type === "course" && e.course) card = addCard(e.course);
   switch (e.type) {
-    case "start":   line("Saving to " + e.path, "l-done"); break;
+    case "start":
+      line("Saving to " + e.path, "l-done");
+      $("sub").textContent = (dryRun ? "Checking against " : "Saving to ") + e.path;
+      break;
     case "index":   line("Index: " + e.path, "l-done"); break;
     case "extract": line(e.message, "l-done"); break;
     // A push reports each file as it goes up, then one summary at the end.
     case "push":    line(e.path ? "  ^ " + e.path : e.message, e.path ? "l-file" : "l-done"); break;
-    case "course":  line(e.course, "l-course"); break;
-    case "section": line("  [" + e.section + "]", "l-section"); break;
-    case "file":    line("  + " + e.path, "l-file"); break;
+    case "course":
+      line(e.course, "l-course");
+      if (active && active !== e.course) finishCard(active);
+      active = e.course;
+      if (card) {
+        setCard(card, "syncing", "Syncing");
+        // Keep the active course in view, but not on a narrow screen, where the
+        // feed sits above the cards and following them would scroll it away.
+        if (wide.matches) card.el.scrollIntoView({ block: "nearest", behavior: reduceMotion ? "auto" : "smooth" });
+      }
+      progress();
+      break;
+    case "section":
+      line("  [" + e.section + "]", "l-section");
+      if (card) {
+        if (card.tab && card.chips[card.tab]) card.chips[card.tab].classList.remove("on");
+        card.tab = e.section;
+        const chip = card.chips[e.section];
+        if (chip) chip.classList.add("on", "seen");
+      }
+      break;
+    case "file":
+      line("  + " + e.path, "l-file");
+      feed(e.course, e.section, e.path);
+      if (card) {
+        card.n++;
+        card.last.textContent = "↓ " + e.path.split(/[\\/]/).pop();
+        const chip = card.chips[e.section];
+        if (chip) chip.classList.add("got");
+      }
+      break;
     // A tab that is enabled but empty is normal, not a failure — it is shown
     // quietly so the log explains itself without looking alarming.
-    case "skip":    line("  - " + e.section + ": " + e.message, "l-skip"); break;
-    case "warn":   line("  ! " + (e.path ? e.path + " " : "") + e.message, "l-warn"); break;
-    case "error":  fail(e.message); break;
-    case "done":
-      setRunning(false);
-      line(e.message || ("Finished — " + e.new + " new, " + e.current + " current, " + e.failed + " failed."), "l-done");
+    case "skip":
+      line("  - " + e.section + ": " + e.message, "l-skip");
+      if (card && card.chips[e.section]) card.chips[e.section].classList.add("skip");
       break;
+    case "warn":   line("  ! " + (e.path ? e.path + " " : "") + e.message, "l-warn"); break;
+    case "error":
+      fail(e.message);
+      runFailed = true;
+      if (card) {
+        card.failed = true;
+        if (card.chips[e.section]) card.chips[e.section].classList.add("err");
+      }
+      break;
+    case "done": {
+      if (active) finishCard(active);
+      active = null;
+      // A run that stopped early never reached these; "Waiting" would be a lie.
+      order.forEach(n => { if (!cards[n].state) setCard(cards[n], "", "Not synced"); });
+      progress();
+      setRunning(false);
+      const msg = e.message || ("Finished — " + e.new + " new, " + e.current + " current, " + e.failed + " failed.");
+      line(msg, "l-done");
+      if (e.message === "Stopped.") pill("Stopped", "");
+      else if (e.failed || runFailed) pill("Needs attention", "bad");
+      else pill(dryRun ? "Dry run done" : "Up to date", "ok");
+      const touched = order.filter(n => cards[n].n).length;
+      $("headline").textContent = dryRun ? "Dry run finished" : "Your library";
+      if (runFailed && !e.message && !e.new) {
+        // The error itself is already on the banner; a count would bury it.
+      } else if (e.message) {
+        // A run that ended early says why; that is the headline, not a count.
+        banner(e.message, e.failed ? "err" : "info");
+      } else if (e.new) {
+        banner((dryRun ? "Would download " : "") + e.new + " new file" + (e.new === 1 ? "" : "s") +
+          (touched ? " across " + touched + " course" + (touched === 1 ? "" : "s") : "") + ".", "ok");
+      } else {
+        $("feed-empty").textContent = "Nothing new. Everything was already up to date.";
+      }
+      dryRun = false;
+      break;
+    }
   }
-  if (e.new !== undefined)     $("s-new").textContent = e.new;
-  if (e.current !== undefined) $("s-cur").textContent = e.current;
-  if (e.failed !== undefined)  $("s-fail").textContent = e.failed;
+  // Every event carries the totals, but only those that count something fill
+  // them in; the rest send zeros. Within a run they only ever grow.
+  if (e.new > ($("s-new")._target || 0))      count("s-new", e.new);
+  if (e.current > ($("s-cur")._target || 0))  count("s-cur", e.current);
+  if (e.failed > ($("s-fail")._target || 0))  count("s-fail", e.failed);
 };
 
 loadConfig();
