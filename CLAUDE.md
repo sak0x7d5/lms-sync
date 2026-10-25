@@ -15,8 +15,8 @@ go test ./...               # ~7s; the cancellation test sleeps
 go test -run TestSyncEndToEnd -v .    # one test
 go build -trimpath -ldflags="-s -w" -o lms-sync-linux-amd64 .   # release-style build (GOOS/GOARCH to cross-compile)
 
-shellcheck --shell=sh install.sh   # what CI runs; dash -n install.sh too
-pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
+shellcheck --shell=sh scripts/install.sh   # what CI runs; dash -n scripts/install.sh too
+pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./scripts/install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
 ```
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
@@ -496,8 +496,8 @@ A browser is never told the real path of a folder the user picks — the File Sy
 That list now appears in **five** places: [ci.yml](.github/workflows/ci.yml)'s
 cross-compile loop, [release.yml](.github/workflows/release.yml)'s build
 matrix, its `verify` matrix, both installers' architecture detection
-(`SUPPORTED` in [install.sh](install.sh), `$Supported` in
-[install.ps1](install.ps1)), and the README's download table (the `<details>`
+(`SUPPORTED` in [install.sh](scripts/install.sh), `$Supported` in
+[install.ps1](scripts/install.ps1)), and the README's download table (the `<details>`
 under Quick start; CONTRIBUTING.md's "Adding a build target" repeats the list
 of places) — **keep them the same**, or a target is released without ever having been compiled on a pull
 request, or offered to a machine no file was built for.
@@ -515,7 +515,7 @@ incidental — it is what makes the binary independent of Android's libc.
 
 ### Installing it
 
-[install.sh](install.sh) and [install.ps1](install.ps1) are POSIX sh and
+[install.sh](scripts/install.sh) and [install.ps1](scripts/install.ps1) are POSIX sh and
 Windows PowerShell 5.1 because they have to be: the stdlib-only rule means the
 installer cannot be a Go program, and a goreleaser config would be a build
 dependency in a project whose selling point is having none. They are published
@@ -786,7 +786,7 @@ Do not add `Claude-Session:` or `Co-Authored-By:` trailers to commit messages, a
 
 ## Tests
 
-All in [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`, a portal tool menu that names registrations only in icon classes, a syllabus tool behind an iframe, and a course whose Syllabus tab is enabled but empty. Every request is recorded, so a test can assert what was *not* fetched (`srv.requested`). Extend that fake rather than reaching for the network; there are no live-server tests.
+One `_test.go` per source file it covers (`sync_test.go`, `mcp_test.go`, `deadlines_test.go`, …); the shared fakes, fixtures and helpers are in [testhelpers_test.go](testhelpers_test.go), except the Drive fake, which lives in `drive_test.go`. `newFakeSakai` is an `httptest` server that reproduces the real quirks — 200-with-login-form on bad credentials, `/direct/` returning 404, a forbidden file, injectable 500s via `failures`, a portal tool menu that names registrations only in icon classes, a syllabus tool behind an iframe, and a course whose Syllabus tab is enabled but empty. Every request is recorded, so a test can assert what was *not* fetched (`srv.requested`). Extend that fake rather than reaching for the network; there are no live-server tests.
 
 `testConfig` pins `Sections` to `resources` on purpose: the older tests are
 about Resources behaviour, and a change to the shipped defaults must not

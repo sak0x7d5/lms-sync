@@ -78,8 +78,9 @@ go build -trimpath -ldflags="-s -w -X main.version=1.3.2-local" -o lms-sync .
   interface (`ui.go`) and the MCP server (`mcp.go`) are front ends over one
   core. Change behaviour there and every surface gets it; a fix in a handler
   fixes one.
-- **Extend the fake server; never test against a real one.** Every test is in
-  [lms_test.go](lms_test.go). `newFakeSakai` is an `httptest` server that
+- **Extend the fake server; never test against a real one.** Tests sit in one
+  `_test.go` per area, with the shared fakes in
+  [testhelpers_test.go](testhelpers_test.go). `newFakeSakai` is an `httptest` server that
   reproduces real Sakai quirks: a wrong password answered with HTTP 200 and the
   login form, `/direct/` returning 404, injectable 500s, a portal menu that
   names tools only in icon class names. It records every request in
@@ -108,11 +109,11 @@ go build -trimpath -ldflags="-s -w -X main.version=1.3.2-local" -o lms-sync .
 pushing a change to either:
 
 ```bash
-sh -n install.sh
-dash -n install.sh
-shellcheck --shell=sh install.sh
-LC_ALL=C grep -n '[^[:print:][:space:]]' install.ps1    # must print nothing
-pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
+sh -n scripts/install.sh
+dash -n scripts/install.sh
+shellcheck --shell=sh scripts/install.sh
+LC_ALL=C grep -n '[^[:print:][:space:]]' scripts/install.ps1    # must print nothing
+pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./scripts/install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
 ```
 
 Rules the checks cannot catch:
