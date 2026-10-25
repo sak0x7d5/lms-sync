@@ -90,7 +90,7 @@ irm https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.ps1 | 
 curl -fsSL https://github.com/sak0x7d5/lms-sync/releases/latest/download/install.sh | sh
 ```
 
-It needs no administrator rights. The installer picks the right build for your machine, checks it against the release's published checksums, gives the program a folder of its own, and schedules a daily check for updates ([how updates work](docs/install.md#updates); uninstalling removes it). Read [install.ps1](install.ps1) or [install.sh](install.sh) first if you like. On a phone, start with [lms-sync on Android](docs/android.md): where you save decides whether anything else on the phone can open the files.
+It needs no administrator rights. The installer picks the right build for your machine, checks it against the release's published checksums, gives the program a folder of its own, and schedules a daily check for updates ([how updates work](docs/install.md#updates); uninstalling removes it). Read [install.ps1](scripts/install.ps1) or [install.sh](scripts/install.sh) first if you like. On a phone, start with [lms-sync on Android](docs/android.md): where you save decides whether anything else on the phone can open the files.
 
 ### 2. Make PDFs searchable
 

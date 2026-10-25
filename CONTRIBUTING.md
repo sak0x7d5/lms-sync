@@ -108,11 +108,11 @@ go build -trimpath -ldflags="-s -w -X main.version=1.3.2-local" -o lms-sync .
 pushing a change to either:
 
 ```bash
-sh -n install.sh
-dash -n install.sh
-shellcheck --shell=sh install.sh
-LC_ALL=C grep -n '[^[:print:][:space:]]' install.ps1    # must print nothing
-pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
+sh -n scripts/install.sh
+dash -n scripts/install.sh
+shellcheck --shell=sh scripts/install.sh
+LC_ALL=C grep -n '[^[:print:][:space:]]' scripts/install.ps1    # must print nothing
+pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path ./scripts/install.ps1), [ref]$null, [ref]$e); if ($e) { $e; exit 1 }'
 ```
 
 Rules the checks cannot catch:
