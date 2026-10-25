@@ -19,6 +19,13 @@ The slides are on the LMS. Somewhere. Behind a sign-in, a drawer of course codes
 
 lms-sync fetches it once, keeps it current, and hands it to your AI. You just ask.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/how-it-works-dark.svg">
+    <img src="docs/media/how-it-works.svg" alt="lms-sync syncs seven LMS tabs into a library on your computer, extracts their text into a search index, and serves both to your AI assistant over MCP" width="760">
+  </picture>
+</p>
+
 ## Before and after
 
 <!-- demo video: drag the split-screen .mp4 into GitHub's web editor and put the https://github.com/user-attachments/assets/<uuid> URL it gives you on its own line here, replacing this comment. See demo-video/PLAN.md. -->
@@ -290,7 +297,14 @@ If that address shows "page not found", try `/access/login` the same way. If nei
 
 Which tabs a course offers varies too. `lms-sync --probe` lists them for every course and downloads nothing ([diagnosing a server](docs/command-line.md#diagnosing-a-server)).
 
-**Known to work:** IBA Karachi. Tried it at yours? [Open an issue](https://github.com/sak0x7d5/lms-sync/issues) or a pull request either way. "It doesn't work here" helps the next student too.
+| | University | LMS | Status |
+|---|---|---|---|
+| <img src="docs/media/logos/iba.png" alt="IBA Karachi logo" height="40"> | IBA Karachi | `lms.iba.edu.pk` | ✅ Works. Used every day |
+| <img src="docs/media/logos/lums.png" alt="LUMS logo" height="32"> | LUMS | `lms.lums.edu.pk` | 🟡 Should work: the same Sakai sign-in form. Not tested yet |
+
+<sub>Not affiliated with or endorsed by these universities.</sub>
+
+Tried it at yours? [Open an issue](https://github.com/sak0x7d5/lms-sync/issues) or a pull request either way. "It doesn't work here" helps the next student too.
 
 ## FAQ
 
