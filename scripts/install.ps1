@@ -408,6 +408,16 @@ function Register-UpdateTask {
 	# refuses to run any script file at all; it applies to this one process.
 	$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden ' +
 		'-File ' + (Get-TaskArgument $script) + ' -Update -InstallDir ' + (Get-TaskArgument $Dir)
+	# -WindowStyle Hidden only hides a window that already exists, so it still
+	# flashes up every day - and where Windows Terminal is the default it opens
+	# a Terminal window the flag cannot hide at all. A headless conhost gives
+	# PowerShell a console with no window. Builds before 1809 do not know the
+	# switch, and keep the flash rather than a task that never runs.
+	$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+	if ([Environment]::OSVersion.Version.Build -ge 17763 -and (Test-Path $conhost)) {
+		$arguments = '--headless ' + (Get-TaskArgument $ps) + ' ' + $arguments
+		$ps = $conhost
+	}
 	$at = (Get-Date).Date.AddHours(10 + (Get-Random -Maximum 8)).AddMinutes((Get-Random -Maximum 60))
 	try {
 		$action = New-ScheduledTaskAction -Execute $ps -Argument $arguments -WorkingDirectory $Dir
