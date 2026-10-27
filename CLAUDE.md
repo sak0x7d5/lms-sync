@@ -592,6 +592,10 @@ binaries beside it. `SHA256SUMS` covers them too.
     cmdlet comes from a module file, and a 5.1 started from PowerShell 7
     inherits 7's module path and cannot load it. The v1.3.0 `verify` job
     failed exactly so: the scheduled command exited on its first hash.
+  - **The Windows task runs PowerShell inside `conhost.exe --headless`.**
+    `-WindowStyle Hidden` hides a window only once it exists, so it flashed
+    one daily, and a Windows Terminal default opens one it cannot hide.
+    release.yml's `verify` job asserts the wrapper.
   - `--uninstall` removes the schedule, the installer copy and `update.log`.
     It still uses `rmdir`, so the student's files are never touched.
   release.yml's `verify` job registers a real schedule on each OS, runs the

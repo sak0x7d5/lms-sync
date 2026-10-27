@@ -288,6 +288,11 @@ jobs:
             # which reads a BOM-less script in the ANSI code page. The exe is
             # this release, so the only right answer is that nothing changes.
             $action = (Get-ScheduledTask -TaskName 'lms-sync update').Actions[0]
+            # Run through a headless conhost, so a signed-in student sees no
+            # window when it fires; a bare powershell.exe flashes one daily.
+            if ($action.Execute -notlike '*\conhost.exe' -or -not $action.Arguments.StartsWith('--headless ')) {
+              throw "the update task would open a window: $($action.Execute) $($action.Arguments)"
+            }
             $p = Start-Process -FilePath $action.Execute -ArgumentList $action.Arguments `
                    -WorkingDirectory $action.WorkingDirectory -Wait -PassThru -NoNewWindow
             $log = Join-Path $dir 'update.log'
