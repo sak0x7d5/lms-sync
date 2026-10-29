@@ -41,6 +41,9 @@ How to answer this:
   topic was not covered: this mirror holds what was uploaded to the LMS, which
   is not a record of what was taught, and plenty of instructors upload little
   or nothing.
+- A search that found nothing proves nothing about files whose pages are
+  pictures: find_material names them. Look at the likely one with view_pages
+  before saying the material does not cover something.
 - Anything you add from general knowledge must be marked as such, separately
   from what came out of their material.
 - If a course looks empty or out of date, or the student says something was just

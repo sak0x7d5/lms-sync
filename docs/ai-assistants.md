@@ -15,6 +15,40 @@ Answers come from the copy on your disk, which is why they are quick. Nothing is
 
 ## Connect your AI app
 
+**The installer does this for you.** At the end of an install it lists the AI apps on your computer, with the ones it found already ticked. Use the arrow keys and space to choose, then press Enter, and lms-sync writes itself into each app's settings. To change your choice later, or if you skipped it:
+
+```bash
+lms-sync --connect
+```
+
+The interface has the same list, under **AI apps**. Either way, quit the app completely and reopen it afterwards; it prints how for each one.
+
+| App | `--connect` id | What it changes |
+|---|---|---|
+| Claude Desktop (Windows, Mac) | `claude-desktop` | `claude_desktop_config.json` |
+| Claude Code | `claude-code` | runs `claude mcp add --scope user` |
+| ChatGPT desktop and Codex | `chatgpt` | `~/.codex/config.toml`, through `codex mcp add` when the `codex` command is installed |
+| Cursor | `cursor` | `~/.cursor/mcp.json` |
+| VS Code (GitHub Copilot) | `vscode` | your user `mcp.json` |
+| Cline, in VS Code | `cline` | `cline_mcp_settings.json` |
+| Windsurf | `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+| Antigravity | `antigravity` | `~/.gemini/antigravity/mcp_config.json` |
+| Gemini CLI | `gemini` | `~/.gemini/settings.json` |
+| opencode | `opencode` | `~/.config/opencode/opencode.json` |
+| LM Studio | `lm-studio` | `~/.lmstudio/mcp.json` |
+| Zed | `zed` | nothing: it prints the entry to paste (below) |
+
+- **Nothing else in those files changes.** The old file is kept beside it as `.bak`. Every other setting and server comes back exactly as it was.
+- **A file it cannot read is left alone.** If an app's settings have comments in them, or are already broken, lms-sync changes nothing and prints the entry to paste by hand. Zed's settings nearly always have comments, so for Zed it only prints.
+- **An existing entry is updated, not duplicated**, whatever you named it. Its `env` block and any `--dest` you added are kept.
+- **No password is written.** The entry is the plain one, so it reads `config.toml`, like everything else.
+- **Unticking an app removes lms-sync from it.** So does `lms-sync --disconnect cursor`, or `--disconnect all`. Do that before you [uninstall](install.md#uninstall), because the uninstaller does not edit other apps' settings.
+- **Without a list:** `lms-sync --connect cursor,claude-code` sets up exactly those apps. `all` means every app it found, and `lms-sync --connect list` shows what is connected without changing anything.
+
+**Is ChatGPT's website covered?** No. Websites and phone apps cannot start a program on your computer ([What you need](#what-you-need)). The ChatGPT desktop app reads the same settings as Codex.
+
+The rest of this section is for setting an app up by hand: an app lms-sync does not list, a file it refused, or a setup [without a config file](#without-a-config-file).
+
 Every app needs the same two things: the full path to lms-sync, and the argument `--mcp`.
 
 **Run lms-sync once before you connect it.** The interface writes `config.toml` beside the binary, holding your LMS address, where to save and your sign-in. After that the AI app needs nothing but the path. No config file? See [Without a config file](#without-a-config-file).
@@ -46,25 +80,11 @@ Your AI app starts lms-sync from a folder of its own choosing. That does not mat
 
 ### Claude Desktop
 
-**On Windows**, paste this into PowerShell and press Enter. It adds `university-courses` to Claude's settings and keeps everything else; the old file is saved as `claude_desktop_config.json.bak`.
+On Windows or a Mac, this does it:
 
-```powershell
-& {
-  $ErrorActionPreference = 'Stop'
-  $f = "$env:APPDATA\Claude\claude_desktop_config.json"
-  $raw = if (Test-Path $f) { [IO.File]::ReadAllText($f) }
-  $c = if ($raw) { $raw | ConvertFrom-Json } else { [pscustomobject]@{} }
-  if (-not $c.mcpServers) { $c | Add-Member mcpServers ([pscustomobject]@{}) -Force }
-  $c.mcpServers | Add-Member university-courses ([pscustomobject]@{ command = "$env:LOCALAPPDATA\Programs\lms-sync\lms-sync.exe"; args = @('--mcp') }) -Force
-  if ($raw) { Copy-Item $f "$f.bak" -Force } else { New-Item -ItemType Directory -Force (Split-Path $f) | Out-Null }
-  [IO.File]::WriteAllText($f, ($c | ConvertTo-Json -Depth 32))
-  "Added university-courses to $f"
-}
+```bash
+lms-sync --connect claude-desktop
 ```
-
-It prints `Added lms to` and the file's path. It points Claude at the installer's copy of lms-sync; if you put yours somewhere else, edit the file yourself instead. If the file is already broken, it stops with an error and writes nothing.
-
-**On a Mac**, edit the file yourself, as below.
 
 <details>
 <summary>Prefer to edit the file yourself?</summary>
@@ -159,7 +179,7 @@ Every Claude plan, Free included, can connect local tools like this to Claude De
 
 ### Claude Code
 
-One command. `--scope user` makes it available in every project, not just the folder you are in. Everything after `--` is the command Claude Code runs.
+`lms-sync --connect claude-code` runs this for you. By hand, it is one command. `--scope user` makes it available in every project, not just the folder you are in. Everything after `--` is the command Claude Code runs.
 
 In PowerShell on Windows, quote the separator as `'--'`. PowerShell can drop a bare `--` before Claude Code sees it:
 
@@ -220,6 +240,21 @@ A block copied from a Claude config is not rejected. It is simply ignored, so `u
 ```
 
 On Windows, write the path as the [PowerShell line above](#connect-your-ai-app) prints it.
+
+### Other apps
+
+Most others read the same `mcpServers` block as [Claude Desktop](#claude-desktop), in the file the [table above](#connect-your-ai-app) names: Cline, Windsurf, Antigravity, Gemini CLI and LM Studio. Three differ:
+
+- **VS Code** names the key `servers` and wants `"type": "stdio"` in the entry. Use it from Copilot Chat in **Agent** mode.
+- **ChatGPT desktop and Codex** use TOML in `~/.codex/config.toml`. With a Windows path, keep the single quotes, which TOML reads literally:
+
+  ```toml
+  [mcp_servers.university-courses]
+  command = 'C:\Users\you\AppData\Local\Programs\lms-sync\lms-sync.exe'
+  args = ['--mcp']
+  ```
+
+- **Zed** names the key `context_servers`, in `~/.config/zed/settings.json` (`%APPDATA%\Zed\settings.json` on Windows). The entry is `{"command": "…", "args": ["--mcp"]}`, as for Claude Desktop.
 
 Running an AI app inside Termux on a phone is untested. For what works from a phone, see [Asking an AI from your phone](android.md#asking-an-ai-from-your-phone); for where a phone's library should live, see [Where to save](android.md#where-to-save).
 
@@ -300,6 +335,7 @@ The assistant picks these tools itself as it answers. You just ask.
 | `find_material` | Searches the text of every slide, document, spreadsheet and saved page, plus file names. Returns the best matches with the passage around each. | No | No |
 | `read_material` | Returns the text of one file. Slides are marked with their number; long files come in parts. | No | No |
 | `whats_new` | Lists files that arrived or changed recently, newest first. It reports when a file was downloaded, not when it was taught. | No | No |
+| `view_pages` | Shows the assistant pictures of a few pages of a PDF or deck, for pages that are pictures. See [Pages that are pictures](#pages-that-are-pictures). | No | No |
 | `open_material` | Opens a file or folder on your screen: a brief in your PDF viewer, a course folder in File Explorer or Finder. See [Opening a file](#opening-a-file). | No | No |
 | `record_answer` | Records one quiz question and how you said you did. | No | Yes, in `.lms-study/` |
 | `due_reviews` | Lists questions due to come back, longest-overdue first. | No | No |
@@ -338,6 +374,7 @@ Without an assistant, `lms-sync --open` does the same from a terminal (see [Flag
 | `find_material` | `query` (required); `course`, a folder name as `list_courses` reports it; `limit` (default 10, at most 50) |
 | `read_material` | `path` (required), exactly as `find_material` reported it; `offset` to continue from (default 0); `max_chars` (default 20000, at most 100000) |
 | `whats_new` | `days` (default 7); `course`; `limit` (default 30) |
+| `view_pages` | `path` (required), as `find_material` reported it; `pages`, such as `3`, `5-7` or `2,9` (at most 4); `overview`, numbered thumbnails of up to 16 pages in one image |
 | `open_material` | `path`, a file or folder as `find_material` reported it; or `course`, its folder name, part of it, or its initials. Neither opens the whole library. |
 | `record_answer` | `course`, `question` and `verdict` (`got`, `close` or `missed`) are required; `answer`, `source` (the file it came from) and `topic` are optional |
 | `due_reviews` | `course` (omit for every course); `limit` (default 20) |
@@ -477,15 +514,33 @@ lms-sync --extract
 That reads your synced files again, without going online, and picks up the PDFs it skipped. Every sync after that does the same pass by itself. If your AI app was open when you installed poppler, quit and reopen it too, so the syncs it starts can find `pdftotext`.
 
 - **Without poppler, everything else still works.** The sync summary says how many PDFs need `pdftotext`, and `list_courses` shows how many files are searchable.
-- **Scanned PDFs have no text.** They are pictures of pages, and poppler cannot read them.
+- **Scanned PDFs need OCR.** They are pictures of pages, and poppler cannot read them. See [Pages that are pictures](#pages-that-are-pictures).
 - **An encrypted or damaged PDF is skipped and counted**, never fatal.
 - **In a cloud-synced folder, keep the library available offline.** An online-only placeholder cannot be read. See [Use a synced folder](cloud-backup.md#use-a-synced-folder).
+
+### Pages that are pictures
+
+Lecture notes exported from OneNote, slides pasted in as screenshots, and photocopies are pictures of text. lms-sync finds those pages, and reads them with OCR when tesseract is installed:
+
+| Machine | Command |
+|---|---|
+| Windows | `winget install UB-Mannheim.TesseractOCR` |
+| macOS | `brew install tesseract` |
+| Debian, Ubuntu, Raspberry Pi | `sudo apt install tesseract-ocr` |
+| Android (Termux) | `pkg install tesseract` |
+
+Then run `lms-sync --extract` once, as above.
+
+- **OCR runs at low priority, for at most 10 minutes a run.** Whatever is left is picked up by the next run.
+- **A long file of pictures, such as a scanned textbook, is not OCR'd unasked.** Files with more picture pages than `ocr_max_pages` (default 150) wait for `lms-sync --extract --ocr-all`. Set `ocr_max_pages = 0` in `config.toml` to turn OCR off.
+- **Without tesseract, a search miss still says so.** `find_material` names the files whose pages it could not read, and the assistant can look at them itself with `view_pages`, which shows it pictures of the pages. That needs poppler. An assistant reads handwriting, formulas and diagrams better than OCR does.
 
 ## When it doesn't work
 
 | Symptom | What to do |
 |---|---|
-| `university-courses` does not appear in the app | Quit the app completely and reopen it. Check the path is written in full (no `~` or `%LOCALAPPDATA%`) and, on Windows, as the [PowerShell line](#connect-your-ai-app) prints it, every backslash doubled. If Claude will not start after the change, see [Troubleshooting](troubleshooting.md#searching-and-your-ai-app). In opencode, check the [three keys](#opencode). |
+| `lms-sync --connect` says it left a file alone | The file has comments in it, or is already broken. Paste the entry it printed by hand; [Claude Desktop](#claude-desktop) shows how the file fits together. |
+| `university-courses` does not appear in the app | Run `lms-sync --connect list` to check it is connected. Quit the app completely and reopen it. Check the path is written in full (no `~` or `%LOCALAPPDATA%`) and, on Windows, as the [PowerShell line](#connect-your-ai-app) prints it, every backslash doubled. If Claude will not start after the change, see [Troubleshooting](troubleshooting.md#searching-and-your-ai-app). In opencode, check the [three keys](#opencode). |
 | It says you have no files, or answers without searching | With many connectors on, the app may show the assistant only each server's name until it chooses one. If your entry is still called `lms` from an older setup, rename it to `university-courses` (and delete the old one if you re-ran the PowerShell line), then quit and reopen the app. Telling it once also works: add "My course material is in the university-courses tools; search there before answering about my classes" to the app's custom instructions or a Project. |
 | The app says the server failed to start | Run the same path with `--version` in a terminal. If that fails too, the path is wrong. |
 | It connects, but finds no courses | Nothing has synced yet, or the app is reading a different folder. Run a sync. If the app's entry has `--dest`, make sure it matches where the interface saves, or remove it and let `config.toml` decide. |

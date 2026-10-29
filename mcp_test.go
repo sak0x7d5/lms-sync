@@ -143,7 +143,7 @@ func TestMCPHandshakeAndToolList(t *testing.T) {
 			continue
 		}
 		if _, err := (&mcpServer{cfg: &Config{}, dest: t.TempDir(), ctx: context.Background()}).
-			runTool(context.Background(), tool.Name, json.RawMessage(`{}`)); err != nil &&
+			answer(context.Background(), tool.Name, json.RawMessage(`{}`)); err != nil &&
 			strings.HasPrefix(err.Error(), "no tool called") {
 			t.Errorf("%s is listed but not answered", tool.Name)
 		}

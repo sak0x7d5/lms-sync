@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -457,6 +458,26 @@ var mcpTools = []mcpTool{
 		}`),
 	},
 	{
+		Name:  "view_pages",
+		Title: "Look at pages that are pictures",
+		Description: "See pages of a PDF or slides of a PowerPoint deck as images, for material " +
+			"whose pages are pictures — scans, OneNote pages, slides pasted in as screenshots — " +
+			"which find_material and read_material report as pages search cannot read. Use it " +
+			"once you know which file to look at; never to page through a whole course. With " +
+			"overview set, it returns one image of up to 16 numbered thumbnails, enough to read " +
+			"slide titles and pick the page you need; then ask for that page, at most 4 at a time.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"path":{"type":"string","description":"Path relative to the library, exactly as find_material or read_material reported it."},
+				"pages":{"type":"string","description":"Pages or slides to show: \"3\", \"5-7\" or \"2,9\". At most 4, or 16 with overview. Default: the first ones."},
+				"overview":{"type":"boolean","description":"Return numbered thumbnails of up to 16 pages in one image, for finding the right page."}
+			},
+			"required":["path"],
+			"additionalProperties":false
+		}`),
+	},
+	{
 		Name:  "open_material",
 		Title: "Open on the student's screen",
 		Description: "Open a file or folder from the library on the student's own computer — " +
@@ -779,7 +800,7 @@ func (s *mcpServer) callTool(ctx context.Context, msg rpcMessage) {
 		return
 	}
 
-	text, err := s.runTool(ctx, req.Name, req.Arguments)
+	content, err := s.answer(ctx, req.Name, req.Arguments)
 
 	// A client that has cancelled is not waiting for an answer, and the
 	// specification says not to send one. Replying anyway hands it a result
@@ -794,7 +815,20 @@ func (s *mcpServer) callTool(ctx context.Context, msg rpcMessage) {
 		s.reply(msg.ID, toolText(err.Error(), true))
 		return
 	}
-	s.reply(msg.ID, toolText(text, false))
+	s.reply(msg.ID, map[string]any{"content": content, "isError": false})
+}
+
+// answer runs one tool and returns its result's content. view_pages is the
+// one tool that answers with pictures; every other answers with text.
+func (s *mcpServer) answer(ctx context.Context, name string, args json.RawMessage) ([]map[string]any, error) {
+	if name == "view_pages" {
+		return s.viewPages(ctx, args)
+	}
+	text, err := s.runTool(ctx, name, args)
+	if err != nil {
+		return nil, err
+	}
+	return toolText(text, false)["content"].([]map[string]any), nil
 }
 
 // getPrompt renders one study workflow.
@@ -969,6 +1003,7 @@ func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (str
 
 	var hits []hit
 	var unsearchable int
+	var pictures []string // files in scope with pages nobody has read the words of
 
 	for _, e := range entries {
 		// Checked per file rather than per search: the loop is the long part,
@@ -982,10 +1017,11 @@ func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (str
 		}
 
 		text, hasText := s.text.text(ti, e.rel)
-		if !hasText {
-			if r, ok := ti.Record(e.rel); !ok || r.Status != string(extractOK) {
-				unsearchable++
-			}
+		r, recorded := ti.Record(e.rel)
+		if recorded && r.unreadPictures() {
+			pictures = append(pictures, fmt.Sprintf("%s (%s %s)", e.rel, pageWord(e.rel), r.Pictures))
+		} else if !hasText && (!recorded || r.Status != string(extractOK)) {
+			unsearchable++
 		}
 		if h, ok := searchText(text, e.rel, terms, phrase); ok {
 			h.course = e.course
@@ -1011,6 +1047,7 @@ func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (str
 				unsearchable, plural(unsearchable, "", "s"),
 				plural(unsearchable, "has", "have"), plural(unsearchable, "it", "them"))
 		}
+		msg += picturesNote(pictures)
 		return msg, nil
 	}
 
@@ -1058,7 +1095,33 @@ func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (str
 		}
 	}
 	b.WriteString("\nRead any of these in full with read_material, passing the path exactly as shown.")
+	b.WriteString(picturesNote(pictures))
 	return b.String(), nil
+}
+
+// picturesNote names the files a search could not see into because their
+// pages are pictures. A miss over those files is not evidence of anything:
+// "kurtosis" can sit on page 23 of notes that were never OCR'd, and without
+// this line a search that found nothing reads as "it was never uploaded".
+func picturesNote(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	const shown = 8
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nThis search could not see into %d file%s whose pages are pictures "+
+		"(scans, or slides saved as images), so the answer may be in %s:\n",
+		len(files), plural(len(files), "", "s"), plural(len(files), "it", "one of them"))
+	for i, f := range files {
+		if i == shown {
+			fmt.Fprintf(&b, "- and %d more\n", len(files)-shown)
+			break
+		}
+		b.WriteString("- " + f + "\n")
+	}
+	b.WriteString("Look at the likeliest one with view_pages (overview: true first) before " +
+		"saying the material does not cover it.")
+	return b.String()
 }
 
 func courseLabel(c string) string {
@@ -1100,6 +1163,11 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 		// installing poppler, one never will be, and one means the path is
 		// simply wrong.
 		if r, found := ti.Record(rel); found {
+			// A file of pictures has nothing to read as text, but it is not
+			// a dead end: the pages can still be looked at.
+			if r.unreadPictures() {
+				return rel + " has no text of its own.\n\n" + pictureNote(rel, r), nil
+			}
 			note := r.Note
 			if note == "" {
 				note = "status " + r.Status
@@ -1138,11 +1206,108 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (characters %d–%d of %d)\n\n", rel, a.Offset, end, len(text))
+	if r, ok := ti.Record(rel); ok && a.Offset == 0 {
+		if note := pictureNote(rel, r); note != "" {
+			b.WriteString(note + "\n\n")
+		}
+	}
 	b.WriteString(text[a.Offset:end])
 	if truncated {
 		fmt.Fprintf(&b, "\n\n[truncated — continue with read_material at offset %d]", end)
 	}
 	return b.String(), nil
+}
+
+// viewPages answers with pictures of pages, for material whose pages are
+// pictures. What it may render is limited to a few pages a call: it exists
+// to read a file already found, not to search by looking at everything.
+func (s *mcpServer) viewPages(ctx context.Context, args json.RawMessage) ([]map[string]any, error) {
+	var a struct {
+		Path     string `json:"path"`
+		Pages    string `json:"pages"`
+		Overview bool   `json:"overview"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("could not read the arguments")
+	}
+	if strings.TrimSpace(a.Path) == "" {
+		return nil, errors.New("path is required")
+	}
+	rel := filepath.ToSlash(strings.TrimSpace(a.Path))
+	full, err := resolveInside(s.dest, rel)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Stat(full); err != nil {
+		return nil, fmt.Errorf("%s is not in the library. Use find_material to get an exact path", rel)
+	}
+
+	limit := maxViewPages
+	if a.Overview {
+		limit = sheetPages
+	}
+	spec := strings.TrimSpace(a.Pages)
+	if spec == "" {
+		spec = "1-" + strconv.Itoa(limit)
+		if r, ok := LoadTextIndex(s.dest).Record(rel); ok && r.Pages > 0 && r.Pages < limit {
+			spec = "1-" + strconv.Itoa(r.Pages)
+		}
+	}
+	pages, err := parsePages(spec, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	encode := func(data []byte) string { return base64.StdEncoding.EncodeToString(data) }
+	if a.Overview {
+		sheet, shown, err := contactSheet(ctx, full, pages)
+		if err != nil {
+			return nil, err
+		}
+		return []map[string]any{
+			{"type": "text", "text": fmt.Sprintf("%s: thumbnails of %s %s, numbered in each "+
+				"tile's corner, left to right and top to bottom. Ask for one with view_pages "+
+				"and pages set to its number to read it at full size.",
+				rel, pageWord(full), formatPages(shown))},
+			{"type": "image", "data": encode(sheet), "mimeType": "image/jpeg"},
+		}, nil
+	}
+
+	images, err := viewPages(ctx, full, pages)
+	if err != nil {
+		return nil, err
+	}
+	content := []map[string]any{{"type": "text", "text": fmt.Sprintf("%s, %s %s:",
+		rel, pageWord(full), formatPages(pages))}}
+	for _, img := range images {
+		content = append(content, map[string]any{"type": "image", "data": encode(img.Data), "mimeType": img.MIME})
+	}
+	return content, nil
+}
+
+// pageWord is what a file's pages are called.
+func pageWord(pathname string) string {
+	if isDeck(pathname) {
+		return "slides"
+	}
+	return "pages"
+}
+
+// pictureNote says which pages of a file are pictures and what became of
+// them, for the head of read_material and the foot of a search. "" for a
+// file with none.
+func pictureNote(rel string, r textRecord) string {
+	if r.Pictures == "" {
+		return ""
+	}
+	word := pageWord(rel)
+	if r.OCR == ocrDone {
+		return fmt.Sprintf("%s %s of %s are pictures; their text below was read by OCR and may "+
+			"contain errors. view_pages shows them as they are.", strings.ToUpper(word[:1])+word[1:], r.Pictures, rel)
+	}
+	return fmt.Sprintf("%s %s of %s are pictures whose words have not been read, so search "+
+		"cannot see them. Look at them with view_pages (overview first to find the right one).",
+		strings.ToUpper(word[:1])+word[1:], r.Pictures, rel)
 }
 
 // openMaterial puts a file or folder from the library on the student's

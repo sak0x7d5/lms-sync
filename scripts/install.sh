@@ -21,7 +21,10 @@
 #
 # Nothing here asks a question. Under `curl | sh` there is no terminal to read
 # an answer from, so every choice is a flag or an environment variable; run
-# with --help to see them.
+# with --help to see them. The one exception is not this script's: once an
+# interactive install is done, it hands /dev/tty to `lms-sync --connect`, the
+# tool's own checklist of AI apps to connect it to. Never on --update, in CI,
+# without a terminal, or with --no-connect.
 
 set -eu
 
@@ -80,6 +83,20 @@ else
 	AUTO_UPDATE=yes
 fi
 
+# CONNECT_IDS, when set, is passed to `lms-sync --connect` verbatim and needs
+# no terminal. NO_CONNECT turns off both that and the interactive checklist.
+CONNECT_IDS="${LMS_SYNC_CONNECT:-}"
+if [ -n "${LMS_SYNC_NO_CONNECT:-}" ]; then
+	NO_CONNECT=yes
+	CONNECT_IDS=''
+else
+	NO_CONNECT=no
+fi
+CONNECT_FLAG=''
+CONNECT_GIVEN=no
+NO_CONNECT_FLAG=no
+CONNECT_MODE=skip
+
 # ---------------------------------------------------------------------------
 # Saying things
 # ---------------------------------------------------------------------------
@@ -123,15 +140,22 @@ Options (pass them after `| sh -s --`):
   --no-modify-path     do not touch any shell profile
   --no-auto-update     do not schedule the daily update check
   --skip-checksum      install without verifying SHA256SUMS
+  --no-connect         do not open lms-sync's checklist of AI apps to
+                       connect it to when the install finishes
+  --connect IDS        connect these AI apps without asking: comma-separated
+                       ids, as `lms-sync --connect list` names them
   --update             bring an existing install up to the newest release;
                        this is what the daily schedule runs
   --uninstall          remove the binary, the symlink, the PATH line and
                        the daily update
   -h, --help           this
 
+The checklist opens only on an install run from a terminal, and never in CI
+or on --update; it is `lms-sync --connect`, which can be run again any time.
+
 Each has an environment variable: LMS_SYNC_VERSION, LMS_SYNC_INSTALL_DIR,
-LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH, LMS_SYNC_NO_AUTO_UPDATE. A flag
-wins over the variable.
+LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH, LMS_SYNC_NO_AUTO_UPDATE,
+LMS_SYNC_NO_CONNECT, LMS_SYNC_CONNECT. A flag wins over the variable.
 
   curl -fsSL .../install.sh | sh -s -- --version v1.3.0
 USAGE
@@ -927,6 +951,68 @@ this one. Report it at https://github.com/$REPO/issues"
 	say "Settings live in $INSTALL_DIR. Set a destination in the interface —"
 	say "until you do, courses land in $INSTALL_DIR/Courses."
 	say ""
+
+	choose_connect
+	if [ "$CONNECT_MODE" = skip ]; then
+		say "Connect your AI app: lms-sync --connect"
+		say ""
+	fi
+	# Last, after the summary, so that a checklist quit with Ctrl-C has
+	# nothing left to cut short: everything above is already in place.
+	run_connect
+}
+
+# ---------------------------------------------------------------------------
+# Connecting an AI app
+#
+# This script never asks anything itself. The checklist is the tool's own
+# `--connect`, and the most this does is hand it the terminal.
+# ---------------------------------------------------------------------------
+
+# choose_connect sets CONNECT_MODE: "ids" runs --connect with the ids given,
+# "picker" opens the checklist, "skip" leaves it to the summary line.
+choose_connect() {
+	if [ -n "$CONNECT_IDS" ]; then
+		CONNECT_MODE=ids
+	elif [ "$NO_CONNECT" = yes ] || [ -n "${CI:-}" ]; then
+		CONNECT_MODE=skip
+	# Opened rather than tested with -r/-w: /dev/tty exists with every
+	# permission bit set in a job that has no controlling terminal, and only
+	# opening it says so. In a subshell, because a failed redirection on a
+	# special builtin ends a non-interactive shell outright.
+	elif (: </dev/tty >/dev/tty) 2>/dev/null; then
+		CONNECT_MODE=picker
+	else
+		CONNECT_MODE=skip
+	fi
+}
+
+# run_connect never fails the install: the binary is in place and working by
+# the time it runs, and an AI app can be connected later in one command.
+run_connect() {
+	case "$CONNECT_MODE" in
+	ids)
+		# </dev/null so it can never read from the pipe `curl | sh` is
+		# reading this script from.
+		if ! "$TARGET" --connect "$CONNECT_IDS" </dev/null; then
+			warn "connecting $CONNECT_IDS did not finish; lms-sync itself is installed"
+			say "Connect your AI app: lms-sync --connect"
+			say ""
+		fi
+		;;
+	picker)
+		# A no-op trap rather than an ignored signal: an ignored one is
+		# inherited, and the checklist could not be left with Ctrl-C at all.
+		# A trapped one is reset to the default in the child, and this shell
+		# simply carries on to exit 0.
+		trap : INT
+		if ! "$TARGET" --connect </dev/tty >/dev/tty 2>&1; then
+			say ''
+			say "Connect your AI app any time: lms-sync --connect"
+			say ''
+		fi
+		;;
+	esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1125,13 @@ do_uninstall() {
 
 	resolve_dirs
 
+	# Said rather than run: the entries belong to the student's AI apps, not
+	# to this script, and removing them is lms-sync's job, not the installer's.
+	if [ -f "$TARGET" ]; then
+		say "To remove lms-sync from your AI apps first, run: $TARGET --disconnect all"
+		say ''
+	fi
+
 	if [ -L "$LINK" ] || [ -f "$LINK" ]; then
 		rm -f "$LINK"
 		step removed "$LINK"
@@ -1134,6 +1227,20 @@ parse_args() {
 		--no-modify-path) MODIFY_PATH=no ;;
 		--no-auto-update) AUTO_UPDATE=no ;;
 		--skip-checksum) SKIP_CHECKSUM=yes ;;
+		--no-connect) NO_CONNECT_FLAG=yes ;;
+		--connect)
+			shift
+			if [ $# -eq 0 ]; then
+				die config "--connect needs the AI apps to connect." \
+					"Comma-separated ids; lms-sync --connect list names them."
+			fi
+			CONNECT_FLAG="$1"
+			CONNECT_GIVEN=yes
+			;;
+		--connect=*)
+			CONNECT_FLAG="${1#*=}"
+			CONNECT_GIVEN=yes
+			;;
 		--update) ACTION=update ;;
 		--uninstall) ACTION=uninstall ;;
 		-h | --help)
@@ -1149,6 +1256,30 @@ parse_args() {
 
 	if [ "$WANT_VERSION" = v ]; then
 		die config "--version needs a release tag." "For example: --version v1.3.0"
+	fi
+	# An empty value, or the next flag taken as one, is a forgotten value.
+	if [ "$CONNECT_GIVEN" = yes ]; then
+		case "$CONNECT_FLAG" in
+		'' | -*)
+			die config "--connect needs the AI apps to connect." \
+				"Comma-separated ids; lms-sync --connect list names them."
+			;;
+		esac
+	fi
+	if [ -n "$CONNECT_FLAG" ] && [ "$NO_CONNECT_FLAG" = yes ]; then
+		die config "--connect and --no-connect ask for opposite things." "Pass one of them."
+	fi
+	if [ -n "$CONNECT_FLAG" ]; then
+		CONNECT_IDS="$CONNECT_FLAG"
+		NO_CONNECT=no
+	elif [ "$NO_CONNECT_FLAG" = yes ]; then
+		CONNECT_IDS=''
+		NO_CONNECT=yes
+	fi
+	# The daily update must never touch the student's AI apps, and an
+	# uninstall connecting one would be a contradiction.
+	if [ "$ACTION" != install ] && [ -n "$CONNECT_FLAG" ]; then
+		die config "--connect is for an install, not --$ACTION." "Drop --connect."
 	fi
 	# An unattended run replacing a program is the one place where skipping
 	# the check can never be what was meant.

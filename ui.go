@@ -74,6 +74,7 @@ func serveUI(ctx context.Context, cfg *Config, manifest *Manifest,
 	mux.HandleFunc("/api/stop", s.auth(s.handleStop))
 	mux.HandleFunc("/api/browse", s.auth(s.handleBrowse))
 	mux.HandleFunc("/api/open", s.auth(s.handleOpen))
+	mux.HandleFunc("/api/connect", s.auth(s.handleConnect))
 	mux.HandleFunc("/api/events", s.auth(s.handleEvents))
 	mux.HandleFunc("/api/drive/connect", s.auth(s.handleDriveConnect))
 	// Deliberately NOT behind s.auth. Google builds this request, not the
@@ -476,6 +477,64 @@ func (s *server) handleOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]any{"path": dest})
+}
+
+type connectRow struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Connected bool   `json:"connected"`
+	Detected  bool   `json:"detected"`
+	Note      string `json:"note"`
+}
+
+// handleConnect is `lms-sync --connect` for the page: GET lists the apps,
+// POST makes them match the ticks it is sent. Both are connect.go's own
+// functions, so the page and the terminal cannot come to disagree.
+func (s *server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	exe, err := exePath()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "Could not find this program's own path.", "")
+		return
+	}
+	s.mu.Lock()
+	cfgPath := s.cfg.path
+	s.mu.Unlock()
+	e := realConnectEnv()
+	statuses := allStatuses(e, exe)
+
+	if r.Method == http.MethodPost {
+		var body struct {
+			Apps []string `json:"apps"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body); err != nil {
+			writeErr(w, http.StatusBadRequest, "Could not read the request.", "")
+			return
+		}
+		want := map[string]bool{}
+		for _, id := range body.Apps {
+			want[id] = true
+		}
+		var lines []string
+		for _, res := range applyChoice(e, statuses, want, mcpArgv(exe, cfgPath)) {
+			line := describeResult(res)
+			if res.Outcome == outConnected || res.Outcome == outUpdated || res.Outcome == outRemoved {
+				line += "\n    " + res.Client.Reopen
+			}
+			lines = append(lines, line)
+		}
+		statuses = allStatuses(e, exe)
+		writeConnectRows(w, statuses, lines)
+		return
+	}
+	writeConnectRows(w, statuses, nil)
+}
+
+func writeConnectRows(w http.ResponseWriter, statuses []clientStatus, results []string) {
+	rows := make([]connectRow, len(statuses))
+	for i, st := range statuses {
+		rows[i] = connectRow{st.Client.ID, st.Client.Name, st.Connected, st.Detected, statusNote(st)}
+	}
+	json.NewEncoder(w).Encode(map[string]any{"apps": rows, "results": results})
 }
 
 // handleDriveConnect starts a Google sign-in and hands the page the URL to

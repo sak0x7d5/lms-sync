@@ -29,6 +29,7 @@ type Config struct {
 	Sections    []string // which LMS tabs to mirror; see sections.go
 	KeepPages   bool     // also save the captured page, not just the files a tab links to
 	Timezone    string   // IANA zone for dates in saved pages; "" = this machine's
+	OCRMaxPages int      // a file with more picture pages is not OCR'd unasked; 0 = OCR off
 
 	// knownSections is every tab the file had been offered when it was last
 	// written: what it held under known_sections, or legacyKnownSections for
@@ -71,7 +72,8 @@ func DefaultConfig() *Config {
 		MaxDepth:    12,
 		Sections: []string{"resources", "overview", "syllabus", "announcements",
 			"assignments", "calendar", "dropbox"},
-		KeepPages: false,
+		KeepPages:   false,
+		OCRMaxPages: defaultOCRMaxPages,
 		Extensions: []string{
 			".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx",
 			".txt", ".md", ".rtf", ".odt", ".odp", ".ods",
@@ -192,6 +194,8 @@ func LoadConfig(path string) (*Config, error) {
 			sawKnown = true
 		case "timezone":
 			cfg.Timezone = unquote(raw)
+		case "ocr_max_pages":
+			cfg.OCRMaxPages = atoiOr(unquote(raw), cfg.OCRMaxPages)
 		case "keep_pages":
 			cfg.KeepPages = boolOr(unquote(raw), cfg.KeepPages)
 		case "drive_push":
@@ -275,6 +279,11 @@ func (c *Config) sanitise() {
 		c.MaxDepth = 1
 	} else if c.MaxDepth > 50 {
 		c.MaxDepth = 50
+	}
+	if c.OCRMaxPages < 0 {
+		c.OCRMaxPages = 0
+	} else if c.OCRMaxPages > 5000 {
+		c.OCRMaxPages = 5000
 	}
 	if strings.TrimSpace(c.Destination) == "" {
 		c.Destination = "Courses"
@@ -608,6 +617,12 @@ func (c *Config) Save() error {
 	} else {
 		b.WriteString("# timezone    = 'Asia/Karachi'\n")
 	}
+
+	b.WriteString("\n# Pages that are pictures (scans, slides saved as images) are read by OCR\n")
+	b.WriteString("# when tesseract is installed, at most 10 minutes a run. A file with more\n")
+	b.WriteString("# picture pages than this, such as a scanned textbook, waits for\n")
+	b.WriteString("# lms-sync --extract --ocr-all. 0 turns OCR off.\n")
+	fmt.Fprintf(&b, "ocr_max_pages = %d\n", c.OCRMaxPages)
 
 	b.WriteString("\n# --- Google Drive backup (optional) ---------------------------------\n")
 	b.WriteString("# Copies the finished library up to Drive after every sync. One way\n")
