@@ -35,6 +35,7 @@ func run() int {
 		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
 		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
+		ocrAll     = flag.Bool("ocr-all", false, "with --extract: OCR every file of pictures, however long, with no time limit")
 		dryRun     = flag.Bool("dry-run", false, "list what would download, write nothing")
 		insecure   = flag.Bool("insecure", false, "skip TLS verification (last resort)")
 		showVer    = flag.Bool("version", false, "print version and exit")
@@ -102,7 +103,7 @@ func run() int {
 		savePagesTo = *savePages
 		return cliProbe(ctx, cfg, *insecure)
 	case *doExtract:
-		return cliExtract(ctx, cfg)
+		return cliExtract(ctx, cfg, *ocrAll)
 	case *doMCP:
 		return serveMCP(ctx, cfg)
 	case *doOpen:
@@ -123,6 +124,7 @@ func usage() {
   lms-sync --dry-run       show what would download, write nothing
   lms-sync --probe         report which tabs your LMS offers, and how
   lms-sync --extract       make synced files searchable, without going online
+                           (--ocr-all also reads long files of scanned pages)
   lms-sync --mcp           serve the library to an AI assistant (MCP, on stdio)
   lms-sync --open [COURSE] open your library, or one course, in the file manager
   lms-sync --connect [APPS] choose the AI apps that can use your library
@@ -401,7 +403,7 @@ func cliDriveLogin(ctx context.Context, cfg *Config) int {
 // It never goes online: everything it needs is on disk, so it costs nothing
 // to run repeatedly and works on a train. That also makes it the one part of
 // the tool a student can try without handing over a password.
-func cliExtract(ctx context.Context, cfg *Config) int {
+func cliExtract(ctx context.Context, cfg *Config, ocrAll bool) int {
 	dest, err := cfg.DestinationPath()
 	if err != nil {
 		return reportErr(err)
@@ -412,7 +414,7 @@ func cliExtract(ctx context.Context, cfg *Config) int {
 		return reportErr(failf(KindFS, "read "+dest,
 			"Nothing has been synced to that folder yet. Run a sync first.", err))
 	}
-	stats, err := RefreshText(ctx, dest, func(e Event) {
+	stats, err := RefreshTextWith(ctx, dest, ocrOptions{MaxPages: cfg.OCRMaxPages, All: ocrAll}, func(e Event) {
 		switch e.Type {
 		case "file":
 			fmt.Println("  read    ", e.Path)
@@ -433,6 +435,13 @@ func cliExtract(ctx context.Context, cfg *Config) int {
 		fmt.Println("  Debian/Ubuntu  sudo apt install poppler-utils")
 		fmt.Println("  macOS          brew install poppler")
 		fmt.Println("  Windows        winget install oschwartz10612.Poppler")
+	}
+	if stats.PicturesNeedTool > 0 {
+		fmt.Println("\nInstall tesseract to make pages that are pictures searchable:")
+		fmt.Println("  Debian/Ubuntu  sudo apt install tesseract-ocr")
+		fmt.Println("  macOS          brew install tesseract")
+		fmt.Println("  Windows        winget install UB-Mannheim.TesseractOCR")
+		fmt.Println("  Termux         pkg install tesseract")
 	}
 	return 0
 }

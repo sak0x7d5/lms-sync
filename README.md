@@ -110,7 +110,7 @@ Word, PowerPoint and Excel files are searchable straight away. Most lecture note
 | Debian, Ubuntu, Raspberry Pi | `sudo apt install poppler-utils` |
 | Android (Termux) | `pkg install poppler` |
 
-If you add it after your first sync, run `lms-sync --extract` once. A scanned PDF is a picture of text, so it has nothing to search.
+If you add it after your first sync, run `lms-sync --extract` once. Scanned notes and slides pasted in as screenshots are pictures of text: install [tesseract](docs/ai-assistants.md#pages-that-are-pictures) as well and those become searchable too.
 
 ### 3. Run it and sign in
 

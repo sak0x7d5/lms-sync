@@ -53,6 +53,8 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [picker.go](picker.go) — the `--connect` checklist; raw mode is the build-tagged `picker_unix.go` (stty) / `picker_windows.go` (console API) pair.
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
+- [ocr.go](ocr.go) — finding the pages that are pictures, and reading them with tesseract; `lowprio_unix.go` / `lowprio_windows.go` run it at idle priority.
+- [view.go](view.go) — `view_pages`: pictures of a few pages, for the assistant to read itself.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [search.go](search.go) — turning a question into matches over the text cache.
 - [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.

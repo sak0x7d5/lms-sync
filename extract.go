@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -73,6 +74,16 @@ type extraction struct {
 	Text   string
 	Status extractStatus
 	Note   string // one human sentence, for the statuses that need explaining
+
+	// Pages is how many pages or slides the file has, for the formats that
+	// have them. Pictures lists the ones that are only a picture: a OneNote
+	// page exported to PDF, a screenshot pasted onto a slide, a scan. They
+	// are what OCR fills in and what view_pages shows, and listing them is
+	// what stops a search that missed them from reading as "not uploaded".
+	Pages    int
+	Pictures []int
+
+	paged *pagedText // the text page by page, so OCR can be slotted in
 }
 
 // plainText is every extension worth reading straight off the disk. It
@@ -318,7 +329,7 @@ func extractPptx(pathname string) (extraction, error) {
 	defer zr.Close()
 
 	breaks := map[string]bool{"p": true}
-	var b strings.Builder
+	p := &pagedText{label: "Slide", media: map[int][]string{}}
 
 	// Slide markers earn their place: "it is on slide 12" is the useful half
 	// of finding something in a deck, and without them a hit in a 90-slide
@@ -329,16 +340,18 @@ func extractPptx(pathname string) (extraction, error) {
 	// deck still shows three slides — so position is what a student counting
 	// through the deck will actually see.
 	for i, f := range numberedParts(zr, "ppt/slides/slide") {
-		rc, err := readPart(f)
-		if err != nil {
-			continue
+		text := ""
+		if rc, err := readPart(f); err == nil {
+			text, _ = runText(rc, breaks)
+			rc.Close()
 		}
-		text, _ := runText(rc, breaks)
-		rc.Close()
-		if strings.TrimSpace(text) == "" {
-			continue
+		p.bodies = append(p.bodies, text)
+		// A slide's pictures are named only in its relationships part. They
+		// are what OCR reads and what view_pages hands over when the slide
+		// has nothing else to say.
+		if pics := slidePictures(zr, f.Name); len(pics) > 0 {
+			p.media[i+1] = pics
 		}
-		fmt.Fprintf(&b, "\n--- Slide %d ---\n%s\n", i+1, strings.TrimSpace(text))
 	}
 
 	// Speaker notes are often where the actual explanation lives, so they are
@@ -360,11 +373,52 @@ func extractPptx(pathname string) (extraction, error) {
 		}
 	}
 	if notes.Len() > 0 {
-		b.WriteString("\n--- Speaker notes ---\n")
-		b.WriteString(notes.String())
+		p.tail = "\n--- Speaker notes ---\n" + notes.String()
 	}
 
-	return finish(b.String(), ""), nil
+	return p.extraction("its slides are pictures with no text of their own"), nil
+}
+
+// pictureTypes are the image formats OCR and an assistant can both read.
+// Office also embeds EMF and WMF, which are drawing commands rather than
+// pixels, and neither can.
+var pictureTypes = map[string]string{
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+}
+
+// slidePictures lists the pictures one slide shows, as part names in the zip.
+func slidePictures(zr *zip.ReadCloser, slide string) []string {
+	rels := zipEntry(zr, path.Dir(slide)+"/_rels/"+path.Base(slide)+".rels")
+	if rels == nil {
+		return nil
+	}
+	rc, err := readPart(rels)
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+
+	var doc struct {
+		Rels []struct {
+			Type   string `xml:"Type,attr"`
+			Target string `xml:"Target,attr"`
+			Mode   string `xml:"TargetMode,attr"`
+		} `xml:"Relationship"`
+	}
+	if err := xml.NewDecoder(io.LimitReader(rc, maxZipEntryBytes)).Decode(&doc); err != nil {
+		return nil
+	}
+	var out []string
+	for _, r := range doc.Rels {
+		if !strings.HasSuffix(r.Type, "/image") || r.Mode == "External" {
+			continue
+		}
+		name := path.Clean(path.Join(path.Dir(slide), r.Target))
+		if pictureTypes[strings.ToLower(path.Ext(name))] != "" && zipEntry(zr, name) != nil {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // sharedStrings reads the string table a workbook's cells point into.
@@ -556,11 +610,19 @@ func extractPDF(ctx context.Context, pathname string) (extraction, error) {
 		}, nil
 	}
 
-	text := out.String()
+	// pdftotext ends every page with a form feed, which is what lets a page
+	// with no text of its own be told apart from the rest. A lecture that is
+	// mostly OneNote screenshots used to come out as a few stray words with
+	// status ok, and nothing anywhere said the other forty pages existed.
+	parts := strings.Split(out.String(), "\f")
+	if len(parts) > 1 && strings.TrimSpace(parts[len(parts)-1]) == "" {
+		parts = parts[:len(parts)-1]
+	}
+	p := &pagedText{label: "Page", bodies: parts}
 	// A PDF with no text at all is almost always a scan. Saying so is what
 	// tells a student the file needs OCR rather than leaving them to wonder
 	// why searching never finds their handwritten-notes lecture.
-	return finish(text, "this PDF holds no text layer, so it is probably a scan"), nil
+	return p.extraction("every page is a picture (a scan, or slides saved as images)"), nil
 }
 
 // cappedBuffer collects at most limit bytes and quietly drops the rest.
@@ -601,6 +663,93 @@ func truncateBytes(s string, n int) string {
 		n--
 	}
 	return s[:n]
+}
+
+// ---------------------------------------------------------------------------
+// Pages, and the ones that are pictures
+// ---------------------------------------------------------------------------
+
+// pictureThreshold is how little text a page may carry and still count as a
+// picture. Zero would miss the commonest case: a slide whose title was typed
+// and whose whole content is a pasted screenshot, or a OneNote export whose
+// only text is the page's date.
+const pictureThreshold = 30
+
+// pagedText is a document's text page by page, kept apart until OCR has had
+// its chance to fill in the pages that are pictures.
+type pagedText struct {
+	label  string           // "Page" or "Slide"
+	bodies []string         // one per page
+	tail   string           // what follows the pages: a deck's speaker notes
+	media  map[int][]string // slide number -> its pictures, for a deck
+}
+
+// isPicture reports whether a page holds too little text to stand alone.
+func isPicture(body string) bool {
+	n := 0
+	for _, r := range body {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if n++; n >= pictureThreshold {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// pictures lists the pages OCR could add something to. A deck's slide counts
+// only when it actually has a picture; an empty slide is just empty.
+func (p *pagedText) pictures() []int {
+	var out []int
+	for i, body := range p.bodies {
+		if !isPicture(body) {
+			continue
+		}
+		if p.media != nil && len(p.media[i+1]) == 0 {
+			continue
+		}
+		out = append(out, i+1)
+	}
+	return out
+}
+
+// render joins the pages into one text, with what OCR read where it belongs.
+//
+// OCR text is always labelled as such. It is a guess at the words, it gets
+// subscripts and Greek letters wrong, and neither a search snippet nor an
+// assistant quoting it should present it as what the instructor wrote.
+func (p *pagedText) render(ocr map[int]string) string {
+	var b strings.Builder
+	for i, body := range p.bodies {
+		body = strings.TrimSpace(body)
+		read := strings.TrimSpace(ocr[i+1])
+		if body == "" && read == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "\n--- %s %d ---\n", p.label, i+1)
+		if body != "" {
+			b.WriteString(body)
+			b.WriteByte('\n')
+		}
+		if read != "" {
+			fmt.Fprintf(&b, "[text read from a picture on this %s by OCR; it may contain errors]\n%s\n",
+				strings.ToLower(p.label), read)
+		}
+	}
+	b.WriteString(p.tail)
+	return b.String()
+}
+
+// extraction is the result before OCR. emptyNote explains a file whose every
+// page is a picture.
+func (p *pagedText) extraction(emptyNote string) extraction {
+	pics := p.pictures()
+	if len(pics) == 0 {
+		emptyNote = ""
+	}
+	ex := finish(p.render(nil), emptyNote)
+	ex.Pages, ex.Pictures, ex.paged = len(p.bodies), pics, p
+	return ex
 }
 
 // ---------------------------------------------------------------------------

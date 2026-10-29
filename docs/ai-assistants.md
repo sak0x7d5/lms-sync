@@ -335,6 +335,7 @@ The assistant picks these tools itself as it answers. You just ask.
 | `find_material` | Searches the text of every slide, document, spreadsheet and saved page, plus file names. Returns the best matches with the passage around each. | No | No |
 | `read_material` | Returns the text of one file. Slides are marked with their number; long files come in parts. | No | No |
 | `whats_new` | Lists files that arrived or changed recently, newest first. It reports when a file was downloaded, not when it was taught. | No | No |
+| `view_pages` | Shows the assistant pictures of a few pages of a PDF or deck, for pages that are pictures. See [Pages that are pictures](#pages-that-are-pictures). | No | No |
 | `open_material` | Opens a file or folder on your screen: a brief in your PDF viewer, a course folder in File Explorer or Finder. See [Opening a file](#opening-a-file). | No | No |
 | `record_answer` | Records one quiz question and how you said you did. | No | Yes, in `.lms-study/` |
 | `due_reviews` | Lists questions due to come back, longest-overdue first. | No | No |
@@ -373,6 +374,7 @@ Without an assistant, `lms-sync --open` does the same from a terminal (see [Flag
 | `find_material` | `query` (required); `course`, a folder name as `list_courses` reports it; `limit` (default 10, at most 50) |
 | `read_material` | `path` (required), exactly as `find_material` reported it; `offset` to continue from (default 0); `max_chars` (default 20000, at most 100000) |
 | `whats_new` | `days` (default 7); `course`; `limit` (default 30) |
+| `view_pages` | `path` (required), as `find_material` reported it; `pages`, such as `3`, `5-7` or `2,9` (at most 4); `overview`, numbered thumbnails of up to 16 pages in one image |
 | `open_material` | `path`, a file or folder as `find_material` reported it; or `course`, its folder name, part of it, or its initials. Neither opens the whole library. |
 | `record_answer` | `course`, `question` and `verdict` (`got`, `close` or `missed`) are required; `answer`, `source` (the file it came from) and `topic` are optional |
 | `due_reviews` | `course` (omit for every course); `limit` (default 20) |
@@ -512,9 +514,26 @@ lms-sync --extract
 That reads your synced files again, without going online, and picks up the PDFs it skipped. Every sync after that does the same pass by itself. If your AI app was open when you installed poppler, quit and reopen it too, so the syncs it starts can find `pdftotext`.
 
 - **Without poppler, everything else still works.** The sync summary says how many PDFs need `pdftotext`, and `list_courses` shows how many files are searchable.
-- **Scanned PDFs have no text.** They are pictures of pages, and poppler cannot read them.
+- **Scanned PDFs need OCR.** They are pictures of pages, and poppler cannot read them. See [Pages that are pictures](#pages-that-are-pictures).
 - **An encrypted or damaged PDF is skipped and counted**, never fatal.
 - **In a cloud-synced folder, keep the library available offline.** An online-only placeholder cannot be read. See [Use a synced folder](cloud-backup.md#use-a-synced-folder).
+
+### Pages that are pictures
+
+Lecture notes exported from OneNote, slides pasted in as screenshots, and photocopies are pictures of text. lms-sync finds those pages, and reads them with OCR when tesseract is installed:
+
+| Machine | Command |
+|---|---|
+| Windows | `winget install UB-Mannheim.TesseractOCR` |
+| macOS | `brew install tesseract` |
+| Debian, Ubuntu, Raspberry Pi | `sudo apt install tesseract-ocr` |
+| Android (Termux) | `pkg install tesseract` |
+
+Then run `lms-sync --extract` once, as above.
+
+- **OCR runs at low priority, for at most 10 minutes a run.** Whatever is left is picked up by the next run.
+- **A long file of pictures, such as a scanned textbook, is not OCR'd unasked.** Files with more picture pages than `ocr_max_pages` (default 150) wait for `lms-sync --extract --ocr-all`. Set `ocr_max_pages = 0` in `config.toml` to turn OCR off.
+- **Without tesseract, a search miss still says so.** `find_material` names the files whose pages it could not read, and the assistant can look at them itself with `view_pages`, which shows it pictures of the pages. That needs poppler. An assistant reads handwriting, formulas and diagrams better than OCR does.
 
 ## When it doesn't work
 
