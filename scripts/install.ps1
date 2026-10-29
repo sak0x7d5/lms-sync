@@ -21,7 +21,10 @@
 # has to come back to GitHub for a fix. -NoAutoUpdate turns that off.
 #
 # Nothing here asks a question. Run as `irm | iex` there is nothing to read an
-# answer from, so every choice is a parameter.
+# answer from, so every choice is a parameter. The one exception is not this
+# script's: once an interactive install is done, it runs `lms-sync --connect`,
+# the tool's own checklist of AI apps to connect it to. Never on -Update, in
+# CI, with input redirected, or with -NoConnect.
 #
 # This file is ASCII on purpose, and CI holds it to that. The daily task runs
 # it with `powershell.exe -File`, and Windows PowerShell 5.1 reads a file with
@@ -45,6 +48,13 @@ param(
 	# Install without checking the download against SHA256SUMS.
 	[switch] $SkipChecksum,
 
+	# Do not open lms-sync's checklist of AI apps when the install finishes.
+	[switch] $NoConnect,
+
+	# Connect these AI apps without asking: comma-separated ids, as
+	# `lms-sync --connect list` names them.
+	[string] $Connect,
+
 	# Bring an existing install up to the newest release. This is what the
 	# daily task runs.
 	[switch] $Update,
@@ -55,6 +65,10 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+# Read here, at the top: inside a function $PSBoundParameters is that
+# function's own, and `-Connect ''` has to be told apart from no -Connect.
+$ConnectGiven = $PSBoundParameters.ContainsKey('Connect')
 
 # Not cosmetic: Invoke-WebRequest in Windows PowerShell 5.1 is an order of
 # magnitude slower with the progress bar drawing.
@@ -408,6 +422,16 @@ function Register-UpdateTask {
 	# refuses to run any script file at all; it applies to this one process.
 	$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden ' +
 		'-File ' + (Get-TaskArgument $script) + ' -Update -InstallDir ' + (Get-TaskArgument $Dir)
+	# -WindowStyle Hidden only hides a window that already exists, so it still
+	# flashes up every day - and where Windows Terminal is the default it opens
+	# a Terminal window the flag cannot hide at all. A headless conhost gives
+	# PowerShell a console with no window. Builds before 1809 do not know the
+	# switch, and keep the flash rather than a task that never runs.
+	$conhost = Join-Path $env:SystemRoot 'System32\conhost.exe'
+	if ([Environment]::OSVersion.Version.Build -ge 17763 -and (Test-Path $conhost)) {
+		$arguments = '--headless ' + (Get-TaskArgument $ps) + ' ' + $arguments
+		$ps = $conhost
+	}
 	$at = (Get-Date).Date.AddHours(10 + (Get-Random -Maximum 8)).AddMinutes((Get-Random -Maximum 60))
 	try {
 		$action = New-ScheduledTaskAction -Execute $ps -Argument $arguments -WorkingDirectory $Dir
@@ -580,6 +604,62 @@ then run this again.
 	Write-Host "Settings live in $dir. Set a destination in the interface;"
 	Write-Host "until you do, courses land in $dir\Courses."
 	Write-Host ''
+
+	$ids = Get-ConnectIds
+	$picker = (-not $ids) -and (Test-CanOpenPicker)
+	if (-not $ids -and -not $picker) {
+		Write-Host 'Connect your AI app: lms-sync --connect'
+		Write-Host ''
+	}
+	# Last, after the summary: Ctrl-C in the checklist stops this script as
+	# well, and by now there is nothing left for it to cut short.
+	Invoke-Connect $exe $ids $picker
+}
+
+# ---------------------------------------------------------------------------
+# Connecting an AI app
+#
+# This script never asks anything itself. The checklist is the tool's own
+# --connect, run in this console.
+# ---------------------------------------------------------------------------
+
+# Get-ConnectIds returns the ids to pass to --connect, or '' for none. A
+# parameter wins over the environment, as everywhere else here.
+function Get-ConnectIds {
+	if ($Connect) { return $Connect }
+	if ($NoConnect -or $env:LMS_SYNC_NO_CONNECT) { return '' }
+	if ($env:LMS_SYNC_CONNECT) { return $env:LMS_SYNC_CONNECT }
+	return ''
+}
+
+function Test-CanOpenPicker {
+	if ($NoConnect -or $env:LMS_SYNC_NO_CONNECT -or $env:CI) { return $false }
+	try {
+		return ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected)
+	} catch {
+		return $false
+	}
+}
+
+# Invoke-Connect never fails the install: the exe is in place and working by
+# the time it runs, and an AI app can be connected later in one command.
+function Invoke-Connect {
+	param([string] $Exe, [string] $Ids, [bool] $Picker)
+	if (-not $Ids -and -not $Picker) { return }
+	$ok = $false
+	try {
+		if ($Ids) { & $Exe --connect $Ids } else { & $Exe --connect }
+		$ok = ($LASTEXITCODE -eq 0)
+	} catch {
+		$ok = $false
+	}
+	if (-not $ok) {
+		Write-Host ''
+		Write-Host 'Connect your AI app any time: lms-sync --connect'
+		Write-Host ''
+	}
+	# So a checklist that was quit does not become the install's exit code.
+	$global:LASTEXITCODE = 0
 }
 
 # Update-LmsSync brings an existing install up to the newest release, and
@@ -693,6 +773,14 @@ function Uninstall-LmsSync {
 	$exe = Join-Path $dir "$BinName.exe"
 
 	Assert-NotRunning $exe
+
+	# Said rather than run: the entries belong to the student's AI apps, and
+	# removing them is lms-sync's job, not the installer's.
+	if (Test-Path $exe) {
+		Write-Host "To remove lms-sync from your AI apps first, run: & '$exe' --disconnect all"
+		Write-Host ''
+	}
+
 	if (Test-Path $exe) {
 		Remove-Item -Force $exe
 		Write-Step 'removed' $exe
@@ -803,6 +891,18 @@ On Linux, macOS or Termux, run this instead:
 	# the check can never be what was meant.
 	if ($Update -and $SkipChecksum) {
 		Fail 'config' '-Update always verifies what it installs.' 'Drop -SkipChecksum.'
+	}
+	if ($ConnectGiven -and -not $Connect) {
+		Fail 'config' '-Connect needs the AI apps to connect.' `
+			'Comma-separated ids; lms-sync --connect list names them.'
+	}
+	if ($Connect -and $NoConnect) {
+		Fail 'config' '-Connect and -NoConnect ask for opposite things.' 'Pass one of them.'
+	}
+	# The daily update must never touch the student's AI apps, and an
+	# uninstall connecting one would be a contradiction.
+	if ($Connect -and ($Update -or $Uninstall)) {
+		Fail 'config' '-Connect is for an install, not -Update or -Uninstall.' 'Drop -Connect.'
 	}
 
 	if ($Uninstall) { Uninstall-LmsSync }

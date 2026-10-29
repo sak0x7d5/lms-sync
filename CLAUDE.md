@@ -21,7 +21,7 @@ pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--open [course]` (opens the library or one course in the file manager), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--open [course]` (opens the library or one course in the file manager), `--connect [ids|list]` / `--disconnect ids|all` (writes the MCP entry into AI apps' own configs; test it with `USERPROFILE`/`HOME`, `APPDATA`, `CODEX_HOME` pointed at a scratch folder, or it edits your real apps), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -49,8 +49,12 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [browse.go](browse.go) — the native folder chooser behind the UI's Browse button, plus the build-tagged `hideConsole` pair.
 - [platform.go](platform.go) — the one question `runtime.GOOS` cannot answer: whether this Linux is a phone.
 - [reveal.go](reveal.go) — opening a file or folder on the student's screen, for `open_material`, `--open` and the UI's Open folder button.
+- [connect.go](connect.go) — writing the MCP entry into AI apps' configs (`aiClients` is the table), for `--connect`, the installers and the UI's AI apps card.
+- [picker.go](picker.go) — the `--connect` checklist; raw mode is the build-tagged `picker_unix.go` (stty) / `picker_windows.go` (console API) pair.
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
+- [ocr.go](ocr.go) — finding the pages that are pictures, and reading them with tesseract; `lowprio_unix.go` / `lowprio_windows.go` run it at idle priority.
+- [view.go](view.go) — `view_pages`: pictures of a few pages, for the assistant to read itself.
 - [mcp.go](mcp.go) — the MCP server: JSON-RPC over stdio, and the tools an assistant sees.
 - [search.go](search.go) — turning a question into matches over the text cache.
 - [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.
@@ -338,6 +342,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **Every prompt carries the ground rules.** A client with no project instructions is the normal case, so "search before answering", "cite the path", and above all "an empty folder means the material was not uploaded, not that it was never taught" have to travel with the prompt. `TestEveryPromptCarriesTheGroundRules`.
 - **A tool path is checked against the destination.** Tool arguments come from a model that may be acting on text somebody else uploaded to a course page, so `resolveInside` refuses anything resolving outside the library. `TestMCPRefusesPathsOutsideTheLibrary`, `TestMCPOpenMaterialRefusesPathsOutsideTheLibrary`.
 - **Opening a file never runs it.** The default `extensions` list downloads `.js` and `.py`, an empty one downloads anything, and on Windows "opening" a `.js` runs it in Windows Script Host — while `open_material`'s path is written by that same possibly-steered model. `viewable` is an allowlist of document and image types handed to the default app; anything else is *revealed* (its folder opened with it selected), and on Linux only its folder is opened. Explorer gets its command line verbatim (`explorerCmdLine`), because Go's quoting turns `/select,` into no switch at all. Every answer carries the absolute path, since a window can fail to appear. `TestOpeningNeverRunsWhatItOpens`, `TestMCPOpenMaterialShowsCodeInItsFolderRatherThanRunningIt`, `TestShowCommandsFitThePlatform`, `TestExplorerIsGivenACommandLineItCanParse`, `TestMCPOpenMaterialAlwaysSaysWhereTheFileIs`.
+- **Another app's config is the student's, and `--connect` touches only its own entry.** The top level is walked token by token and every other value written back as the bytes it was read as, never round-tripped through a map (which reorders and reformats a file the student may have tuned by hand). A file that does not parse — JSONC with comments is the usual case, VS Code, opencode and Zed all allow it — is **refused, never rewritten**, and the entry is printed to paste instead; Zed is print-only for that reason. Codex's TOML is only ever appended to or has our table cut out: config.go's TOML subset is not enough to rewrite someone else's file. An existing entry keeps its `env` (where `LMS_PASS` may live) and any extra args, and **no credential is ever written** — the entry is the plain one, for the same reason `Save` will not copy an environment password. An entry under another name that already runs lms-sync (`lms`, from the old docs) is adopted under that name rather than joined by a duplicate server. Claude Code is written only through `claude mcp add`, never by editing `~/.claude.json`, which a running session rewrites; it is *read* from that file, because `claude mcp get` health-checks the server and takes seconds. `TestConnectMergesIntoEveryShapeOfFile`, `TestConnectRefusesAFileItCannotParse`, `TestConnectKeepsTheEntrysEnv`, `TestConnectAdoptsAnEntryUnderAnotherName`, `TestConnectWritesNoCredential`, `TestCodexTOMLIsAppendedNeverRewritten`, `TestClaudeCodeIsAddedThroughItsCLI`.
 - **A review log that will not parse is left alone, never overwritten.** Every other cache here rebuilds itself from a corrupt file; this one holds the only copy of a year's answers. `TestHistorySurvivesACorruptFileRatherThanBeingOverwritten`.
 - **The same question keeps its history.** `questionID` normalises case and whitespace, so a rephrasing does not split one item into two that each get half the practice. `TestRewordedWhitespaceIsTheSameQuestion`.
 - **A miss resets the ladder; a verdict is the student's.** Half-remembering something for a month is the state that needs frequent practice, not a longer gap — and a model deciding the verdict itself can drag a known item back for weeks. `TestAMissedQuestionComesBackTomorrow`, `TestGettingItRightPushesItFurtherOut`, `TestQuizPromptRequiresRecordingAndDefersTheVerdict`.
@@ -592,14 +597,25 @@ binaries beside it. `SHA256SUMS` covers them too.
     cmdlet comes from a module file, and a 5.1 started from PowerShell 7
     inherits 7's module path and cannot load it. The v1.3.0 `verify` job
     failed exactly so: the scheduled command exited on its first hash.
+  - **The Windows task runs PowerShell inside `conhost.exe --headless`.**
+    `-WindowStyle Hidden` hides a window only once it exists, so it flashed
+    one daily, and a Windows Terminal default opens one it cannot hide.
+    release.yml's `verify` job asserts the wrapper.
   - `--uninstall` removes the schedule, the installer copy and `update.log`.
     It still uses `rmdir`, so the student's files are never touched.
   release.yml's `verify` job registers a real schedule on each OS, runs the
   scheduled command, and expects "up to date". It does this on stable tags
   only, because `--update` follows `/releases/latest`.
-- **Nothing prompts.** Under `curl | sh` there is no terminal: `read` returns
+- **The script itself never prompts.** Under `curl | sh` there is no terminal: `read` returns
   non-zero at EOF, which `set -e` turns into an abort, and `/dev/tty` is not
-  always there. Every choice is a flag or an environment variable.
+  always there. Every choice is a flag or an environment variable. The one
+  question an install asks — which AI apps to connect — is asked by the
+  *binary*: at the end of an interactive install the script hands `/dev/tty`
+  (Windows: the console) to `lms-sync --connect`, whose own failure or
+  cancel is never an install failure. Never on `--update` (the scheduler runs
+  that), never with `CI` set, `--no-connect` or no terminal; `--connect ids`
+  is the no-question form. Doing it in Go keeps one JSON merger rather than a
+  sh one and a PowerShell one.
 - The PATH-editing and checksum-parsing logic in install.ps1 is written as
   **pure functions** (`Add-DirToPathValue`, `Remove-DirFromPathValue`,
   `Get-ExpectedHash`) so it can be tested without a Windows registry — the

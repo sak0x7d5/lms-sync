@@ -315,7 +315,7 @@ func Sync(ctx context.Context, c *Client, cfg *Config, manifest *Manifest,
 	// leave every assistant reading this library a week behind the files
 	// sitting next to it. A dry run still writes nothing.
 	if !dryRun {
-		stats, err := RefreshText(ctx, dest, report)
+		stats, err := RefreshTextWith(ctx, dest, ocrOptions{MaxPages: cfg.OCRMaxPages}, report)
 		switch {
 		case KindOf(err) == KindCancelled:
 			return r.res, err

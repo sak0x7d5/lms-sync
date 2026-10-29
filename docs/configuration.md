@@ -52,6 +52,7 @@ destination = 'D:\University\Courses'   # single quotes keep '\' literal
 | `sections` | all seven tabs | Which tabs to mirror. See [Choosing tabs](#choosing-tabs). |
 | `keep_pages` | `false` | Also save the page of a wrapper tab such as Syllabus. See [Choosing tabs](#choosing-tabs). |
 | `timezone` | this computer's | The zone dates are written in. See [Time zone](#time-zone). |
+| `ocr_max_pages` | `150` | A file with more pages that are pictures than this waits for `lms-sync --extract --ocr-all`. `0` turns OCR off. See [Pages that are pictures](ai-assistants.md#pages-that-are-pictures). |
 | `drive_push` | `false` | Copy the library to Google Drive after each sync. See [Push to Google Drive](cloud-backup.md#push-to-google-drive). |
 | `drive_folder` | `lms-sync` | The folder name in your Drive. |
 | `drive_client_id` | none | Your own Google sign-in client. See [Use your own Google project](cloud-backup.md#use-your-own-google-project). |

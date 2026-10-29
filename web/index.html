@@ -321,6 +321,16 @@
           <div class="hint" id="drive-hint">One way only — your disk stays the original and nothing is
             ever read back down. lms-sync can only ever see the files it puts there itself.</div>
         </div>
+        <div class="field">
+          <label>AI apps</label>
+          <div id="apps" class="checks" style="flex-direction:column;gap:6px"></div>
+          <div class="row" style="margin-top:10px">
+            <button type="button" id="apps-apply">Apply</button>
+          </div>
+          <div class="hint">Tick the apps that should be able to search your library. Unticking
+            one removes lms-sync from it; nothing else in its settings changes.</div>
+          <div id="apps-result" class="hint" style="white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></div>
+        </div>
       </div>
     </div>
 
@@ -514,6 +524,51 @@ async function loadConfig() {
     setRunning(c.running);
   } catch (e) { fail(e); }
 }
+
+// The app list comes from connect.go's table, the same one `lms-sync
+// --connect` shows, so a new app appears here without being listed twice.
+function showApps(data) {
+  const el = $("apps");
+  el.innerHTML = "";
+  (data.apps || []).forEach(a => {
+    const l = document.createElement("label");
+    l.className = "check";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.value = a.id;
+    box.checked = a.connected;
+    l.appendChild(box);
+    l.appendChild(document.createTextNode(" " + a.name));
+    if (a.note) {
+      const n = document.createElement("span");
+      n.className = "hint";
+      n.style.margin = "0 0 0 6px";
+      n.textContent = a.note;
+      l.appendChild(n);
+    }
+    el.appendChild(l);
+  });
+  $("apps-result").textContent = (data.results || []).join("\n");
+}
+
+async function loadApps() {
+  try {
+    const r = await api("/api/connect");
+    if (r.ok) showApps(await r.json());
+  } catch (e) { /* the card stays empty; the rest of the page still works */ }
+}
+
+$("apps-apply").onclick = async () => {
+  const btn = $("apps-apply");
+  btn.disabled = true;
+  try {
+    const apps = [...document.querySelectorAll("#apps input:checked")].map(b => b.value);
+    const r = await api("/api/connect", { method: "POST", body: JSON.stringify({ apps }) });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "could not change the AI apps");
+    showApps(await r.json());
+  } catch (e) { fail(e); }
+  btn.disabled = false;
+};
 
 // The tab list comes from the server rather than being hard-coded here, so
 // adding a tab in Go makes it appear in the interface on its own.
@@ -965,6 +1020,7 @@ es.onmessage = ev => {
 };
 
 loadConfig();
+loadApps();
 </script>
 </body>
 </html>
