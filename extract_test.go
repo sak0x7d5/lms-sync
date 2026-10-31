@@ -679,3 +679,41 @@ func TestPDFTextIsCappedAsItArrives(t *testing.T) {
 		t.Errorf("kept %d bytes, more than the %d-byte cap", len(ex.Text), maxExtractBytes)
 	}
 }
+
+func TestAnUpgradeKeepsAnsweringFromTheOldTextUntilItIsReRead(t *testing.T) {
+	dest, rel := libraryWithOneDeck(t)
+	ctx := context.Background()
+	if _, err := RefreshText(ctx, dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	old := extractorVersion
+	extractorVersion = old + 1
+	defer func() { extractorVersion = old }()
+
+	// The first sync after an upgrade re-reads everything, and an MCP server
+	// is answering throughout. Discarding the older index made every save
+	// part way through that pass report files read that morning as gone.
+	ti := LoadTextIndex(dest)
+	if text, ok := ti.Text(rel); !ok || !strings.Contains(text, "Newton") {
+		t.Fatalf("an older build's text stopped answering: %q, %v", text, ok)
+	}
+	entries, err := scanLibrary(ctx, dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ti.fresh(rel, entries[0], ocrRun{opts: defaultOCROptions()}) {
+		t.Error("an older build's record was trusted as fresh")
+	}
+
+	again, err := RefreshText(ctx, dest, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Extracted != 1 {
+		t.Errorf("extracted = %d, want 1", again.Extracted)
+	}
+	if r, _ := LoadTextIndex(dest).Record(rel); r.Ext != extractorVersion {
+		t.Errorf("re-read record carries build %d, want %d", r.Ext, extractorVersion)
+	}
+}

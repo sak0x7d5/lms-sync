@@ -60,6 +60,11 @@ type textRecord struct {
 	Pages    int    `json:"pages,omitempty"`
 	Pictures string `json:"pictures,omitempty"`
 	OCR      string `json:"ocr,omitempty"`
+
+	// Ext is the extractorVersion that wrote this record. It is kept per
+	// record rather than only for the whole file so that a new build can go
+	// on serving what an older one extracted until it has re-read that file.
+	Ext int `json:"ext,omitempty"`
 }
 
 // unreadPictures reports whether a file has pages nobody has read the words
@@ -113,13 +118,23 @@ func LoadTextIndex(dest string) *TextIndex {
 
 	var contents textIndexContents
 	// A corrupt index costs one slow rebuild rather than a crash, exactly as
-	// a corrupt manifest costs one slow re-download. An index written by a
-	// different build of the extractors is treated the same way: its answers
-	// are not this build's answers. The oldest shape — a bare map, with no
-	// version — decodes to version zero and so rebuilds too.
-	if err := json.Unmarshal(data, &contents); err != nil ||
-		contents.Extractors != extractorVersion || contents.Files == nil {
+	// a corrupt manifest costs one slow re-download. The oldest shape — a
+	// bare map, with no version — has no "files" and rebuilds too.
+	if err := json.Unmarshal(data, &contents); err != nil || contents.Files == nil {
 		return ti
+	}
+	// An index written by a different build of the extractors is kept, not
+	// thrown away: its records are marked with the build that wrote them,
+	// which fresh refuses, so every file is re-read — but until it is, the
+	// older text still answers. Discarding it made the first sync after an
+	// upgrade rebuild the index from nothing, and every save part way through
+	// that rebuild told a running MCP server that files it had read that
+	// morning were no longer in the library.
+	for rel, r := range contents.Files {
+		if r.Ext == 0 {
+			r.Ext = contents.Extractors
+			contents.Files[rel] = r
+		}
 	}
 	ti.records = contents.Files
 	return ti
@@ -202,7 +217,7 @@ func (ti *TextIndex) Text(rel string) (string, bool) {
 // is empty, which is only reached by actually reading the thing.
 func (ti *TextIndex) fresh(rel string, e indexEntry, run ocrRun) bool {
 	r, ok := ti.Record(rel)
-	if !ok || r.Size != e.size || r.Mod != e.mod.Unix() {
+	if !ok || r.Ext != extractorVersion || r.Size != e.size || r.Mod != e.mod.Unix() {
 		return false
 	}
 	// The same rule again, for the pictures in a file: whether tesseract is
@@ -447,6 +462,7 @@ func (ti *TextIndex) store(e indexEntry, ex extraction, ocr string, stats *TextS
 		Size: e.size, Mod: e.mod.Unix(), Chars: len(ex.Text),
 		Status: string(ex.Status), Note: ex.Note,
 		Pages: ex.Pages, Pictures: formatPages(ex.Pictures), OCR: ocr,
+		Ext: extractorVersion,
 	})
 }
 
@@ -550,8 +566,9 @@ func (s TextStats) Summary() string {
 // milliseconds and minutes.
 //
 // The bodies are held in memory between calls instead, each validated against
-// the index record describing the file it came from. Re-extraction changes
-// that record's size or modification time, which is what drops a stale body:
+// the index record describing the file it came from. Re-extraction rewrites
+// that record — OCR or a new build of the extractors changes it even when the
+// file itself is untouched — and any difference drops the cached body:
 // a cached answer is therefore never older than the last extraction, and a
 // sync running alongside the server still cannot serve yesterday's text.
 
@@ -574,8 +591,7 @@ type textMemory struct {
 
 type memoText struct {
 	body string
-	size int64 // of the source file, as its index record describes it
-	mod  int64
+	rec  textRecord // the index record the body was read under
 }
 
 // text returns the extracted text of one file, from memory when the index
@@ -587,7 +603,7 @@ func (m *textMemory) text(ti *TextIndex, rel string) (string, bool) {
 	}
 
 	m.mu.Lock()
-	if got, ok := m.bodies[rel]; ok && got.size == r.Size && got.mod == r.Mod {
+	if got, ok := m.bodies[rel]; ok && got.rec == r {
 		m.hits++
 		m.mu.Unlock()
 		return got.body, true
@@ -614,7 +630,7 @@ func (m *textMemory) text(ti *TextIndex, rel string) (string, bool) {
 		m.bodies = map[string]memoText{}
 		m.bytes = 0
 	}
-	m.bodies[rel] = memoText{body: text, size: r.Size, mod: r.Mod}
+	m.bodies[rel] = memoText{body: text, rec: r}
 	m.bytes += int64(len(text))
 	return text, true
 }
