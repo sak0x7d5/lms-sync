@@ -747,7 +747,7 @@ func TestReadMaterialChunksOnCharacterBoundaries(t *testing.T) {
 	var rebuilt strings.Builder
 	offset := 0
 	for step := 0; step < 200; step++ {
-		out, err := s.readMaterial([]byte(fmt.Sprintf(
+		out, err := s.readMaterial(context.Background(), []byte(fmt.Sprintf(
 			`{"path":%q,"offset":%d,"max_chars":97}`, rel, offset)))
 		if err != nil {
 			t.Fatalf("read at offset %d: %v", offset, err)
@@ -925,5 +925,23 @@ func TestMCPOpenMaterialAlwaysSaysWhereTheFileIs(t *testing.T) {
 
 	if _, err := s.openMaterial(openArgs(t, map[string]string{"path": "Physics/missing.pdf"})); err == nil {
 		t.Error("a file that does not exist was reported as opened")
+	}
+}
+
+func TestReadMaterialReadsAFileTheIndexHasNotReached(t *testing.T) {
+	// A sync has just downloaded this deck and not yet extracted it — or an
+	// index rebuild has not reached it. It is on disk, so it can be read.
+	dest, rel := libraryWithOneDeck(t)
+	s := &mcpServer{cfg: &Config{Destination: dest}, dest: dest, ctx: context.Background()}
+
+	out, err := s.readMaterial(context.Background(), []byte(fmt.Sprintf(`{"path":%q}`, rel)))
+	if err != nil {
+		t.Fatalf("an unindexed file on disk was refused: %v", err)
+	}
+	if !strings.Contains(out, "Newton") || !strings.Contains(out, "index has not reached it") {
+		t.Errorf("reply does not carry the file's text and say how it was read:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(textDir(dest), textIndexFile)); err == nil {
+		t.Error("reading wrote the index, which belongs to the sync")
 	}
 }

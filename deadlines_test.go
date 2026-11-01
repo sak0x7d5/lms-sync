@@ -226,3 +226,33 @@ func TestADeadlineLateOnTheLastDayIsIncluded(t *testing.T) {
 		t.Error("a deadline on the day after the window was included")
 	}
 }
+
+func TestADateInTheSentenceIsNotAnIdentifyingWord(t *testing.T) {
+	// The live fixture only caught this on days when the lab exam fell on
+	// the 6th, beside Lab 6: "6th" became "6", and the exam was folded into
+	// the lab.
+	got := tokenSet("Mid Term Lab and Written Exam As I announced in the class the lab exam " +
+		"will take place next week, 6th November 2026 at 2:30 PM in MTL-4.")
+	for _, gone := range []string{"6", "th", "november", "2026"} {
+		if got[gone] {
+			t.Errorf("%q from the date counts as an identifying word: %v", gone, got)
+		}
+	}
+	if n := overlap(tokenSet("Lab 6"), got); n >= 2 {
+		t.Errorf("an exam on the 6th still matches Lab 6 on %d words", n)
+	}
+	for _, c := range []struct {
+		title string
+		want  []string
+	}{
+		{"Lab 6", []string{"lab", "6"}},
+		{"HW2", []string{"homework", "2"}},
+		{"Nov 13th quiz", []string{"quiz"}},
+		{"Quiz on October 6", []string{"quiz"}},
+		{"May quiz 3", []string{"may", "quiz", "3"}},
+	} {
+		if got := strings.Join(titleTokens(c.title), " "); got != strings.Join(c.want, " ") {
+			t.Errorf("titleTokens(%q) = %q, want %q", c.title, got, strings.Join(c.want, " "))
+		}
+	}
+}
