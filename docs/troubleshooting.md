@@ -66,7 +66,7 @@ A scheduled run can act on the exit code instead. See [Exit codes](command-line.
 
 ## Searching and your AI app
 
-- **PDFs are not searchable.** Install poppler, then run `lms-sync --extract`. See [Searchable PDFs](ai-assistants.md#searchable-pdfs). A scanned PDF has no text at all.
+- **PDFs are not searchable.** Run `lms-sync --install-tools` (or install poppler yourself), then `lms-sync --extract`. See [Searchable PDFs](ai-assistants.md#searchable-pdfs). A scanned PDF has no text at all.
 - **Search stopped finding things in a Google Drive or OneDrive folder.** Keep the library available offline. See [Use a synced folder](cloud-backup.md#use-a-synced-folder).
 - **Your AI app does not show lms-sync, or finds no courses.** Run `lms-sync --connect list` to see which apps it is in, then see [When it doesn't work](ai-assistants.md#when-it-doesnt-work).
 - **`lms-sync --connect` left an app's file alone.** That file has comments in it or is already broken, so nothing was changed. Paste the entry it printed by hand.

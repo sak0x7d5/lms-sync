@@ -32,6 +32,7 @@ func run() int {
 		doOpen     = flag.Bool("open", false, "open the library, or one course (--open ITC), in the file manager")
 		doConnect  = flag.Bool("connect", false, "choose the AI apps that can use your library (--connect cursor,claude-code skips the list)")
 		disconnect = flag.Bool("disconnect", false, "remove lms-sync from AI apps (--disconnect all)")
+		instTools  = flag.Bool("install-tools", false, "install poppler and tesseract, after asking (--install-tools yes skips the question, list only looks)")
 		driveLogIn = flag.Bool("drive-login", false, "sign in to Google Drive once, then exit")
 		pushDrive  = flag.Bool("push-drive", false, "copy the library to Google Drive after syncing")
 		savePages  = flag.String("save-pages", "", "with --probe: write the raw tool pages into this folder")
@@ -65,6 +66,10 @@ func run() int {
 	// student telling Claude where the library lives.
 	if *doConnect || *disconnect {
 		return cliConnect(cfgPath, flag.Arg(0), *disconnect)
+	}
+	// Nor does installing the PDF and OCR tools need a config at all.
+	if *instTools {
+		return cliInstallTools(flag.Arg(0))
 	}
 
 	cfg, err := LoadConfig(cfgPath)
@@ -130,6 +135,8 @@ func usage() {
   lms-sync --connect [APPS] choose the AI apps that can use your library
                            (APPS: cursor,claude-code,...  or "list" to just look)
   lms-sync --disconnect APPS  remove it from those apps ("all" for every one)
+  lms-sync --install-tools install poppler and tesseract, so PDFs and scans are searchable
+                           ("yes" skips the question, "list" only looks)
   lms-sync --drive-login   sign in to Google Drive (once; everything else is silent)
 
 Options:
@@ -442,6 +449,9 @@ func cliExtract(ctx context.Context, cfg *Config, ocrAll bool) int {
 		fmt.Println("  macOS          brew install tesseract")
 		fmt.Println("  Windows        winget install UB-Mannheim.TesseractOCR")
 		fmt.Println("  Termux         pkg install tesseract")
+	}
+	if stats.Unavailable > 0 || stats.PicturesNeedTool > 0 {
+		fmt.Println("\nOr let lms-sync install what is missing: lms-sync --install-tools")
 	}
 	return 0
 }

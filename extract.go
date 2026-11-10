@@ -578,7 +578,7 @@ var pdfTool = "pdftotext"
 // unavailable on one that does not. That is a far better outcome than a
 // half-working parser that silently returns nonsense for some files.
 func extractPDF(ctx context.Context, pathname string) (extraction, error) {
-	exe, err := exec.LookPath(pdfTool)
+	exe, err := findPoppler(pdfTool)
 	if err != nil {
 		return extraction{
 			Status: extractUnavailable,

@@ -21,10 +21,12 @@
 # has to come back to GitHub for a fix. -NoAutoUpdate turns that off.
 #
 # Nothing here asks a question. Run as `irm | iex` there is nothing to read an
-# answer from, so every choice is a parameter. The one exception is not this
-# script's: once an interactive install is done, it runs `lms-sync --connect`,
-# the tool's own checklist of AI apps to connect it to. Never on -Update, in
-# CI, with input redirected, or with -NoConnect.
+# answer from, so every choice is a parameter. The two exceptions are not this
+# script's: once an interactive install is done, it runs
+# `lms-sync --install-tools`, which offers to install poppler and tesseract
+# with winget, and then `lms-sync --connect`, the tool's own checklist of AI
+# apps to connect it to. Never on -Update, in CI, with input redirected, or
+# with -NoTools / -NoConnect.
 #
 # This file is ASCII on purpose, and CI holds it to that. The daily task runs
 # it with `powershell.exe -File`, and Windows PowerShell 5.1 reads a file with
@@ -54,6 +56,13 @@ param(
 	# Connect these AI apps without asking: comma-separated ids, as
 	# `lms-sync --connect list` names them.
 	[string] $Connect,
+
+	# Do not offer to install poppler and tesseract, which make PDFs and
+	# scanned pages searchable.
+	[switch] $NoTools,
+
+	# Install them with winget without asking.
+	[switch] $Tools,
 
 	# Bring an existing install up to the newest release. This is what the
 	# daily task runs.
@@ -605,6 +614,10 @@ then run this again.
 	Write-Host "until you do, courses land in $dir\Courses."
 	Write-Host ''
 
+	# Before the AI apps: an assistant connected to a library whose PDFs
+	# cannot be read answers "that is not in your material" about them.
+	Invoke-Tools $exe (Get-ToolsMode)
+
 	$ids = Get-ConnectIds
 	$picker = (-not $ids) -and (Test-CanOpenPicker)
 	if (-not $ids -and -not $picker) {
@@ -614,6 +627,52 @@ then run this again.
 	# Last, after the summary: Ctrl-C in the checklist stops this script as
 	# well, and by now there is nothing left for it to cut short.
 	Invoke-Connect $exe $ids $picker
+}
+
+# ---------------------------------------------------------------------------
+# Installing poppler and tesseract
+#
+# Asked by the tool's own --install-tools, for the same reason the AI apps
+# are: this script never reads an answer, and the package table lives in one
+# place rather than here and in install.sh.
+# ---------------------------------------------------------------------------
+
+# Get-ToolsMode returns 'yes' (install without asking), 'ask', 'look' (only
+# say what is missing) or 'skip'.
+function Get-ToolsMode {
+	if ($NoTools) { return 'skip' }
+	if ($Tools) { return 'yes' }
+	if ($env:LMS_SYNC_NO_TOOLS) { return 'skip' }
+	if ($env:LMS_SYNC_TOOLS) { return 'yes' }
+	if ($env:CI) { return 'look' }
+	try {
+		if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) { return 'ask' }
+	} catch { }
+	return 'look'
+}
+
+# Invoke-Tools never fails the install: lms-sync works without them, and they
+# can be installed later in one command.
+function Invoke-Tools {
+	param([string] $Exe, [string] $Mode)
+	if ($Mode -eq 'skip') { return }
+	$ok = $false
+	try {
+		switch ($Mode) {
+			'yes' { & $Exe --install-tools yes }
+			'ask' { & $Exe --install-tools }
+			default { & $Exe --install-tools list 2>$null }
+		}
+		$ok = ($LASTEXITCODE -eq 0)
+	} catch {
+		$ok = $false
+	}
+	if (-not $ok -and $Mode -ne 'look') {
+		Write-Host ''
+		Write-Host 'Install them any time: lms-sync --install-tools'
+	}
+	Write-Host ''
+	$global:LASTEXITCODE = 0
 }
 
 # ---------------------------------------------------------------------------
@@ -903,6 +962,14 @@ On Linux, macOS or Termux, run this instead:
 	# uninstall connecting one would be a contradiction.
 	if ($Connect -and ($Update -or $Uninstall)) {
 		Fail 'config' '-Connect is for an install, not -Update or -Uninstall.' 'Drop -Connect.'
+	}
+	if ($Tools -and $NoTools) {
+		Fail 'config' '-Tools and -NoTools ask for opposite things.' 'Pass one of them.'
+	}
+	# A scheduled task running a package manager daily is not something
+	# anyone would connect with a tool update.
+	if ($Tools -and ($Update -or $Uninstall)) {
+		Fail 'config' '-Tools is for an install, not -Update or -Uninstall.' 'Drop -Tools.'
 	}
 
 	if ($Uninstall) { Uninstall-LmsSync }
