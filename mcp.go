@@ -658,8 +658,10 @@ var mcpTools = []mcpTool{
 			"a new quiz on ITC\"): one course syncs in seconds, and the reply lists " +
 			"exactly which files are new or changed. Every course at once can take " +
 			"minutes. The call waits up to 20 seconds for the sync to finish; if it is " +
-			"still running, the reply says so and calling again waits again — never " +
-			"answer from the library while a sync of that course is still running. " +
+			"still running, the reply says so and calling again waits again. While it " +
+			"runs, everything already in the library can still be searched and read — " +
+			"keep helping with it; only a conclusion that something is missing or " +
+			"has not arrived has to wait for the sync to finish. " +
 			"Use it whenever the student says something was posted recently — a new " +
 			"assignment, a changed deadline or due date, an announcement — before " +
 			"telling them it is not there.",
@@ -877,7 +879,7 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessa
 	case "find_material":
 		return s.findMaterial(ctx, args)
 	case "read_material":
-		return s.readMaterial(args)
+		return s.readMaterial(ctx, args)
 	case "open_material":
 		return s.openMaterial(args)
 	case "whats_new":
@@ -1131,7 +1133,7 @@ func courseLabel(c string) string {
 	return c
 }
 
-func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
+func (s *mcpServer) readMaterial(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Path     string `json:"path"`
 		Offset   int    `json:"offset"`
@@ -1152,12 +1154,18 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 	}
 
 	rel := filepath.ToSlash(strings.TrimSpace(a.Path))
-	if _, err := resolveInside(s.dest, rel); err != nil {
+	full, err := resolveInside(s.dest, rel)
+	if err != nil {
 		return "", err
 	}
 
 	ti := LoadTextIndex(s.dest)
 	text, ok := s.text.text(ti, rel)
+	var direct bool
+	if !ok {
+		text, ok = readUnindexed(ctx, ti, full, rel)
+		direct = ok
+	}
 	if !ok {
 		// Why there is no text is the useful part: one of these is fixed by
 		// installing poppler, one never will be, and one means the path is
@@ -1206,7 +1214,11 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s (characters %d–%d of %d)\n\n", rel, a.Offset, end, len(text))
-	if r, ok := ti.Record(rel); ok && a.Offset == 0 {
+	if direct && a.Offset == 0 {
+		b.WriteString("(Read straight from the file: the search index has not reached it yet, " +
+			"so find_material may not match its text until the current sync finishes.)\n\n")
+	}
+	if r, ok := ti.Record(rel); ok && a.Offset == 0 && !direct {
 		if note := pictureNote(rel, r); note != "" {
 			b.WriteString(note + "\n\n")
 		}
@@ -1217,6 +1229,42 @@ func (s *mcpServer) readMaterial(args json.RawMessage) (string, error) {
 	}
 	return b.String(), nil
 }
+
+// readUnindexed reads a file the text index cannot answer for: one a running
+// sync has just downloaded, or whose record an index rebuild has not reached.
+//
+// The file is on disk and the student is asking about it now, so "not
+// indexed yet" is not an answer worth giving — it is what made an assistant
+// tell a student it could not read a lab sheet sitting in the library. The
+// index itself is left to the sync that owns it: this reads the text layer
+// only (no OCR), writes nothing, and gives up past a size or a time a tool
+// call can afford, which is what keeps extraction out of requests otherwise.
+func readUnindexed(ctx context.Context, ti *TextIndex, full, rel string) (string, bool) {
+	info, err := os.Stat(full)
+	if err != nil || info.IsDir() || info.Size() > directReadMax {
+		return "", false
+	}
+	if r, ok := ti.Record(rel); ok && r.Ext == extractorVersion &&
+		r.Size == info.Size() && r.Mod == info.ModTime().Unix() {
+		// The index has read this exact file and found no text in it;
+		// reading it again would only reach the same answer, slowly.
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(ctx, directReadWait)
+	defer cancel()
+	ex, err := extractText(ctx, full)
+	if err != nil || ex.Status != extractOK {
+		return "", false
+	}
+	return ex.Text, true
+}
+
+// What readUnindexed will take on inside one tool call. A lab sheet or a deck
+// is far inside both; a 900-page textbook is what they keep out.
+const (
+	directReadMax  = 40 << 20
+	directReadWait = 15 * time.Second
+)
 
 // viewPages answers with pictures of pages, for material whose pages are
 // pictures. What it may render is limited to a few pages a call: it exists

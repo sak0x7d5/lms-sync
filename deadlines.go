@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -323,11 +324,39 @@ func sectionEnabled(cfg *Config, id string) bool {
 // kept — "Lab 5" is not "Lab 1" — and run-together ones are split, so "HW2"
 // is "hw 2". "Due" is dropped, since the calendar puts it in front of
 // everything.
+//
+// A date is not an identifier either. The sentence an announcement is read
+// from always carries one, and "6th November" split into "6" and "th" made an
+// exam announced for the 6th share "lab" and "6" with Lab 6, due that day —
+// so the exam was folded into the lab and disappeared from the list.
 func titleTokens(s string) []string {
-	var out []string
-	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+	words := strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
-	}) {
+	})
+	date := make([]bool, len(words))
+	for i, w := range words {
+		if !isMonthWord(w) {
+			continue
+		}
+		date[i] = true
+		if i > 0 && dayWordRe.MatchString(words[i-1]) {
+			date[i-1] = true
+		}
+		j := i + 1
+		if j < len(words) && dayWordRe.MatchString(words[j]) {
+			date[j] = true
+			j++
+		}
+		if j < len(words) && yearWordRe.MatchString(words[j]) {
+			date[j] = true
+		}
+	}
+
+	var out []string
+	for i, w := range words {
+		if date[i] {
+			continue
+		}
 		for _, part := range splitLettersDigits(w) {
 			if part == "hw" {
 				part = "homework"
@@ -339,6 +368,22 @@ func titleTokens(s string) []string {
 		}
 	}
 	return out
+}
+
+var (
+	dayWordRe  = regexp.MustCompile(`^\d{1,2}(?:st|nd|rd|th)?$`)
+	yearWordRe = regexp.MustCompile(`^\d{4}$`)
+)
+
+// isMonthWord reports whether w names a month, in full or by a prefix of at
+// least three letters ("nov", "sept"). "may" is a month only next to a day,
+// which a title-sized string cannot settle, so it is never one here.
+func isMonthWord(w string) bool {
+	if len(w) < 3 || w == "may" {
+		return false
+	}
+	m, ok := monthByPrefix[w[:3]]
+	return ok && strings.HasPrefix(strings.ToLower(m.String()), w)
 }
 
 func splitLettersDigits(w string) []string {
