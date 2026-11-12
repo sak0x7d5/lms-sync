@@ -21,7 +21,7 @@ pwsh -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language
 
 Run the built binary from a folder of its own: it reads and writes `config.toml` and `manifest.json` **beside the executable** (`exeDir()` in [main.go](main.go)), not in the destination or the cwd. `go run .` therefore resolves those paths inside the Go build cache — build first, or pass `--config`.
 
-Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--open [course]` (opens the library or one course in the file manager), `--connect [ids|list]` / `--disconnect ids|all` (writes the MCP entry into AI apps' own configs; test it with `USERPROFILE`/`HOME`, `APPDATA`, `CODEX_HOME` pointed at a scratch folder, or it edits your real apps), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run).
+Useful while working: `--dry-run` (writes nothing), `--no-browser`, `--addr 127.0.0.1:8080` (fixed port for the UI), `--discover`, `--probe` (reports which tabs and endpoints an install offers; downloads nothing), `--extract` (reads text out of what is already synced; never goes online), `--mcp` (serves the library to an AI assistant over stdio), `--open [course]` (opens the library or one course in the file manager), `--connect [ids|list]` / `--disconnect ids|all` (writes the MCP entry into AI apps' own configs; test it with `USERPROFILE`/`HOME`, `APPDATA`, `CODEX_HOME` pointed at a scratch folder, or it edits your real apps), `--drive-login` (Google sign-in for the backup, once), `--push-drive` (turn the Drive copy on for one run), `--install-tools [yes|list]` (installs poppler and tesseract with the machine's package manager after asking; `list` only looks — use `list`, or it really runs `sudo apt-get`).
 
 ## Naming: the tool is `lms-sync`, the protocol is Sakai
 
@@ -52,6 +52,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [connect.go](connect.go) — writing the MCP entry into AI apps' configs (`aiClients` is the table), for `--connect`, the installers and the UI's AI apps card.
 - [picker.go](picker.go) — the `--connect` checklist; raw mode is the build-tagged `picker_unix.go` (stty) / `picker_windows.go` (console API) pair.
 - [extract.go](extract.go) — reducing one mirrored file to plain text.
+- [tools.go](tools.go) — `--install-tools`: which package manager installs poppler and tesseract on this machine (`pkgManagers` is the table, `planToolInstall` the pure decision), and `findPoppler`.
 - [textcache.go](textcache.go) — the searchable copy of a library, and what it knows about each file.
 - [ocr.go](ocr.go) — finding the pages that are pictures, and reading them with tesseract; `lowprio_unix.go` / `lowprio_windows.go` run it at idle priority.
 - [view.go](view.go) — `view_pages`: pictures of a few pages, for the assistant to read itself.
@@ -608,6 +609,20 @@ binaries beside it. `SHA256SUMS` covers them too.
   release.yml's `verify` job registers a real schedule on each OS, runs the
   scheduled command, and expects "up to date". It does this on stable tags
   only, because `--update` follows `/releases/latest`.
+- **The helper programs are offered by the binary, the same way.** poppler
+  and tesseract are what make PDFs and scans searchable, and nothing fails
+  without them — which is why nobody installed them by hand. Before
+  `--connect`, an interactive install hands the terminal to
+  `lms-sync --install-tools`, which picks the package manager
+  (`planToolInstall`, pure and tested per platform), prints the exact
+  commands and asks once; Enter means yes. Without a terminal or in CI the
+  installers run `--install-tools list`, which only reports. `--tools` /
+  `-Tools` installs without asking, `--no-tools` / `-NoTools` skips it, and
+  neither is accepted with `--update`: a scheduler running a package manager
+  daily is not a tool update. Its failure is never an install failure. Nothing
+  but this command ever runs a package manager — not a sync, the interface or
+  the MCP server, which have nobody to type a sudo password.
+  `TestToolInstallPlanFitsTheMachine`.
 - **The script itself never prompts.** Under `curl | sh` there is no terminal: `read` returns
   non-zero at EOF, which `set -e` turns into an abort, and `/dev/tty` is not
   always there. Every choice is a flag or an environment variable. The one

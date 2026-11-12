@@ -158,6 +158,8 @@ jobs:
           # The status half of --connect: it prints what is connected and
           # exits 0, with no terminal to ask anything on.
           lms-sync --connect list </dev/null
+          # And of --install-tools: it reports and exits 0, installing nothing.
+          lms-sync --install-tools list </dev/null
 
           got=$(lms-sync --version)
           want="lms-sync ${TAG#v}"
@@ -271,6 +273,8 @@ jobs:
           # exits 0, with nothing to ask.
           & lms-sync --connect list
           if ($LASTEXITCODE -ne 0) { throw "lms-sync --connect list exited $LASTEXITCODE" }
+          & lms-sync --install-tools list
+          if ($LASTEXITCODE -ne 0) { throw "lms-sync --install-tools list exited $LASTEXITCODE" }
 
           $dir = Join-Path $env:LOCALAPPDATA 'Programs\lms-sync'
           $out = (& lms-sync --extract 2>&1 | Out-String)

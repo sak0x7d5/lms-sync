@@ -185,7 +185,7 @@ func ocrImage(ctx context.Context, exe string, img []byte) (string, error) {
 // renderPage turns one PDF page into an image with pdftoppm, written to
 // stdout. extra carries the resolution or scale and the format.
 func renderPage(ctx context.Context, pathname string, page int, extra ...string) ([]byte, error) {
-	exe, err := exec.LookPath(renderTool)
+	exe, err := findPoppler(renderTool)
 	if err != nil {
 		return nil, err
 	}

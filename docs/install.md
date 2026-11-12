@@ -33,13 +33,21 @@ The installer:
    match;
 3. puts it in a folder of its own and puts `lms-sync` on your PATH;
 4. schedules a daily [update check](#updates);
-5. asks which AI apps to connect, with the ones it found already ticked ([what
+5. offers to install poppler and tesseract, which make PDFs and scanned pages
+   [searchable](ai-assistants.md#searchable-pdfs), with your machine's own
+   package manager (winget, Homebrew, apt, dnf, pacman, zypper or Termux's
+   `pkg`) — it shows the exact command and asks first;
+6. asks which AI apps to connect, with the ones it found already ticked ([what
    that changes](ai-assistants.md#connect-your-ai-app)).
 
-It needs no administrator rights and no `sudo`. Step 5 is the only question it
-asks, and only when it is run in a terminal. Under `curl | sh` it reads your
-keyboard from the terminal directly. It is skipped in CI, by `--update` and the
-daily check, and with `--no-connect`. Skipping it changes nothing: run
+lms-sync itself needs no administrator rights and no `sudo`. Step 5 is the one
+place either can come up: on Linux the package manager runs through `sudo`, so
+it may ask for your password, and on Windows a tesseract installer may ask for
+permission. Steps 5 and 6 are the only questions it asks, and only when it is
+run in a terminal. Under `curl | sh` it reads your keyboard from the terminal
+directly. Both are skipped in CI, by `--update` and the daily check, and with
+`--no-tools` / `--no-connect`; without a terminal, step 5 only says what is
+missing. Skipping either changes nothing: run `lms-sync --install-tools` or
 `lms-sync --connect` whenever you like. Every other choice is a flag (see
 [Installer options](#installer-options)).
 It is a plain script, so read it first if you would rather:
@@ -165,6 +173,8 @@ PowerShell needs the script as a block before it will take a parameter:
 | `--no-auto-update` | `-NoAutoUpdate` | `LMS_SYNC_NO_AUTO_UPDATE` | do not schedule the [daily update check](#updates) |
 | `--no-connect` | `-NoConnect` | `LMS_SYNC_NO_CONNECT` | do not ask which AI apps to connect |
 | `--connect APPS` | `-Connect APPS` | `LMS_SYNC_CONNECT` | connect these apps without asking, e.g. `cursor,claude-code` ([ids](ai-assistants.md#connect-your-ai-app)) |
+| `--no-tools` | `-NoTools` | `LMS_SYNC_NO_TOOLS` | do not offer to install poppler and tesseract |
+| `--tools` | `-Tools` | `LMS_SYNC_TOOLS` | install them without asking (`sudo` may still ask for your password) |
 | `--skip-checksum` | `-SkipChecksum` | — | install without checking `SHA256SUMS` — see [Verify a download](#verify-a-download) |
 | `--update` | `-Update` | — | bring an existing install up to the newest release; this is what the daily check runs |
 | `--uninstall` | `-Uninstall` | — | [remove it](#uninstall) |

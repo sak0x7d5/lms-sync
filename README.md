@@ -101,16 +101,13 @@ It needs no administrator rights. The installer picks the right build for your m
 
 ### 2. Make PDFs searchable
 
-Word, PowerPoint and Excel files are searchable straight away. Most lecture notes are PDFs, though, and those need poppler, a free set of PDF tools. Install it now, in the same window, and your first sync reads every PDF:
+Word, PowerPoint and Excel files are searchable straight away. Most lecture notes are PDFs, though, and those need poppler, a free set of PDF tools; scanned notes and slides pasted in as screenshots need tesseract as well. The installer offers to install both with your machine's own package manager — say yes, and your first sync reads every PDF. If you skipped it, run:
 
-| Machine | Command |
-|---|---|
-| Windows | `winget install oschwartz10612.Poppler` (a community build of poppler for Windows; type `Y` if winget asks you to accept its terms) |
-| Mac | `brew install poppler` |
-| Debian, Ubuntu, Raspberry Pi | `sudo apt install poppler-utils` |
-| Android (Termux) | `pkg install poppler` |
+```
+lms-sync --install-tools
+```
 
-If you add it after your first sync, run `lms-sync --extract` once. Scanned notes and slides pasted in as screenshots are pictures of text: install [tesseract](docs/ai-assistants.md#pages-that-are-pictures) as well and those become searchable too.
+It shows the command it will run and asks first. If you add them after your first sync, run `lms-sync --extract` once. To install them by hand instead, see [Searchable PDFs](docs/ai-assistants.md#searchable-pdfs).
 
 ### 3. Run it and sign in
 
