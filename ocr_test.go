@@ -31,7 +31,9 @@ func TestMain(m *testing.M) {
 
 // fakeTool behaves as whichever program the arguments say it was run as.
 //
-//   - pdftotext prints LMS_FAKE_PAGES, "|"-separated, one page each.
+//   - pdftotext prints LMS_FAKE_PAGES, "|"-separated, one page each, each
+//     ended by a form feed as poppler does; with -f, only that page.
+//   - pdfinfo (a lone path) reports how many pages that is.
 //   - pdftoppm draws a PNG 100+N pixels wide for page N, so the page can be
 //     read back out of it.
 //   - tesseract prints LMS_FAKE_OCR and which picture it was given, and
@@ -45,17 +47,30 @@ func fakeTool(args []string) int {
 		}
 		return false
 	}
+	first := func() int {
+		for i, a := range args {
+			if a == "-f" && i+1 < len(args) {
+				n, _ := strconv.Atoi(args[i+1])
+				return n
+			}
+		}
+		return 0
+	}
 	pages := strings.Split(os.Getenv("LMS_FAKE_PAGES"), "|")
 	switch {
 	case has("-enc"):
-		fmt.Print(strings.Join(pages, "\f") + "\f")
-	case has("-singlefile"):
-		n := 0
-		for i, a := range args {
-			if a == "-f" && i+1 < len(args) {
-				n, _ = strconv.Atoi(args[i+1])
+		if n := first(); n > 0 {
+			if n > len(pages) {
+				return 99
 			}
+			fmt.Print(pages[n-1] + "\f")
+			return 0
 		}
+		fmt.Print(strings.Join(pages, "\f") + "\f")
+	case len(args) == 1:
+		fmt.Printf("Title:          fake\nPages:          %d\nEncrypted:      no\n", len(pages))
+	case has("-singlefile"):
+		n := first()
 		if n < 1 || n > len(pages) {
 			fmt.Fprintln(os.Stderr, "Wrong page range given")
 			return 99
@@ -93,9 +108,9 @@ func fakePicture(width int) []byte {
 // this OCR text, and returns the file the OCR calls are logged in.
 func pictureTools(t *testing.T, pages []string, ocr string, haveOCR bool) string {
 	t.Helper()
-	oldPDF, oldOCR, oldRender := pdfTool, ocrTool, renderTool
-	t.Cleanup(func() { pdfTool, ocrTool, renderTool = oldPDF, oldOCR, oldRender })
-	pdfTool, renderTool = os.Args[0], os.Args[0]
+	oldPDF, oldOCR, oldRender, oldInfo := pdfTool, ocrTool, renderTool, infoTool
+	t.Cleanup(func() { pdfTool, ocrTool, renderTool, infoTool = oldPDF, oldOCR, oldRender, oldInfo })
+	pdfTool, renderTool, infoTool = os.Args[0], os.Args[0], os.Args[0]
 	ocrTool = "lms-sync-no-such-ocr-tool"
 	if haveOCR {
 		ocrTool = os.Args[0]
@@ -375,6 +390,94 @@ func TestViewPagesReturnsPicturesAndStaysInsideTheLibrary(t *testing.T) {
 	}
 	if text, isErr := toolTextOf(t, replies[6]); !isErr || !strings.Contains(text, "no pictures") {
 		t.Errorf("an empty slide was not refused: %s", text)
+	}
+}
+
+// A form feed inside a page is a character, not a page break. A real deck of
+// 52 pages set in a font with no usable encoding came out of pdftotext with
+// 107 form feeds; the index claimed 107 pages, every page after the first
+// stray one carried the wrong number, and an assistant asked view_pages for
+// pages 53 to 107 one failure after another.
+func TestAFormFeedInsideAPageIsNotAPageBreak(t *testing.T) {
+	dest := t.TempDir()
+	writePDF(t, filepath.Join(dest, "Hadith", "myths.pdf"))
+	pictureTools(t, []string{
+		"Myths and realities about hadith: an introduction \f ɅɃɇşɅɉɄ",
+		"\f⚫\f",
+		"Compilation of hadith in the first century of Islam",
+	}, "", false)
+
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	ti := LoadTextIndex(dest)
+	r, _ := ti.Record("Hadith/myths.pdf")
+	if r.Pages != 3 || r.Pictures != "2" {
+		t.Fatalf("record = %+v; want 3 pages, page 2 a picture", r)
+	}
+	text, _ := ti.Text("Hadith/myths.pdf")
+	if !strings.Contains(text, "--- Page 3 ---\nCompilation") || strings.Contains(text, "--- Page 4 ---") {
+		t.Errorf("pages are numbered by form feeds, not by the file:\n%s", text)
+	}
+}
+
+// Without pdfinfo the form feeds are all there is to count by, and a PDF
+// still has to be readable.
+func TestPagesAreStillCountedWithoutPdfinfo(t *testing.T) {
+	dest := t.TempDir()
+	writePDF(t, filepath.Join(dest, "Statistics", "notes.pdf"))
+	pictureTools(t, notesPages, "", false)
+	infoTool = "lms-sync-no-such-info-tool"
+
+	if _, err := RefreshText(context.Background(), dest, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if r, _ := LoadTextIndex(dest).Record("Statistics/notes.pdf"); r.Status != string(extractOK) || r.Pages != 4 {
+		t.Errorf("record = %+v; want ok, 4 pages", r)
+	}
+}
+
+func TestParsePageCount(t *testing.T) {
+	n, err := parsePageCount("Producer:       Microsoft PowerPoint\r\nPages:          52\r\nEncrypted:      no\r\n")
+	if err != nil || n != 52 {
+		t.Errorf("got %d, %v; want 52", n, err)
+	}
+	if _, err := parsePageCount("Title: no count here\n"); err == nil {
+		t.Error("a report with no page count was accepted")
+	}
+}
+
+// Asked for a page past the end, view_pages says how many there are, so an
+// assistant told the wrong count by an older index can correct itself
+// instead of asking further past the end.
+func TestViewPagesSaysHowManyPagesAFileHas(t *testing.T) {
+	dest := t.TempDir()
+	writePDF(t, filepath.Join(dest, "Statistics", "notes.pdf"))
+	pictureDeck(t, filepath.Join(dest, "Statistics", "week9.pptx"))
+	pictureTools(t, notesPages, "", false)
+
+	replies := mcpExchange(t, dest,
+		toolCall(t, 1, "view_pages", map[string]any{"path": "Statistics/notes.pdf", "pages": "5"}),
+		toolCall(t, 2, "view_pages", map[string]any{"path": "Statistics/notes.pdf", "pages": "2,9-10"}),
+		toolCall(t, 3, "view_pages", map[string]any{"path": "Statistics/notes.pdf", "pages": "3-8", "overview": true}),
+		toolCall(t, 4, "view_pages", map[string]any{"path": "Statistics/notes.pdf", "pages": "6-8", "overview": true}),
+		toolCall(t, 5, "view_pages", map[string]any{"path": "Statistics/week9.pptx", "pages": "4"}),
+	)
+	if text, isErr := toolTextOf(t, replies[1]); !isErr ||
+		!strings.Contains(text, "notes.pdf has 4 pages, so page 5 does not exist. Ask for pages 1-4") {
+		t.Errorf("a page past the end does not say how many there are: %s", text)
+	}
+	if text, isErr := toolTextOf(t, replies[2]); !isErr || !strings.Contains(text, "pages 9-10 do not exist") {
+		t.Errorf("pages past the end were not named: %s", text)
+	}
+	if text, isErr := toolTextOf(t, replies[3]); isErr || !strings.Contains(text, "pages 3-4") {
+		t.Errorf("an overview reaching past the end is not just shorter: %s", text)
+	}
+	if text, isErr := toolTextOf(t, replies[4]); !isErr || !strings.Contains(text, "has 4 pages") {
+		t.Errorf("an overview wholly past the end was not refused: %s", text)
+	}
+	if text, isErr := toolTextOf(t, replies[5]); !isErr || !strings.Contains(text, "week9.pptx has 3 slides, so slide 4 does not exist") {
+		t.Errorf("a slide past the end does not say how many there are: %s", text)
 	}
 }
 
