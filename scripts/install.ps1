@@ -17,8 +17,10 @@
 # PATH rather than a link to it.
 #
 # It also keeps a verified copy of itself in that folder and registers a
-# Task Scheduler task that runs the copy with -Update once a day, so nobody
-# has to come back to GitHub for a fix. -NoAutoUpdate turns that off.
+# Task Scheduler task that runs the copy with -Update -OnceADay every hour from
+# late morning to midnight: the first run of a day that gets through checks,
+# and the rest do nothing. So nobody has to come back to GitHub for a fix.
+# -NoAutoUpdate turns that off.
 #
 # Nothing here asks a question. Run as `irm | iex` there is nothing to read an
 # answer from, so every choice is a parameter. The one exception is not this
@@ -59,6 +61,10 @@ param(
 	# daily task runs.
 	[switch] $Update,
 
+	# With -Update: do nothing if a check already went through today. The
+	# task passes this, since it fires every hour.
+	[switch] $OnceADay,
+
 	# Remove what a previous run installed, the daily task included.
 	[switch] $Uninstall
 )
@@ -89,6 +95,10 @@ $FirstChecksummed = 'v1.3.0'
 # What the daily update is registered as, so a second install replaces it and
 # -Uninstall can find it.
 $TaskName = 'lms-sync update'
+
+# Where -Update -OnceADay records the day of its last check that went through.
+# The installer's own file, so -Uninstall removes it.
+$CheckedFile = 'update-checked'
 
 # Overridable so the tests can serve a release from a local origin.
 $BaseUrl = if ($env:LMS_SYNC_BASE_URL) { $env:LMS_SYNC_BASE_URL }
@@ -401,10 +411,19 @@ function Get-TaskArgument {
 	return '"' + $p + '"'
 }
 
-# Register-UpdateTask runs the kept copy with -Update once a day, at a random
-# time in the day: random so a campus of installs behind one address does not
-# reach github.com in the same minute, in the day because a laptop is shut at
-# night. StartWhenAvailable makes up a day the machine was off.
+# Register-UpdateTask runs the kept copy with -Update -OnceADay every hour from
+# a random time in the day until midnight: random so a campus of installs
+# behind one address does not reach github.com in the same minute, in the day
+# because a laptop is shut at night. StartWhenAvailable makes up a run the
+# machine was off for.
+#
+# Every hour because a run once a day lost the whole day to one bad moment: a
+# laptop woken from sleep runs its missed task before the Wi-Fi is back, finds
+# no github.com, and waited until tomorrow. Task Scheduler's own restart on
+# failure cannot do this - it restarts a task that failed to start, not one
+# whose program exited non-zero. The first run that gets through records the
+# day, and -OnceADay makes the rest stop before they reach the network, so it
+# is still one check a day.
 #
 # It runs as the student, only while they are signed in, and needs no
 # administrator rights. A task that cannot be registered is not an install
@@ -421,7 +440,7 @@ function Register-UpdateTask {
 	# -ExecutionPolicy Bypass because the default policy on a Windows client
 	# refuses to run any script file at all; it applies to this one process.
 	$arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden ' +
-		'-File ' + (Get-TaskArgument $script) + ' -Update -InstallDir ' + (Get-TaskArgument $Dir)
+		'-File ' + (Get-TaskArgument $script) + ' -Update -OnceADay -InstallDir ' + (Get-TaskArgument $Dir)
 	# -WindowStyle Hidden only hides a window that already exists, so it still
 	# flashes up every day - and where Windows Terminal is the default it opens
 	# a Terminal window the flag cannot hide at all. A headless conhost gives
@@ -436,6 +455,11 @@ function Register-UpdateTask {
 	try {
 		$action = New-ScheduledTaskAction -Execute $ps -Argument $arguments -WorkingDirectory $Dir
 		$trigger = New-ScheduledTaskTrigger -Daily -At $at
+		# -Daily takes no repetition, so it is borrowed from a -Once trigger:
+		# hourly, until the day ends.
+		$trigger.Repetition = (New-ScheduledTaskTrigger -Once -At $at `
+			-RepetitionInterval (New-TimeSpan -Hours 1) `
+			-RepetitionDuration (New-TimeSpan -Hours (24 - $at.Hour))).Repetition
 		$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
 			-DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew `
 			-ExecutionTimeLimit (New-TimeSpan -Minutes 30)
@@ -604,6 +628,7 @@ then run this again.
 	Write-Host "Settings live in $dir. Set a destination in the interface;"
 	Write-Host "until you do, courses land in $dir\Courses."
 	Write-Host ''
+	Show-ReaderHint
 
 	$ids = Get-ConnectIds
 	$picker = (-not $ids) -and (Test-CanOpenPicker)
@@ -614,6 +639,45 @@ then run this again.
 	# Last, after the summary: Ctrl-C in the checklist stops this script as
 	# well, and by now there is nothing left for it to cut short.
 	Invoke-Connect $exe $ids $picker
+}
+
+# ---------------------------------------------------------------------------
+# The programs that make PDFs and scans searchable
+#
+# lms-sync reads PDFs with poppler and pages that are pictures with
+# tesseract. Both are optional and both are the student's to install: this
+# script never installs anything but lms-sync. A library whose lecture PDFs
+# cannot be searched looks broken, though, and nothing else says why until
+# the first sync is over, so the commands are printed here, and only for
+# what is missing.
+
+# Test-Tesseract looks where lms-sync itself looks (findOCR in ocr.go): the
+# tesseract installer puts it in Program Files and leaves PATH alone.
+function Test-Tesseract {
+	if (Get-Command tesseract -ErrorAction SilentlyContinue) { return $true }
+	foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, (Join-Path $env:LOCALAPPDATA 'Programs'))) {
+		if ($root -and (Test-Path (Join-Path $root 'Tesseract-OCR\tesseract.exe'))) { return $true }
+	}
+	return $false
+}
+
+function Show-ReaderHint {
+	$missing = $false
+	if (-not (Get-Command pdftotext -ErrorAction SilentlyContinue) -or
+		-not (Get-Command pdftoppm -ErrorAction SilentlyContinue)) {
+		Write-Host 'PDFs are not searchable until poppler is installed:'
+		Write-Host '  winget install oschwartz10612.Poppler'
+		$missing = $true
+	}
+	if (-not (Test-Tesseract)) {
+		Write-Host 'Scanned notes and slides saved as pictures need tesseract as well:'
+		Write-Host '  winget install UB-Mannheim.TesseractOCR'
+		$missing = $true
+	}
+	if ($missing) {
+		Write-Host 'Installed after your first sync? Run lms-sync --extract once.'
+		Write-Host ''
+	}
 }
 
 # ---------------------------------------------------------------------------
@@ -678,6 +742,17 @@ function Update-LmsSync {
 			'Install it first, or pass the folder it is in with -InstallDir.'
 	}
 
+	# The task fires hourly. Once a check has gone through today the rest stop
+	# here, before the transcript is opened, so update.log keeps the run that
+	# said something. Run by hand, without -OnceADay, it always checks.
+	$today = Get-Date -Format 'yyyy-MM-dd'
+	$checked = Join-Path $dir $CheckedFile
+	if ($OnceADay -and (Test-Path $checked)) {
+		$last = ''
+		try { $last = (Get-Content $checked -TotalCount 1) } catch { }
+		if ($last -eq $today) { return }
+	}
+
 	# Run by the task, nobody sees the output, so it goes to a file holding
 	# the last run, where "why has it not updated?" can be answered.
 	$transcript = $false
@@ -708,13 +783,13 @@ function Update-LmsSync {
 			$sumsFile = Join-Path $tmp 'SHA256SUMS'
 			if (-not (Get-Url "$assetBase/SHA256SUMS" $sumsFile -Quiet)) {
 				Fail 'network' 'Could not download SHA256SUMS.' `
-					'Nothing was changed. The update is tried again tomorrow.'
+					'Nothing was changed. The next scheduled run tries again.'
 			}
 			$sums = Get-Content $sumsFile -Raw
 			$want = Get-ExpectedHash $sums $asset
 			if (-not $want) {
 				Fail 'config' "The newest release lists no build for windows/$arch." `
-					'Nothing was changed. The update is tried again tomorrow.'
+					'Nothing was changed. The next scheduled run tries again.'
 			}
 			$have = (Get-Sha256 $exe)
 
@@ -725,7 +800,7 @@ function Update-LmsSync {
 				$dl = Join-Path $tmp $asset
 				if (-not (Get-Url "$assetBase/$asset" $dl)) {
 					Fail 'network' "Could not download $asset." `
-						'Nothing was changed. The update is tried again tomorrow.'
+						'Nothing was changed. The next scheduled run tries again.'
 				}
 				$got = (Get-Sha256 $dl)
 				if ($want -ne $got) {
@@ -755,6 +830,7 @@ Nothing was changed.
 					Write-Step 'kept' 'the installer copy could not be refreshed; the exe is unaffected'
 				}
 			}
+			try { Set-Content -Path $checked -Value $today -Encoding ASCII } catch { }
 			Write-Host ''
 		} finally {
 			Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
@@ -794,12 +870,13 @@ function Uninstall-LmsSync {
 
 	Unregister-UpdateTask
 
-	# The copy the task ran, its log, and an exe renamed aside by an update
-	# are the installer's own files, not the student's, so they go too;
-	# otherwise they alone would keep the folder of an unused install alive.
+	# The copy the task ran, its log and day stamp, and an exe renamed aside
+	# by an update are the installer's own files, not the student's, so they
+	# go too; otherwise they alone would keep the folder of an unused install
+	# alive.
 	if (Test-Path $dir) {
 		Remove-OldExe $dir
-		foreach ($own in @('install.ps1', 'update.log')) {
+		foreach ($own in @('install.ps1', 'update.log', $CheckedFile)) {
 			$path = Join-Path $dir $own
 			if (Test-Path $path) {
 				Remove-Item -Force $path
@@ -891,6 +968,9 @@ On Linux, macOS or Termux, run this instead:
 	# the check can never be what was meant.
 	if ($Update -and $SkipChecksum) {
 		Fail 'config' '-Update always verifies what it installs.' 'Drop -SkipChecksum.'
+	}
+	if ($OnceADay -and -not $Update) {
+		Fail 'config' '-OnceADay only means something with -Update.' 'Add -Update, or drop it.'
 	}
 	if ($ConnectGiven -and -not $Connect) {
 		Fail 'config' '-Connect needs the AI apps to connect.' `

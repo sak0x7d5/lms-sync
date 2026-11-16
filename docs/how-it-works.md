@@ -90,7 +90,7 @@ Each file gets a status, and the summary at the end of a sync counts them:
 | Status | Means | What to do |
 |---|---|---|
 | `ok` | its text is searchable | nothing |
-| `empty` | the file holds no text, usually a scanned PDF | nothing will fix it |
+| `empty` | the file holds no text, usually a scanned PDF | install tesseract to read pages that are pictures; see [Pages that are pictures](ai-assistants.md#pages-that-are-pictures) |
 | `unavailable` | the program needed to read it is not installed | install poppler; the next sync or `--extract` picks it up |
 | `unsupported` | lms-sync has no reader for this type | nothing; it is tried again each run, so a newer lms-sync can pick it up |
 

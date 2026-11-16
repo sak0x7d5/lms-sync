@@ -568,9 +568,9 @@ binaries beside it. `SHA256SUMS` covers them too.
 - **Updates are the OS scheduler running the installer, not the binary
   updating itself.** Install keeps a copy of the installer beside the binary,
   downloaded from the release and verified against `SHA256SUMS` (under
-  `curl | sh` there is no `$0` to copy). It then registers a daily
-  `--update` / `-Update` run: Task Scheduler, launchd, a systemd user timer,
-  or cron. That keeps the Go side stdlib-only and free of self-replacement
+  `curl | sh` there is no `$0` to copy). It then registers an
+  `--update --once-a-day` / `-Update -OnceADay` run: Task Scheduler, launchd,
+  a systemd user timer, or cron. That keeps the Go side stdlib-only and free of self-replacement
   logic, and uses the same verification path as a fresh install. The rules:
   - **Up to date is decided by hash, not version.** The installed binary is
     the release asset byte for byte, so it is compared against its
@@ -592,6 +592,20 @@ binaries beside it. `SHA256SUMS` covers them too.
     summary says how to update by hand. Run times are random within the day,
     so a campus behind one address does not reach github.com in the same
     minute. Output goes to `update.log` (last run only).
+  - **The schedule fires hourly; the check happens once a day.** Each
+    scheduler runs from a random hour until midnight, and the first run that
+    gets through writes the date to `update-checked`; `--once-a-day` makes
+    every later run that day return before it opens the log or the network.
+    Once a day was not enough: a laptop woken from sleep runs its missed job
+    before the Wi-Fi is back, and one DNS failure cost the whole day — the
+    live install sat a day behind a release for exactly that. Task
+    Scheduler's restart-on-failure cannot do it (it restarts a task that
+    failed to *start*, not one that exited non-zero), and systemd's
+    `RandomizedDelaySec` is redrawn per elapse, so the start time is the
+    installer's random pick everywhere. Without the flag, `--update` always
+    checks, because a person running it by hand means it. An existing
+    install keeps its old once-a-day schedule until the install command is
+    run again, since `--update` never touches the schedule.
   - **`install.ps1` is ASCII.** The task runs it through Windows PowerShell
     5.1's `-File`, which reads a BOM-less file in the ANSI code page. In that
     code page a UTF-8 em dash ends in `”`, which PowerShell treats as a
@@ -604,10 +618,12 @@ binaries beside it. `SHA256SUMS` covers them too.
     `-WindowStyle Hidden` hides a window only once it exists, so it flashed
     one daily, and a Windows Terminal default opens one it cannot hide.
     release.yml's `verify` job asserts the wrapper.
-  - `--uninstall` removes the schedule, the installer copy and `update.log`.
+  - `--uninstall` removes the schedule, the installer copy, `update.log` and
+    `update-checked`.
     It still uses `rmdir`, so the student's files are never touched.
   release.yml's `verify` job registers a real schedule on each OS, runs the
-  scheduled command, and expects "up to date". It does this on stable tags
+  scheduled command, expects "up to date", and runs it again to see the
+  second run of the day leave `update.log` alone. It does this on stable tags
   only, because `--update` follows `/releases/latest`.
 - **The script itself never prompts.** Under `curl | sh` there is no terminal: `read` returns
   non-zero at EOF, which `set -e` turns into an abort, and `/dev/tty` is not
@@ -619,6 +635,13 @@ binaries beside it. `SHA256SUMS` covers them too.
   that), never with `CI` set, `--no-connect` or no terminal; `--connect ids`
   is the no-question form. Doing it in Go keeps one JSON merger rather than a
   sh one and a PowerShell one.
+- **poppler and tesseract are named, never installed.** The summary prints
+  the install command for whichever is missing (`suggest_readers` /
+  `Show-ReaderHint`), because a library whose PDFs cannot be searched looks
+  broken and nothing else says why before the first sync ends. Installing
+  them would mean sudo or a second winget package from a script that
+  installs one binary. The Windows check looks in Program Files too, as
+  `findOCR` does, since the tesseract installer leaves PATH alone.
 - The PATH-editing and checksum-parsing logic in install.ps1 is written as
   **pure functions** (`Add-DirToPathValue`, `Remove-DirFromPathValue`,
   `Get-ExpectedHash`) so it can be tested without a Windows registry — the

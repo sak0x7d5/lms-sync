@@ -10,8 +10,9 @@
 #
 # It also leaves a verified copy of itself beside the binary and asks the
 # machine's own scheduler — launchd, a systemd user timer, or cron — to run
-# that copy with --update once a day, so nobody has to come back to GitHub for
-# a fix. --no-auto-update turns that off.
+# that copy with --update every hour from late morning to midnight; the first run
+# of a day that gets through checks, and the rest do nothing. So nobody has to
+# come back to GitHub for a fix. --no-auto-update turns that off.
 #
 # The binary gets a directory of its own, and that is not tidiness: lms-sync
 # keeps config.toml, manifest.json and its Google token *beside its own
@@ -57,6 +58,10 @@ LAUNCHD_LABEL='io.github.sak0x7d5.lms-sync.update'
 SYSTEMD_UNIT='lms-sync-update'
 CRON_MARK='# lms-sync auto-update'
 
+# Where --update --once-a-day records the day of its last check that went
+# through. The installer's own file, so --uninstall removes it.
+CHECKED_FILE='update-checked'
+
 # Overridable so the tests can serve a release from a local origin. Nothing
 # else has a reason to set it.
 BASE_URL="${LMS_SYNC_BASE_URL:-https://github.com/$REPO/releases}"
@@ -65,6 +70,7 @@ WANT_VERSION="${LMS_SYNC_VERSION:-}"
 INSTALL_DIR_OPT="${LMS_SYNC_INSTALL_DIR:-}"
 BIN_DIR_OPT="${LMS_SYNC_BIN_DIR:-}"
 SKIP_CHECKSUM=no
+ONCE_A_DAY=no
 ACTION=install
 TMP_DIR=''
 TAG=''
@@ -146,6 +152,8 @@ Options (pass them after `| sh -s --`):
                        ids, as `lms-sync --connect list` names them
   --update             bring an existing install up to the newest release;
                        this is what the daily schedule runs
+  --once-a-day         with --update: do nothing if a check already went
+                       through today (the schedule passes this)
   --uninstall          remove the binary, the symlink, the PATH line and
                        the daily update
   -h, --help           this
@@ -638,10 +646,15 @@ keep_installer() {
 # ---------------------------------------------------------------------------
 # The daily update
 #
-# Each scheduler runs `sh <install dir>/install.sh --update` once a day, at a
-# random time in the day. Random so that a campus full of installs behind one
-# address does not reach github.com in the same minute; in the day because a
-# laptop is shut at night, and a cron run that was missed is never made up.
+# Each scheduler runs `sh <install dir>/install.sh --update --once-a-day` every
+# hour from a random time in the day until midnight. Random so that a campus
+# full of installs behind one address does not reach github.com in the same
+# minute; in the day because a laptop is shut at night, and a cron run that was
+# missed is never made up. Every hour because a run once a day lost the whole
+# day to one bad moment: a machine woken from sleep runs its missed job before
+# the Wi-Fi is back, finds no github.com, and waited until tomorrow. The first
+# run that gets through records the day, and --once-a-day makes the rest stop
+# before they reach the network, so it is still one check a day.
 #
 # A scheduler that cannot be reached is not an install failure: the tool
 # works exactly as before, and the summary says how to update by hand.
@@ -649,6 +662,13 @@ keep_installer() {
 
 random_below() {
 	awk -v n="$1" -v s="$$" 'BEGIN { srand(); srand(srand() + s); print int(rand() * n) }'
+}
+
+# pick_update_time sets when the first run of each day is. The rest follow
+# hourly at the same minute, up to 23.
+pick_update_time() {
+	UPDATE_HOUR=$((10 + $(random_below 8)))
+	UPDATE_MINUTE=$(random_below 60)
 }
 
 # sh_quote wraps $1 in single quotes, for a line cron hands to sh.
@@ -671,6 +691,7 @@ schedule_launchd() {
 	launchd_plist="$launchd_dir/$LAUNCHD_LABEL.plist"
 	mkdir -p "$launchd_dir" || return 1
 	launchd_tmp="$launchd_plist.tmp.$$"
+	pick_update_time
 	# The install dir is passed explicitly: a scheduled job has none of the
 	# student's PATH to find the tool on.
 	{
@@ -682,14 +703,21 @@ schedule_launchd() {
 		printf '\t\t<string>/bin/sh</string>\n'
 		printf '\t\t<string>%s</string>\n' "$(xml_escape "$INSTALL_DIR/install.sh")"
 		printf '\t\t<string>--update</string>\n'
+		printf '\t\t<string>--once-a-day</string>\n'
 		printf '\t\t<string>--install-dir</string>\n'
 		printf '\t\t<string>%s</string>\n' "$(xml_escape "$INSTALL_DIR")"
 		printf '\t</array>\n'
-		# A calendar interval missed while the Mac slept runs when it wakes.
-		printf '\t<key>StartCalendarInterval</key>\n\t<dict>\n'
-		printf '\t\t<key>Hour</key><integer>%s</integer>\n' "$((10 + $(random_below 8)))"
-		printf '\t\t<key>Minute</key><integer>%s</integer>\n' "$(random_below 60)"
-		printf '\t</dict>\n'
+		# A calendar interval missed while the Mac slept runs when it wakes,
+		# and several missed run once. launchd has no hour range, so there is
+		# one entry per hour.
+		printf '\t<key>StartCalendarInterval</key>\n\t<array>\n'
+		launchd_hour=$UPDATE_HOUR
+		while [ "$launchd_hour" -le 23 ]; do
+			printf '\t\t<dict><key>Hour</key><integer>%s</integer><key>Minute</key><integer>%s</integer></dict>\n' \
+				"$launchd_hour" "$UPDATE_MINUTE"
+			launchd_hour=$((launchd_hour + 1))
+		done
+		printf '\t</array>\n'
 		printf '\t<key>ProcessType</key><string>Background</string>\n'
 		printf '%s\n' '</dict>' '</plist>'
 	} >"$launchd_tmp" || return 1
@@ -723,21 +751,24 @@ systemd_escape() {
 schedule_systemd() {
 	systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 	mkdir -p "$systemd_dir" || return 1
+	pick_update_time
 	{
 		printf '[Unit]\n'
 		printf 'Description=Update lms-sync to the newest release\n\n'
 		printf '[Service]\n'
 		printf 'Type=oneshot\n'
-		printf 'ExecStart=%s "%s" --update --install-dir "%s"\n' "$(update_sh)" \
+		printf 'ExecStart=%s "%s" --update --once-a-day --install-dir "%s"\n' "$(update_sh)" \
 			"$(systemd_escape "$INSTALL_DIR/install.sh")" "$(systemd_escape "$INSTALL_DIR")"
 	} >"$systemd_dir/$SYSTEMD_UNIT.service" || return 1
 	{
 		printf '[Unit]\n'
 		printf 'Description=Check daily for a newer lms-sync\n\n'
 		printf '[Timer]\n'
-		printf 'OnCalendar=*-*-* 10:00:00\n'
-		printf 'RandomizedDelaySec=8h\n'
-		# A day the machine was off is made up the next time it is on.
+		# The time is the installer's random pick, as with cron, rather than
+		# RandomizedDelaySec: that is drawn afresh at every elapse, and one
+		# longer than the hour between elapses would skip runs.
+		printf 'OnCalendar=*-*-* %s..23:%02d:00\n' "$UPDATE_HOUR" "$UPDATE_MINUTE"
+		# A run missed while the machine was off is made up when it is on.
 		printf 'Persistent=true\n\n'
 		printf '[Install]\n'
 		printf 'WantedBy=timers.target\n'
@@ -755,10 +786,11 @@ crontab_without_ours() {
 
 schedule_cron() {
 	have crontab || return 1
-	cron_cmd="$(sh_quote "$(update_sh)") $(sh_quote "$INSTALL_DIR/install.sh") --update --install-dir $(sh_quote "$INSTALL_DIR")"
+	cron_cmd="$(sh_quote "$(update_sh)") $(sh_quote "$INSTALL_DIR/install.sh") --update --once-a-day --install-dir $(sh_quote "$INSTALL_DIR")"
 	# cron reads an unescaped % as a newline.
 	cron_cmd=$(printf '%s' "$cron_cmd" | sed 's/%/\\%/g')
-	cron_line="$(random_below 60) $((10 + $(random_below 8))) * * * $cron_cmd $CRON_MARK"
+	pick_update_time
+	cron_line="$UPDATE_MINUTE $UPDATE_HOUR-23 * * * $cron_cmd $CRON_MARK"
 	{
 		crontab_without_ours
 		printf '%s\n' "$cron_line"
@@ -951,6 +983,7 @@ this one. Report it at https://github.com/$REPO/issues"
 	say "Settings live in $INSTALL_DIR. Set a destination in the interface —"
 	say "until you do, courses land in $INSTALL_DIR/Courses."
 	say ""
+	suggest_readers
 
 	choose_connect
 	if [ "$CONNECT_MODE" = skip ]; then
@@ -960,6 +993,53 @@ this one. Report it at https://github.com/$REPO/issues"
 	# Last, after the summary, so that a checklist quit with Ctrl-C has
 	# nothing left to cut short: everything above is already in place.
 	run_connect
+}
+
+# ---------------------------------------------------------------------------
+# The programs that make PDFs and scans searchable
+#
+# lms-sync reads PDFs with poppler and pages that are pictures with
+# tesseract. Both are optional, and both are the student's to install: this
+# script never asks for sudo or changes what else is on the machine. But a
+# library whose lecture PDFs cannot be searched looks broken, and nothing
+# else says why until the first sync is over, so the commands are printed
+# here, and only for what is missing.
+
+# reader_install prints the command that installs one package on this
+# machine. Distributions disagree on its name: $1 is apt's, $2 dnf's, and $3
+# what Homebrew, Termux and pacman call it.
+reader_install() {
+	if is_termux; then
+		say "  pkg install $3"
+	elif [ "$OS" = Darwin ]; then
+		say "  brew install $3"
+	elif command -v apt-get >/dev/null 2>&1; then
+		say "  sudo apt install $1"
+	elif command -v dnf >/dev/null 2>&1; then
+		say "  sudo dnf install $2"
+	elif command -v pacman >/dev/null 2>&1; then
+		say "  sudo pacman -S $3"
+	else
+		say "  the $3 package, from your system's package manager"
+	fi
+}
+
+suggest_readers() {
+	missing=no
+	if ! command -v pdftotext >/dev/null 2>&1 || ! command -v pdftoppm >/dev/null 2>&1; then
+		say "PDFs are not searchable until poppler is installed:"
+		reader_install poppler-utils poppler-utils poppler
+		missing=yes
+	fi
+	if ! command -v tesseract >/dev/null 2>&1; then
+		say "Scanned notes and slides saved as pictures need tesseract as well:"
+		reader_install tesseract-ocr tesseract tesseract
+		missing=yes
+	fi
+	if [ "$missing" = yes ]; then
+		say "Installed after your first sync? Run lms-sync --extract once."
+		say ""
+	fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1045,6 +1125,15 @@ do_update() {
 			"Install it first, or pass the folder it is in with --install-dir."
 	fi
 
+	# The schedule fires hourly. Once a check has gone through today the rest
+	# stop here, before the log is opened, so update.log keeps the run that
+	# said something. Run by hand, without --once-a-day, it always checks.
+	update_today=$(date +%Y-%m-%d 2>/dev/null) || update_today=''
+	if [ "$ONCE_A_DAY" = yes ] && [ -n "$update_today" ] &&
+		[ "$(cat "$INSTALL_DIR/$CHECKED_FILE" 2>/dev/null || true)" = "$update_today" ]; then
+		return 0
+	fi
+
 	# Run by a scheduler, nobody sees the output — so it goes to a file that
 	# holds the last run, where "why has it not updated?" can be answered.
 	if [ ! -t 1 ]; then
@@ -1062,19 +1151,19 @@ do_update() {
 	# The tag pins the checksum file and the binary to the same release, so a
 	# release published between the two downloads cannot pair one with the
 	# other. Without one (wget) both come from latest/, and a mismatch there
-	# fails the check and is tried again tomorrow.
+	# fails the check and is tried again by the next run.
 	resolve_tag
 	step target "$OS/$ARCH"
 	step newest "${TAG:-latest}"
 
 	if ! http_get "$(asset_base)/SHA256SUMS" "$TMP_DIR/SHA256SUMS" quiet; then
 		die network "Could not download SHA256SUMS." \
-			"Nothing was changed. The update is tried again tomorrow."
+			"Nothing was changed. The next scheduled run tries again."
 	fi
 	update_want=$(sums_lookup "$TMP_DIR/SHA256SUMS" "$ASSET")
 	if [ -z "$update_want" ]; then
 		die config "The newest release lists no build for $OS/$ARCH." \
-			"Nothing was changed. The update is tried again tomorrow."
+			"Nothing was changed. The next scheduled run tries again."
 	fi
 	update_have=$(sha256_of "$TARGET") || update_have=''
 	if [ -z "$update_have" ]; then
@@ -1088,7 +1177,7 @@ do_update() {
 		step downloading "$ASSET"
 		if ! http_get "$(asset_base)/$ASSET" "$TMP_DIR/$ASSET"; then
 			die network "Could not download $ASSET." \
-				"Nothing was changed. The update is tried again tomorrow."
+				"Nothing was changed. The next scheduled run tries again."
 		fi
 		verify_checksum "$TMP_DIR/SHA256SUMS" "$TMP_DIR/$ASSET"
 		step checksum ok
@@ -1110,6 +1199,9 @@ do_update() {
 		else
 			warn "the installer copy could not be refreshed; the binary is unaffected"
 		fi
+	fi
+	if [ -n "$update_today" ]; then
+		printf '%s\n' "$update_today" >"$INSTALL_DIR/$CHECKED_FILE" 2>/dev/null || true
 	fi
 	say ''
 }
@@ -1144,10 +1236,10 @@ do_uninstall() {
 	apply_to_profiles remove_path_block
 	unschedule_updates
 
-	# The copy the schedule ran and its log are the installer's own files,
-	# not the student's, so they go too — otherwise they alone would keep the
-	# folder of an install that was never used from being removed.
-	for uninstall_own in install.sh update.log; do
+	# The copy the schedule ran, its log and its day stamp are the
+	# installer's own files, not the student's, so they go too — otherwise
+	# they alone would keep the folder of an unused install from being removed.
+	for uninstall_own in install.sh update.log "$CHECKED_FILE"; do
 		if [ -f "$INSTALL_DIR/$uninstall_own" ]; then
 			rm -f "${INSTALL_DIR:?}/$uninstall_own"
 			step removed "$INSTALL_DIR/$uninstall_own"
@@ -1242,6 +1334,7 @@ parse_args() {
 			CONNECT_GIVEN=yes
 			;;
 		--update) ACTION=update ;;
+		--once-a-day) ONCE_A_DAY=yes ;;
 		--uninstall) ACTION=uninstall ;;
 		-h | --help)
 			usage
@@ -1285,6 +1378,9 @@ parse_args() {
 	# the check can never be what was meant.
 	if [ "$ACTION" = update ] && [ "$SKIP_CHECKSUM" = yes ]; then
 		die config "--update always verifies what it installs." "Drop --skip-checksum."
+	fi
+	if [ "$ONCE_A_DAY" = yes ] && [ "$ACTION" != update ]; then
+		die config "--once-a-day only means something with --update." "Add --update, or drop it."
 	fi
 }
 
