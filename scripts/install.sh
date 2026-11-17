@@ -22,10 +22,12 @@
 #
 # Nothing here asks a question. Under `curl | sh` there is no terminal to read
 # an answer from, so every choice is a flag or an environment variable; run
-# with --help to see them. The one exception is not this script's: once an
-# interactive install is done, it hands /dev/tty to `lms-sync --connect`, the
-# tool's own checklist of AI apps to connect it to. Never on --update, in CI,
-# without a terminal, or with --no-connect.
+# with --help to see them. The two exceptions are not this script's: once an
+# interactive install is done, it hands /dev/tty to `lms-sync --install-tools`,
+# which offers to install poppler and tesseract with the machine's package
+# manager, and then to `lms-sync --connect`, the tool's own checklist of AI
+# apps to connect it to. Never on --update, in CI, without a terminal, or with
+# --no-tools / --no-connect.
 
 set -eu
 
@@ -100,6 +102,22 @@ else
 fi
 CONNECT_FLAG=''
 CONNECT_GIVEN=no
+
+# TOOLS_YES installs poppler and tesseract without asking (sudo may still ask
+# for a password, on the terminal if there is one). NO_TOOLS skips the offer.
+if [ -n "${LMS_SYNC_NO_TOOLS:-}" ]; then
+	NO_TOOLS=yes
+	TOOLS_YES=no
+elif [ -n "${LMS_SYNC_TOOLS:-}" ]; then
+	NO_TOOLS=no
+	TOOLS_YES=yes
+else
+	NO_TOOLS=no
+	TOOLS_YES=no
+fi
+TOOLS_FLAG=no
+NO_TOOLS_FLAG=no
+TOOLS_MODE=skip
 NO_CONNECT_FLAG=no
 CONNECT_MODE=skip
 
@@ -150,6 +168,10 @@ Options (pass them after `| sh -s --`):
                        connect it to when the install finishes
   --connect IDS        connect these AI apps without asking: comma-separated
                        ids, as `lms-sync --connect list` names them
+  --no-tools           do not offer to install poppler and tesseract (what
+                       makes PDFs and scanned pages searchable)
+  --tools              install them without asking, with this machine's
+                       package manager (sudo may ask for your password)
   --update             bring an existing install up to the newest release;
                        this is what the daily schedule runs
   --once-a-day         with --update: do nothing if a check already went
@@ -158,12 +180,14 @@ Options (pass them after `| sh -s --`):
                        the daily update
   -h, --help           this
 
-The checklist opens only on an install run from a terminal, and never in CI
-or on --update; it is `lms-sync --connect`, which can be run again any time.
+The offer and the checklist open only on an install run from a terminal, and
+never in CI or on --update; they are `lms-sync --install-tools` and
+`lms-sync --connect`, which can be run again any time.
 
 Each has an environment variable: LMS_SYNC_VERSION, LMS_SYNC_INSTALL_DIR,
 LMS_SYNC_BIN_DIR, LMS_SYNC_NO_MODIFY_PATH, LMS_SYNC_NO_AUTO_UPDATE,
-LMS_SYNC_NO_CONNECT, LMS_SYNC_CONNECT. A flag wins over the variable.
+LMS_SYNC_NO_CONNECT, LMS_SYNC_CONNECT, LMS_SYNC_NO_TOOLS, LMS_SYNC_TOOLS.
+A flag wins over the variable.
 
   curl -fsSL .../install.sh | sh -s -- --version v1.3.0
 USAGE
@@ -983,7 +1007,11 @@ this one. Report it at https://github.com/$REPO/issues"
 	say "Settings live in $INSTALL_DIR. Set a destination in the interface —"
 	say "until you do, courses land in $INSTALL_DIR/Courses."
 	say ""
-	suggest_readers
+
+	# Before the AI apps: an assistant connected to a library whose PDFs
+	# cannot be read answers "that is not in your material" about them.
+	choose_tools
+	run_tools
 
 	choose_connect
 	if [ "$CONNECT_MODE" = skip ]; then
@@ -996,50 +1024,71 @@ this one. Report it at https://github.com/$REPO/issues"
 }
 
 # ---------------------------------------------------------------------------
-# The programs that make PDFs and scans searchable
+# Installing poppler and tesseract
 #
-# lms-sync reads PDFs with poppler and pages that are pictures with
-# tesseract. Both are optional, and both are the student's to install: this
-# script never asks for sudo or changes what else is on the machine. But a
-# library whose lecture PDFs cannot be searched looks broken, and nothing
-# else says why until the first sync is over, so the commands are printed
-# here, and only for what is missing.
+# Asked by the tool's own `--install-tools`, for the same reason the AI apps
+# are: this script never reads an answer. The package table lives there too,
+# so sh and PowerShell do not each keep one.
+# ---------------------------------------------------------------------------
 
-# reader_install prints the command that installs one package on this
-# machine. Distributions disagree on its name: $1 is apt's, $2 dnf's, and $3
-# what Homebrew, Termux and pacman call it.
-reader_install() {
-	if is_termux; then
-		say "  pkg install $3"
-	elif [ "$OS" = Darwin ]; then
-		say "  brew install $3"
-	elif command -v apt-get >/dev/null 2>&1; then
-		say "  sudo apt install $1"
-	elif command -v dnf >/dev/null 2>&1; then
-		say "  sudo dnf install $2"
-	elif command -v pacman >/dev/null 2>&1; then
-		say "  sudo pacman -S $3"
+# have_tty says whether /dev/tty can really be opened. Opened rather than
+# tested with -r/-w: /dev/tty exists with every permission bit set in a job
+# that has no controlling terminal, and only opening it says so. In a
+# subshell, because a failed redirection on a special builtin ends a
+# non-interactive shell outright.
+have_tty() {
+	(: </dev/tty >/dev/tty) 2>/dev/null
+}
+
+# choose_tools sets TOOLS_MODE: "yes" installs without asking, "ask" offers,
+# "look" only says what is missing, "skip" says nothing.
+choose_tools() {
+	if [ "$NO_TOOLS" = yes ]; then
+		TOOLS_MODE=skip
+	elif [ "$TOOLS_YES" = yes ]; then
+		TOOLS_MODE=yes
+	elif [ -z "${CI:-}" ] && have_tty; then
+		TOOLS_MODE=ask
 	else
-		say "  the $3 package, from your system's package manager"
+		TOOLS_MODE=look
 	fi
 }
 
-suggest_readers() {
-	missing=no
-	if ! command -v pdftotext >/dev/null 2>&1 || ! command -v pdftoppm >/dev/null 2>&1; then
-		say "PDFs are not searchable until poppler is installed:"
-		reader_install poppler-utils poppler-utils poppler
-		missing=yes
-	fi
-	if ! command -v tesseract >/dev/null 2>&1; then
-		say "Scanned notes and slides saved as pictures need tesseract as well:"
-		reader_install tesseract-ocr tesseract tesseract
-		missing=yes
-	fi
-	if [ "$missing" = yes ]; then
-		say "Installed after your first sync? Run lms-sync --extract once."
-		say ""
-	fi
+# run_tools never fails the install, for the reason run_connect does not:
+# lms-sync works without them, and they can be installed later in one
+# command.
+run_tools() {
+	case "$TOOLS_MODE" in
+	yes | ask)
+		tools_arg=''
+		tools_ok=yes
+		if [ "$TOOLS_MODE" = yes ]; then
+			tools_arg=yes
+		fi
+		# See run_connect: a trapped signal is reset in the child, so
+		# Ctrl-C at a sudo prompt stops the package manager, not this.
+		trap : INT
+		if have_tty; then
+			# shellcheck disable=SC2086 # empty means no argument at all
+			"$TARGET" --install-tools $tools_arg </dev/tty >/dev/tty 2>&1 || tools_ok=no
+		else
+			# shellcheck disable=SC2086
+			"$TARGET" --install-tools $tools_arg </dev/null || tools_ok=no
+		fi
+		if [ "$tools_ok" = no ]; then
+			say ''
+			say "Install them any time: lms-sync --install-tools"
+		fi
+		say ''
+		;;
+	look)
+		# stderr dropped so a pinned release older than the flag prints
+		# nothing rather than its usage.
+		if "$TARGET" --install-tools list </dev/null 2>/dev/null; then
+			say ''
+		fi
+		;;
+	esac
 }
 
 # ---------------------------------------------------------------------------
@@ -1056,11 +1105,7 @@ choose_connect() {
 		CONNECT_MODE=ids
 	elif [ "$NO_CONNECT" = yes ] || [ -n "${CI:-}" ]; then
 		CONNECT_MODE=skip
-	# Opened rather than tested with -r/-w: /dev/tty exists with every
-	# permission bit set in a job that has no controlling terminal, and only
-	# opening it says so. In a subshell, because a failed redirection on a
-	# special builtin ends a non-interactive shell outright.
-	elif (: </dev/tty >/dev/tty) 2>/dev/null; then
+	elif have_tty; then
 		CONNECT_MODE=picker
 	else
 		CONNECT_MODE=skip
@@ -1320,6 +1365,8 @@ parse_args() {
 		--no-auto-update) AUTO_UPDATE=no ;;
 		--skip-checksum) SKIP_CHECKSUM=yes ;;
 		--no-connect) NO_CONNECT_FLAG=yes ;;
+		--tools) TOOLS_FLAG=yes ;;
+		--no-tools) NO_TOOLS_FLAG=yes ;;
 		--connect)
 			shift
 			if [ $# -eq 0 ]; then
@@ -1373,6 +1420,21 @@ parse_args() {
 	# uninstall connecting one would be a contradiction.
 	if [ "$ACTION" != install ] && [ -n "$CONNECT_FLAG" ]; then
 		die config "--connect is for an install, not --$ACTION." "Drop --connect."
+	fi
+	if [ "$TOOLS_FLAG" = yes ] && [ "$NO_TOOLS_FLAG" = yes ]; then
+		die config "--tools and --no-tools ask for opposite things." "Pass one of them."
+	fi
+	if [ "$TOOLS_FLAG" = yes ]; then
+		TOOLS_YES=yes
+		NO_TOOLS=no
+	elif [ "$NO_TOOLS_FLAG" = yes ]; then
+		TOOLS_YES=no
+		NO_TOOLS=yes
+	fi
+	# A scheduler running a package manager as somebody, daily, is not
+	# something anyone would connect with a tool update.
+	if [ "$ACTION" != install ] && [ "$TOOLS_FLAG" = yes ]; then
+		die config "--tools is for an install, not --$ACTION." "Drop --tools."
 	fi
 	# An unattended run replacing a program is the one place where skipping
 	# the check can never be what was meant.

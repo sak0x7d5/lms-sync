@@ -579,7 +579,7 @@ var pdfTool = "pdftotext"
 // unavailable on one that does not. That is a far better outcome than a
 // half-working parser that silently returns nonsense for some files.
 func extractPDF(ctx context.Context, pathname string) (extraction, error) {
-	exe, err := exec.LookPath(pdfTool)
+	exe, err := findPoppler(pdfTool)
 	if err != nil {
 		return extraction{
 			Status: extractUnavailable,
@@ -660,7 +660,7 @@ var infoTool = "pdfinfo"
 // pdfPageCount asks poppler how many pages a PDF has. That number is the
 // file's own; counting form feeds in its text is only a guess at it.
 func pdfPageCount(ctx context.Context, pathname string) (int, error) {
-	exe, err := exec.LookPath(infoTool)
+	exe, err := findPoppler(infoTool)
 	if err != nil {
 		return 0, err
 	}

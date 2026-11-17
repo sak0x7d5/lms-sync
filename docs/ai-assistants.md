@@ -496,7 +496,7 @@ The material belongs to your instructors and your institution. Any rules your un
 
 ## Searchable PDFs
 
-Slides, Word documents and spreadsheets (PPTX, DOCX, XLSX) are searchable with nothing extra. PDFs need `pdftotext`, which comes with poppler:
+Slides, Word documents and spreadsheets (PPTX, DOCX, XLSX) are searchable with nothing extra. PDFs need `pdftotext`, which comes with poppler. The installer offers to install it, and tesseract below, for you; if you skipped that, `lms-sync --install-tools` does the same: it finds your package manager, shows the command and asks first (`--install-tools list` only looks). By hand:
 
 | Your machine | Command |
 |---|---|

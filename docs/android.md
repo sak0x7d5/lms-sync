@@ -79,7 +79,8 @@ name lms-sync does not recognise is dropped, so dates fall back to UTC. More in
 
 ## Searchable PDFs
 
-To make PDFs searchable, install poppler:
+To make PDFs searchable, install poppler (`lms-sync --install-tools` runs this
+for you, and adds tesseract for scanned pages):
 
 ```bash
 pkg install poppler
