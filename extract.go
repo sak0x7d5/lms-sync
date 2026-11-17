@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -614,15 +615,106 @@ func extractPDF(ctx context.Context, pathname string) (extraction, error) {
 	// with no text of its own be told apart from the rest. A lecture that is
 	// mostly OneNote screenshots used to come out as a few stray words with
 	// status ok, and nothing anywhere said the other forty pages existed.
-	parts := strings.Split(out.String(), "\f")
-	if len(parts) > 1 && strings.TrimSpace(parts[len(parts)-1]) == "" {
-		parts = parts[:len(parts)-1]
+	parts := splitPages(out.String())
+	// A form feed is also an ordinary character, and a slide set in a font
+	// with no usable encoding comes out as glyph soup that can contain them.
+	// One such deck of 52 pages produced 107 form feeds: the index then
+	// claimed 107 pages, labelled every page after the first stray break
+	// with the wrong number, and sent an assistant asking for pages 53 to
+	// 107, which do not exist. When poppler's own count disagrees, the
+	// pages are read one at a time, where the boundary is the call itself.
+	// A capped output is short for a different reason and is left as it is.
+	if !out.full() {
+		if n, err := pdfPageCount(ctx, pathname); err == nil && n > 0 && n != len(parts) {
+			byPage, err := pdfTextByPage(ctx, exe, pathname, n)
+			if ctx.Err() != nil {
+				return extraction{}, failf(KindCancelled, "extract "+filepath.Base(pathname),
+					"", ctx.Err())
+			}
+			if err == nil {
+				parts = byPage
+			}
+		}
 	}
 	p := &pagedText{label: "Page", bodies: parts}
 	// A PDF with no text at all is almost always a scan. Saying so is what
 	// tells a student the file needs OCR rather than leaving them to wonder
 	// why searching never finds their handwritten-notes lecture.
 	return p.extraction("every page is a picture (a scan, or slides saved as images)"), nil
+}
+
+// splitPages cuts pdftotext's output at its form feeds, dropping the empty
+// piece after the last one.
+func splitPages(text string) []string {
+	parts := strings.Split(text, "\f")
+	if len(parts) > 1 && strings.TrimSpace(parts[len(parts)-1]) == "" {
+		parts = parts[:len(parts)-1]
+	}
+	return parts
+}
+
+// infoTool reports a PDF's page count. It comes with the same poppler as
+// pdftotext; a variable so a test can point it somewhere predictable.
+var infoTool = "pdfinfo"
+
+// pdfPageCount asks poppler how many pages a PDF has. That number is the
+// file's own; counting form feeds in its text is only a guess at it.
+func pdfPageCount(ctx context.Context, pathname string) (int, error) {
+	exe, err := findPoppler(infoTool)
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.CommandContext(ctx, exe, pathname)
+	out := &cappedBuffer{limit: 64 << 10}
+	cmd.Stdout = out
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return 0, err
+	}
+	return parsePageCount(out.String())
+}
+
+// parsePageCount reads the "Pages:" line of pdfinfo's report.
+func parsePageCount(report string) (int, error) {
+	for _, line := range strings.Split(report, "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Pages:"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(rest))
+			if err != nil || n < 0 {
+				return 0, fmt.Errorf("pdfinfo reported %q pages", strings.TrimSpace(rest))
+			}
+			return n, nil
+		}
+	}
+	return 0, errors.New("pdfinfo reported no page count")
+}
+
+// pdfTextByPage reads a PDF one page per call, so a form feed inside a
+// page's text can no longer pass for the end of it. The pages share one
+// maxExtractBytes between them, as the single call did.
+func pdfTextByPage(ctx context.Context, exe, pathname string, pages int) ([]string, error) {
+	bodies := make([]string, 0, pages)
+	room := maxExtractBytes
+	for n := 1; n <= pages; n++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		page := strconv.Itoa(n)
+		cmd := exec.CommandContext(ctx, exe, "-q", "-enc", "UTF-8", "-f", page, "-l", page, pathname, "-")
+		out := &cappedBuffer{limit: room}
+		cmd.Stdout = out
+		cmd.Stderr = io.Discard
+		if err := cmd.Run(); err != nil {
+			return nil, err
+		}
+		body := strings.TrimSuffix(out.String(), "\f")
+		bodies = append(bodies, strings.ReplaceAll(body, "\f", "\n"))
+		if room -= out.buf.Len(); room <= 0 {
+			// Out of room: the rest is not read, and is not padded with
+			// empty pages that would look like pictures to OCR.
+			break
+		}
+	}
+	return bodies, nil
 }
 
 // cappedBuffer collects at most limit bytes and quietly drops the rest.
@@ -648,6 +740,9 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 }
 
 func (c *cappedBuffer) String() string { return c.buf.String() }
+
+// full reports whether the limit was reached, so what was kept may be short.
+func (c *cappedBuffer) full() bool { return c.buf.Len() >= c.limit }
 
 // truncateBytes cuts a string to at most n bytes without splitting a
 // character in half.
