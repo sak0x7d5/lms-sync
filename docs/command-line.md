@@ -131,7 +131,7 @@ That writes each tab's raw page, and every frame inside it, into `./pages`. Your
 
 `lms-sync --dry-run` shows what a sync would download, without writing anything.
 
-If an error says the certificate could not be checked (`tls`), your LMS is usually leaving out an intermediate certificate. Browsers fill that gap themselves; lms-sync does not. `--insecure` skips the check. Use it only as a last resort, on a network you trust.
+If an error says the certificate could not be checked (`tls`), see [Signing in](troubleshooting.md#signing-in). An LMS that leaves out an intermediate certificate is handled already: lms-sync fetches it, as browsers do. `--insecure` skips the check. Use it only as a last resort, on a network you trust.
 
 More symptoms and fixes are in [Troubleshooting](troubleshooting.md).
 
