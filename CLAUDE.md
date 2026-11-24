@@ -61,6 +61,7 @@ Three front ends over one core. [main.go](main.go) (CLI) and [ui.go](ui.go) (loc
 - [prompts.go](prompts.go) — the study workflows a client offers, and the rules every answer carries.
 - [review.go](review.go) — what the student has been asked, how it went, and when it comes back.
 - [itemfacts.go](itemfacts.go) — what a tab's items say as data (`.items.json`): due dates, submission states, paper hand-ins, dates read out of announcements.
+- [announcements.go](announcements.go) — `get_announcements`: the Announcements tab as whole notices, newest first, read from the `text` in `.items.json`.
 - [deadlines.go](deadlines.go) — the `deadlines` view: everything due, merged from the LMS's data and the student's notes, computed per call and never stored.
 - [memory.go](memory.go) — what the student told the assistant (`notes.json`), and the `remember` / `forget` tools.
 - [learning.go](learning.go) — how each topic is going (`topics/`), `assessTopic`, `canonicalCourse`, and `track_topic`.
@@ -272,6 +273,7 @@ These encode bugs that already cost someone real time — the comments in the so
   always carries the sentence it read. Only announcements about something
   assessed (`mentionsIn`) are read at all, which keeps Sakai's own open-date
   notices out. `TestDatesInAnnouncementText`, `TestAutoNoticesAreNotDeadlines`.
+- **A notice is read whole, not searched for.** `find_material` quotes a passage, and `quoteAround` ends at the first blank line — which the HTML-to-text step puts between every block, so a notice titled "Quiz 27th Nov" was quoted as that title and nothing else, with its five topics three paragraphs on and the word "Syllabus" (not "topics") on top of them. Announcements are kept as data (`text`, `author` in `.items.json`) and `get_announcements` returns them in full, newest first; a sidecar from before that holds no text and is reported as needing a re-sync rather than shown as titles. Every tool takes a `course` as `matchCourses` does: `find_material` and `whats_new` compared folder names exactly, so "ITC" answered "Nothing in the library matches", which the ground rules teach a model to read as "not uploaded". `TestGetAnnouncementsReturnsEachNoticeInFull`, `TestAnnouncementsAcceptACourseTheWayStudentsNameOne`, `TestASidecarWithoutNoticeTextSaysToResync`.
 - **Freshness of a submission state is per course.** `synced.json` in
   `.lms-index` records when each course last finished a crawl; `index.html`'s
   time would date ITP's states by a sync that only touched Calculus.

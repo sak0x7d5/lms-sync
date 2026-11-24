@@ -334,6 +334,7 @@ The assistant picks these tools itself as it answers. You just ask.
 | `list_courses` | Lists your courses: how many files each holds, how many are searchable, and when each last changed. | No | No |
 | `find_material` | Searches the text of every slide, document, spreadsheet and saved page, plus file names. Returns the best matches with the passage around each. | No | No |
 | `read_material` | Returns the text of one file. Slides are marked with their number; long files come in parts. | No | No |
+| `get_announcements` | Returns the Announcements tab, newest first, each notice in full with who posted it and when. Use it for "what is the quiz on" and "what did the teacher post"; a search only quotes a line of a notice. | No | No |
 | `whats_new` | Lists files that arrived or changed recently, newest first. It reports when a file was downloaded, not when it was taught. | No | No |
 | `view_pages` | Shows the assistant pictures of a few pages of a PDF or deck, for pages that are pictures. See [Pages that are pictures](#pages-that-are-pictures). | No | No |
 | `open_material` | Opens a file or folder on your screen: a brief in your PDF viewer, a course folder in File Explorer or Finder. See [Opening a file](#opening-a-file). | No | No |
@@ -371,8 +372,9 @@ Without an assistant, `lms-sync --open` does the same from a terminal (see [Flag
 | `forget` | `id`, as shown in brackets beside the note |
 | `track_topic` | `course`, `topic` and `signal` (`stuck`, `asked`, `clicked` or `confident`) are required; `note` and `source` are optional |
 | `list_courses` | none |
-| `find_material` | `query` (required); `course`, a folder name as `list_courses` reports it; `limit` (default 10, at most 50) |
+| `find_material` | `query` (required); `course`, a folder name, part of it, or its initials; `limit` (default 10, at most 50) |
 | `read_material` | `path` (required), exactly as `find_material` reported it; `offset` to continue from (default 0); `max_chars` (default 20000, at most 100000) |
+| `get_announcements` | `course` (folder name, part of it, or initials); `days` (default 30); `limit` (default 10, at most 50) |
 | `whats_new` | `days` (default 7); `course`; `limit` (default 30) |
 | `view_pages` | `path` (required), as `find_material` reported it; `pages`, such as `3`, `5-7` or `2,9` (at most 4); `overview`, numbered thumbnails of up to 16 pages in one image |
 | `open_material` | `path`, a file or folder as `find_material` reported it; or `course`, its folder name, part of it, or its initials. Neither opens the whole library. |

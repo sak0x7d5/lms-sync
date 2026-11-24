@@ -131,7 +131,7 @@ func TestMCPHandshakeAndToolList(t *testing.T) {
 		}
 	}
 	for _, want := range []string{"list_courses", "find_material", "read_material", "whats_new",
-		"briefing", "deadlines", "remember", "forget", "track_topic"} {
+		"briefing", "deadlines", "get_announcements", "remember", "forget", "track_topic"} {
 		if !seen[want] {
 			t.Errorf("tool %s missing", want)
 		}

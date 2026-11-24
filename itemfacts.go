@@ -43,6 +43,9 @@ type itemRecord struct {
 	Title string   `json:"title"`
 	Kind  string   `json:"kind,omitempty"`  // Labs, Homework…, for Assignments
 	Files []string `json:"files,omitempty"` // as saved beside the page
+	// Announcements only: who posted it and what it says, as plain text.
+	Author string `json:"author,omitempty"`
+	Text   string `json:"text,omitempty"`
 	itemFacts
 }
 
@@ -82,10 +85,11 @@ func renderItemData(tab string, items []capturedItem, local map[string]string,
 
 	var out []itemRecord
 	for _, item := range items {
-		if item.facts.empty() {
+		if item.facts.empty() && item.plain == "" {
 			continue
 		}
-		rec := itemRecord{Title: strings.TrimSpace(item.Title), itemFacts: item.facts}
+		rec := itemRecord{Title: strings.TrimSpace(item.Title), itemFacts: item.facts,
+			Author: item.author, Text: item.plain}
 		if group != nil {
 			rec.Kind = group(item.Title)
 		}
