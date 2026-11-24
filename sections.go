@@ -1174,9 +1174,16 @@ func attachmentURLs(c *Client, items []capturedItem) []string {
 // stripHandlers removes inline event handlers from captured markup. The page
 // ends up on the student's own disk and is opened from there; nothing an
 // instructor pasted into a syllabus needs to execute in order to be read.
+//
+// It also drops the two hidden inputs the server regenerates on every fetch —
+// a CSRF token and a JSF ViewState. Left in, they made every Overview page
+// hash differently each run, so it was rewritten and reported as new every time.
 func stripHandlers(body string) string {
-	return eventAttrRe.ReplaceAllString(body, "")
+	return perFetchInputRe.ReplaceAllString(eventAttrRe.ReplaceAllString(body, ""), "")
 }
+
+var perFetchInputRe = regexp.MustCompile(
+	`(?is)<input[^>]*\bname\s*=\s*["'](?:sakai_csrf_token|javax\.faces\.ViewState)["'][^>]*>`)
 
 // localiseLinks rewrites the links and image sources in captured markup.
 //

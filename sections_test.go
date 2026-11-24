@@ -1109,3 +1109,15 @@ func TestAnnouncedCodeInTheOverviewIsSearchable(t *testing.T) {
 		t.Errorf("the code was not findable:\n%s", text)
 	}
 }
+
+// A CSRF token and a JSF ViewState are new on every fetch; kept in a saved
+// page they made it hash differently each run and be rewritten every time.
+func TestPerFetchFormTokensAreNotSaved(t *testing.T) {
+	in := `<form><input type="hidden" name="sakai_csrf_token" value="abc" />` +
+		`<input id="x" name="javax.faces.ViewState" value="zzz" autocomplete="off" />` +
+		`<input name="keep" value="1"></form>`
+	got := stripHandlers(in)
+	if strings.Contains(got, "abc") || strings.Contains(got, "zzz") || !strings.Contains(got, `name="keep"`) {
+		t.Errorf("unexpected result: %s", got)
+	}
+}
