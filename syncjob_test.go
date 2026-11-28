@@ -391,7 +391,7 @@ func TestWhatsNewSaysWhenASyncIsStillRunning(t *testing.T) {
 	s := &mcpServer{cfg: DefaultConfig(), dest: dest, ctx: context.Background()}
 	s.sync.running, s.sync.started, s.sync.scope = true, time.Now(), "Calculus"
 
-	out, err := s.whatsNew(context.Background(), json.RawMessage(`{"days":1,"course":"nothing-here"}`))
+	out, err := s.whatsNew(context.Background(), json.RawMessage(`{"days":1}`))
 	if err != nil {
 		t.Fatal(err)
 	}

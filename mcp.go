@@ -422,17 +422,17 @@ var mcpTools = []mcpTool{
 		Name:  "find_material",
 		Title: "Find course material",
 		Description: "Search the student's own university coursework — lecture slides, " +
-			"assignment briefs and due dates, announcements, quiz notices, syllabi, reading " +
-			"lists — by the text of every file plus filenames, and return the best matches " +
-			"with a snippet of the surrounding text. Use this before answering any question " +
-			"about their classes, assignments, deadlines, or what a course covered: the " +
-			"student's files are here, not in the chat. Match is literal and case-insensitive, so prefer a " +
+			"assignment briefs, syllabi, reading lists, documents — by the text of every file plus filenames, and return the best matches " +
+			"with a snippet of the surrounding text. Use this to find what the material says " +
+			"about a subject. For announcements and quiz notices use get_announcements, " +
+			"and for what is due use deadlines: a search quotes a line, those return the " +
+			"whole item. The student's files are here, not in the chat. Match is literal and case-insensitive, so prefer a " +
 			"distinctive word or phrase from the material over a whole question.",
 		InputSchema: json.RawMessage(`{
 			"type":"object",
 			"properties":{
 				"query":{"type":"string","description":"Word or phrase to look for."},
-				"course":{"type":"string","description":"Restrict to one course, by its folder name as list_courses reports it."},
+				"course":{"type":"string","description":"Restrict to one course: its folder name, part of it, or its initials (\"ITC\")."},
 				"limit":{"type":"integer","description":"Maximum matches to return (default 10, maximum 50)."}
 			},
 			"required":["query"],
@@ -494,6 +494,27 @@ var mcpTools = []mcpTool{
 			"properties":{
 				"path":{"type":"string","description":"File or folder relative to the library, exactly as find_material, whats_new or list_courses reported it. Takes precedence over course."},
 				"course":{"type":"string","description":"Open this course's folder: its folder name, part of it, or its initials (\"ITC\")."}
+			},
+			"additionalProperties":false
+		}`),
+	},
+	{
+		Name:  "get_announcements",
+		Title: "Read the announcements",
+		Description: "What instructors posted on the Announcements tab, newest first, each notice " +
+			"IN FULL with who posted it and when. Use this, not find_material, whenever the " +
+			"student asks what was announced or posted, what a quiz or test covers or when it is, " +
+			"what the teacher said, or about anything 'new' from a course: topic lists, room " +
+			"changes, syllabus for a quiz and reminders live here, and a search would show only " +
+			"a line of a notice. Pass `course` (folder name, part of it, or initials like \"ITC\") " +
+			"to see one course. Reads the last sync; sync_courses for that course refreshes it in seconds. " +
+			"find_material is for what the lecture slides and documents say.",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{
+				"course":{"type":"string","description":"One course: its folder name, part of it, or its initials. Omit for every course."},
+				"days":{"type":"integer","description":"How many days back to look (default 30)."},
+				"limit":{"type":"integer","description":"Maximum notices to return (default 10, maximum 50)."}
 			},
 			"additionalProperties":false
 		}`),
@@ -689,7 +710,7 @@ var mcpTools = []mcpTool{
 			"type":"object",
 			"properties":{
 				"days":{"type":"integer","description":"How many days back to look (default 7)."},
-				"course":{"type":"string","description":"Restrict to one course, by folder name."},
+				"course":{"type":"string","description":"Restrict to one course: its folder name, part of it, or its initials."},
 				"limit":{"type":"integer","description":"Maximum files to return (default 30)."}
 			},
 			"additionalProperties":false
@@ -868,6 +889,8 @@ func (s *mcpServer) runTool(ctx context.Context, name string, args json.RawMessa
 		return s.briefing(ctx, args)
 	case "deadlines":
 		return s.deadlines(args)
+	case "get_announcements":
+		return s.getAnnouncements(args)
 	case "remember":
 		return s.remember(args)
 	case "forget":
@@ -998,6 +1021,14 @@ func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (str
 	terms := searchTerms(query)
 	phrase := strings.ToLower(strings.Join(strings.Fields(query), " "))
 
+	// The same naming every other tool accepts. An exact folder-name match
+	// here answered "ITC" with "Nothing in the library matches", which an
+	// assistant reads as "never uploaded".
+	course, err := s.resolveCourse(a.Course)
+	if err != nil {
+		return "", err
+	}
+
 	entries, ti, err := s.library(ctx)
 	if err != nil {
 		return "", err
@@ -1014,7 +1045,7 @@ func (s *mcpServer) findMaterial(ctx context.Context, args json.RawMessage) (str
 		if err := ctx.Err(); err != nil {
 			return "", failf(KindCancelled, "search cancelled", "", err)
 		}
-		if a.Course != "" && !strings.EqualFold(e.course, a.Course) {
+		if course != "" && e.course != course {
 			continue
 		}
 
@@ -1428,6 +1459,21 @@ func coursesOnDisk(dest string) []Course {
 	return out
 }
 
+// resolveCourse turns what a caller typed for a course into its folder name,
+// or "" for none. An unknown or ambiguous name is an error that lists the
+// choices, never an empty result.
+func (s *mcpServer) resolveCourse(q string) (string, error) {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return "", nil
+	}
+	got, err := matchCourses(coursesOnDisk(s.dest), q)
+	if err != nil {
+		return "", err
+	}
+	return got[0].Folder, nil
+}
+
 func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
 		Days   int    `json:"days"`
@@ -1453,10 +1499,14 @@ func (s *mcpServer) whatsNew(ctx context.Context, args json.RawMessage) (string,
 		return "", err
 	}
 
+	course, err := s.resolveCourse(a.Course)
+	if err != nil {
+		return "", err
+	}
 	cutoff := time.Now().AddDate(0, 0, -days)
 	var recent []indexEntry
 	for _, e := range entries {
-		if a.Course != "" && !strings.EqualFold(e.course, a.Course) {
+		if course != "" && e.course != course {
 			continue
 		}
 		if e.mod.After(cutoff) {

@@ -427,6 +427,11 @@ type capturedItem struct {
 	// submission state, a date typed into an announcement. Only the Entity
 	// Broker routes fill it; see itemfacts.go.
 	facts itemFacts
+
+	// author and plain are an announcement's byline and its text with the
+	// markup taken out, kept as data so get_announcements can hand a notice
+	// over whole instead of a search quoting a line of it.
+	author, plain string
 }
 
 // localNames maps each attachment URL to the filename it is saved under.
@@ -628,6 +633,8 @@ func (c *Client) announcementsFromAPI(ctx context.Context, siteID string) ([]cap
 		// date, which is not a date the announcement is about.
 		posted, _ := createdAt(e.Created)
 		item.facts = announcementFacts(item.Title, e.Body, posted, c.loc)
+		item.author = strings.TrimSpace(e.Author)
+		item.plain = strings.TrimSpace(readableText(e.Body))
 
 		// Who posted it, and nothing at all about when this ran: a rendered
 		// page is hashed to decide freshness, so anything varying between
@@ -1167,9 +1174,16 @@ func attachmentURLs(c *Client, items []capturedItem) []string {
 // stripHandlers removes inline event handlers from captured markup. The page
 // ends up on the student's own disk and is opened from there; nothing an
 // instructor pasted into a syllabus needs to execute in order to be read.
+//
+// It also drops the two hidden inputs the server regenerates on every fetch —
+// a CSRF token and a JSF ViewState. Left in, they made every Overview page
+// hash differently each run, so it was rewritten and reported as new every time.
 func stripHandlers(body string) string {
-	return eventAttrRe.ReplaceAllString(body, "")
+	return perFetchInputRe.ReplaceAllString(eventAttrRe.ReplaceAllString(body, ""), "")
 }
+
+var perFetchInputRe = regexp.MustCompile(
+	`(?is)<input[^>]*\bname\s*=\s*["'](?:sakai_csrf_token|javax\.faces\.ViewState)["'][^>]*>`)
 
 // localiseLinks rewrites the links and image sources in captured markup.
 //

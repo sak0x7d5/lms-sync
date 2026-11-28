@@ -28,6 +28,7 @@ var (
 type Client struct {
 	base       string
 	http       *http.Client
+	bigHTTP    *http.Client // for file bodies; see NewClient
 	delay      time.Duration
 	retries    int
 	loginPaths []string
@@ -57,6 +58,10 @@ func NewClient(cfg *Config, insecure bool) (*Client, error) {
 			Transport: transport,
 			Timeout:   time.Duration(cfg.Timeout) * time.Second,
 		},
+		// Same jar and transport, but a limit that covers a whole file: the one
+		// above counts the body too, so a large PDF could not finish in 60s.
+		bigHTTP: &http.Client{Jar: jar, Transport: transport,
+			Timeout: 10 * time.Duration(cfg.Timeout) * time.Second},
 		delay:      time.Duration(cfg.Delay) * time.Millisecond,
 		retries:    cfg.Retries,
 		loginPaths: paths,
@@ -69,6 +74,9 @@ func NewClient(cfg *Config, insecure bool) (*Client, error) {
 // Timeouts, connection drops, 429 and 5xx are retried with exponential
 // backoff and honour Retry-After. 4xx are answers, not failures — retrying
 // a rejected login is how accounts get locked.
+// bigBodyKey marks a request whose body is a file to save, not a page to read.
+type bigBodyKey struct{}
+
 func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader,
 	headers map[string]string) (*http.Response, error) {
 
@@ -89,7 +97,11 @@ func (c *Client) do(ctx context.Context, method, rawURL string, body io.Reader,
 			req.Header.Set(k, v)
 		}
 
-		resp, err := c.http.Do(req)
+		hc := c.http
+		if ctx.Value(bigBodyKey{}) != nil && c.bigHTTP != nil {
+			hc = c.bigHTTP
+		}
+		resp, err := hc.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctxErr(ctx, method+" "+shortURL(rawURL))

@@ -670,7 +670,7 @@ func lastSegment(raw string) string {
 // download writes to a .part file and renames on success, so an interrupted
 // run never leaves a truncated file that looks complete.
 func (c *Client) download(ctx context.Context, rawURL, dest string) (int64, error) {
-	resp, err := c.do(ctx, http.MethodGet, rawURL, nil, nil)
+	resp, err := c.do(context.WithValue(ctx, bigBodyKey{}, true), http.MethodGet, rawURL, nil, nil)
 	if err != nil {
 		return 0, err
 	}
