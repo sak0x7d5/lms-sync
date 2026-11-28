@@ -121,10 +121,13 @@ func Explain(err error) string {
 
 // Hints kept in one place so the CLI and the web UI say the same thing.
 const (
-	hintTLS = `The server's certificate chain is incomplete — it omits the intermediate
-certificate. Browsers fetch that automatically; stricter clients don't.
-Go normally uses the OS trust store, so if you are seeing this, try:
-  --insecure   (skips verification; use only on a network you trust)`
+	hintTLS = `The server's certificate could not be verified. A chain missing its
+intermediate is completed automatically, by fetching the certificate the
+server names (as browsers do), so this is something else: the fetch was
+blocked, the certificate is for another name or has expired, or a network
+is intercepting the connection. Check the LMS address and the computer's
+date, and that the site opens in a browser on this network.
+  --insecure   skips verification; use it only on a network you trust`
 
 	hintAuth = `The server answered but refused these details.
 

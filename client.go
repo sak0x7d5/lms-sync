@@ -41,10 +41,7 @@ func NewClient(cfg *Config, insecure bool) (*Client, error) {
 		return nil, failf(KindUnknown, "create cookie jar", "", err)
 	}
 
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if insecure {
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
-	}
+	transport := newTransport(cfg.BaseURL, insecure, nil)
 
 	paths := []string{"/access/login", "/portal/xlogin", "/portal/relogin"}
 	if cfg.LoginPath != "" {
