@@ -75,6 +75,7 @@ folder of its own. That folder holds:
 | `drive-token.json`, `drive-push.json` | only if you use the [Google Drive backup](cloud-backup.md#push-to-google-drive) |
 | `install.sh` or `install.ps1` | a verified copy of the installer, which the daily update runs |
 | `update.log` | the result of the last update check |
+| `update-checked` | the date of the last check that got through, so the schedule checks once a day |
 
 Your courses go wherever you set **where to save** in the interface — see
 [What you get](../README.md#what-you-get) for what arrives there. Set it on
@@ -111,7 +112,10 @@ your machine's own scheduler:
 | Android (Termux) | cron, which Termux lacks until you install it — see [Android](android.md#updates) |
 
 Once a day it compares your installed program with the newest release's
-`SHA256SUMS`. Only when they differ does it download the new one, and it
+`SHA256SUMS`. The schedule runs every hour from a random time in the day until
+midnight, so if your machine was offline the first time, it tries again an
+hour later rather than tomorrow; once a check gets through, the rest of that
+day's runs do nothing. Only when they differ does it download the new one, and it
 verifies that before swapping it in. Your settings and download history stay
 where they are. A sync or AI app already using lms-sync keeps running the old
 version until it next starts.
@@ -135,7 +139,8 @@ version until it next starts.
 - Pinning a release with `--version` (`-Version`) also turns the check off. A
   pinned release that updates itself is no longer pinned.
 - Running the install command again also upgrades in place. It adds the daily
-  check to an install made before the check existed.
+  check to an install made before the check existed, and gives an install made
+  before the hourly retry the new schedule.
 
 On Windows, close lms-sync before running the install command again — the
 interface, and any AI app using it. The installer will not replace a program
@@ -217,7 +222,8 @@ If you installed with `--install-dir` (`-InstallDir`), pass it again. On
 Windows, close lms-sync and any AI app using it first.
 
 It removes the program, the PATH entry or symlink, the shell startup block,
-the daily update check, and the installer's own copy and `update.log`.
+the daily update check, and the installer's own copy, `update.log` and
+`update-checked`.
 
 It leaves `config.toml`, `manifest.json`, the Drive files and your course
 library alone, and lists whatever is still there. It removes a folder only

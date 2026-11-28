@@ -365,6 +365,7 @@ These encode bugs that already cost someone real time — the comments in the so
 - **A new build of the extractors re-reads the library without forgetting it.** Each text record carries the `Ext` version that wrote it; `fresh` refuses an older one, but until the file is re-read its old text still answers. `LoadTextIndex` used to discard a whole index of another version, so the first sync after the OCR release rebuilt it from nothing — and every save part way through told a running MCP server that a lab sheet read that morning was not in the library. The in-memory text cache compares the whole record, since a re-read changes it while size and time stay put. `TestAnUpgradeKeepsAnsweringFromTheOldTextUntilItIsReRead`.
 - **A file on disk is never "not indexed yet".** `read_material` reads the text layer of a file the index has not reached (a running sync just downloaded it) straight from disk — no OCR, nothing written, capped by `directReadMax` / `directReadWait` — and says so. This is the one extraction allowed inside a request, because it is one file the student asked for by name. And `sync_courses` tells the model a running sync is no reason to stop reading: only "it is missing" has to wait. `TestReadMaterialReadsAFileTheIndexHasNotReached`.
 - **Slides are read in slide order.** `ppt/slides/slide10.xml` sorts before `slide2.xml` as a string, which silently scrambles every deck of ten slides or more. `partNumber` sorts numerically. `TestSlidesAreReadInSlideOrder`.
+- **A PDF's pages are counted by poppler, not by form feeds.** pdftotext ends each page with one, but a slide set in a font with no usable encoding comes out as glyph soup that contains them too: a real 52-page deck produced 107, so the index claimed 107 pages, numbered every page after the first stray break wrongly, and an assistant asked `view_pages` for pages 53 to 107 one failure after another. When `pdfinfo`'s count disagrees, the text is read one page per call. `view_pages` checks requests against the file's own count and its refusal says how many pages there are, because "may have fewer pages" gave a model told the wrong number nothing to correct it with. `TestAFormFeedInsideAPageIsNotAPageBreak`, `TestViewPagesSaysHowManyPagesAFileHas`.
 - **Script and style bodies are not text.** A saved tool page carries the portal's own JavaScript; stripping tags without removing those bodies leaves code in the index, matching searches for words nobody ever read. `TestScriptBodiesAreNotIndexed`.
 - **The extraction summary means the same thing on every run.** A fresh file still counts towards what the library can answer, by its recorded status — counting all of them as searchable would claim a scan was readable and make the number jump between an extracting run and a no-op one. `TestSummaryDoesNotChangeWhenThereIsNoWorkToDo`.
 - **`scanLibrary` steps over dot-directories.** The text cache lives inside the destination, so walking into it would list thousands of `.txt` files on the front page and feed the indexer its own output. `TestTextCacheIsNotItselfCoursework`.
@@ -568,9 +569,9 @@ binaries beside it. `SHA256SUMS` covers them too.
 - **Updates are the OS scheduler running the installer, not the binary
   updating itself.** Install keeps a copy of the installer beside the binary,
   downloaded from the release and verified against `SHA256SUMS` (under
-  `curl | sh` there is no `$0` to copy). It then registers a daily
-  `--update` / `-Update` run: Task Scheduler, launchd, a systemd user timer,
-  or cron. That keeps the Go side stdlib-only and free of self-replacement
+  `curl | sh` there is no `$0` to copy). It then registers an
+  `--update --once-a-day` / `-Update -OnceADay` run: Task Scheduler, launchd,
+  a systemd user timer, or cron. That keeps the Go side stdlib-only and free of self-replacement
   logic, and uses the same verification path as a fresh install. The rules:
   - **Up to date is decided by hash, not version.** The installed binary is
     the release asset byte for byte, so it is compared against its
@@ -592,6 +593,20 @@ binaries beside it. `SHA256SUMS` covers them too.
     summary says how to update by hand. Run times are random within the day,
     so a campus behind one address does not reach github.com in the same
     minute. Output goes to `update.log` (last run only).
+  - **The schedule fires hourly; the check happens once a day.** Each
+    scheduler runs from a random hour until midnight, and the first run that
+    gets through writes the date to `update-checked`; `--once-a-day` makes
+    every later run that day return before it opens the log or the network.
+    Once a day was not enough: a laptop woken from sleep runs its missed job
+    before the Wi-Fi is back, and one DNS failure cost the whole day — the
+    live install sat a day behind a release for exactly that. Task
+    Scheduler's restart-on-failure cannot do it (it restarts a task that
+    failed to *start*, not one that exited non-zero), and systemd's
+    `RandomizedDelaySec` is redrawn per elapse, so the start time is the
+    installer's random pick everywhere. Without the flag, `--update` always
+    checks, because a person running it by hand means it. An existing
+    install keeps its old once-a-day schedule until the install command is
+    run again, since `--update` never touches the schedule.
   - **`install.ps1` is ASCII.** The task runs it through Windows PowerShell
     5.1's `-File`, which reads a BOM-less file in the ANSI code page. In that
     code page a UTF-8 em dash ends in `”`, which PowerShell treats as a
@@ -604,10 +619,12 @@ binaries beside it. `SHA256SUMS` covers them too.
     `-WindowStyle Hidden` hides a window only once it exists, so it flashed
     one daily, and a Windows Terminal default opens one it cannot hide.
     release.yml's `verify` job asserts the wrapper.
-  - `--uninstall` removes the schedule, the installer copy and `update.log`.
+  - `--uninstall` removes the schedule, the installer copy, `update.log` and
+    `update-checked`.
     It still uses `rmdir`, so the student's files are never touched.
   release.yml's `verify` job registers a real schedule on each OS, runs the
-  scheduled command, and expects "up to date". It does this on stable tags
+  scheduled command, expects "up to date", and runs it again to see the
+  second run of the day leave `update.log` alone. It does this on stable tags
   only, because `--update` follows `/releases/latest`.
 - **The helper programs are offered by the binary, the same way.** poppler
   and tesseract are what make PDFs and scans searchable, and nothing fails

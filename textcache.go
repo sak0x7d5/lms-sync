@@ -106,7 +106,9 @@ type textIndexContents struct {
 // extractorVersion is bumped whenever extraction changes in a way that would
 // give a different answer for the same bytes. A var rather than a const so a
 // test can move it.
-var extractorVersion = 2
+//
+// 3: a PDF's pages are counted by poppler, not by the form feeds in its text.
+var extractorVersion = 3
 
 func LoadTextIndex(dest string) *TextIndex {
 	ti := &TextIndex{dest: dest, records: map[string]textRecord{}}

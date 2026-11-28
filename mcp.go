@@ -1294,15 +1294,26 @@ func (s *mcpServer) viewPages(ctx context.Context, args json.RawMessage) ([]map[
 	if a.Overview {
 		limit = sheetPages
 	}
+	// The file's own count comes first: the index can be from an older build,
+	// whose count for a PDF was a guess and once was double the truth.
+	total := pageCount(ctx, full)
+	if total == 0 {
+		if r, ok := LoadTextIndex(s.dest).Record(rel); ok && r.Ext == extractorVersion {
+			total = r.Pages
+		}
+	}
 	spec := strings.TrimSpace(a.Pages)
 	if spec == "" {
 		spec = "1-" + strconv.Itoa(limit)
-		if r, ok := LoadTextIndex(s.dest).Record(rel); ok && r.Pages > 0 && r.Pages < limit {
-			spec = "1-" + strconv.Itoa(r.Pages)
+		if total > 0 && total < limit {
+			spec = "1-" + strconv.Itoa(total)
 		}
 	}
 	pages, err := parsePages(spec, limit)
 	if err != nil {
+		return nil, err
+	}
+	if pages, err = withinFile(full, pages, total, a.Overview); err != nil {
 		return nil, err
 	}
 

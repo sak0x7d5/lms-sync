@@ -155,7 +155,7 @@ func viewPages(ctx context.Context, pathname string, pages []int) ([]pageImage, 
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			return nil, renderFailure(n, err)
+			return nil, renderFailure(ctx, pathname, n, err)
 		}
 		out = append(out, pageImage{Page: n, Data: data, MIME: "image/png"})
 	}
@@ -163,14 +163,79 @@ func viewPages(ctx context.Context, pathname string, pages []int) ([]pageImage, 
 }
 
 // renderFailure says why a page could not be drawn, in terms a student can
-// act on: either poppler is missing, or the page does not exist.
-func renderFailure(page int, err error) error {
+// act on: poppler is missing, the page does not exist, or the file would
+// not draw.
+//
+// It states the page count whenever it can be had. "The file may have fewer
+// pages" alone left an assistant that had been told the wrong count nothing
+// to correct it with, and it went on asking for pages further past the end.
+func renderFailure(ctx context.Context, pathname string, page int, err error) error {
 	if errors.Is(err, exec.ErrNotFound) {
 		return errors.New("pdftoppm is not installed, so pages cannot be shown. It comes " +
 			"with poppler: winget install oschwartz10612.Poppler (Windows), brew install " +
 			"poppler (macOS), sudo apt install poppler-utils (Debian/Ubuntu), pkg install poppler (Termux)")
 	}
+	switch total := pageCount(ctx, pathname); {
+	case total > 0 && page > total:
+		return pastTheEnd(pathname, total, []int{page})
+	case total > 0:
+		return fmt.Errorf("page %d of %d could not be drawn; the PDF may be damaged", page, total)
+	}
 	return fmt.Errorf("page %d could not be drawn; the file may have fewer pages", page)
+}
+
+// pageCount is how many pages or slides a file has, or 0 when that cannot
+// be told.
+func pageCount(ctx context.Context, pathname string) int {
+	if isDeck(pathname) {
+		zr, err := zip.OpenReader(pathname)
+		if err != nil {
+			return 0
+		}
+		defer zr.Close()
+		return len(numberedParts(zr, "ppt/slides/slide"))
+	}
+	if !strings.EqualFold(filepath.Ext(pathname), ".pdf") {
+		return 0
+	}
+	n, err := pdfPageCount(ctx, pathname)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// pastTheEnd refuses pages a file does not have, and says what it does have.
+func pastTheEnd(pathname string, total int, missing []int) error {
+	word := pageWord(pathname)
+	these, verb := word, "do"
+	if len(missing) == 1 {
+		these, verb = strings.TrimSuffix(word, "s"), "does"
+	}
+	return fmt.Errorf("%s has %d %s, so %s %s %s not exist. Ask for %s 1-%d",
+		filepath.Base(pathname), total, word, these, formatPages(missing), verb, word, total)
+}
+
+// withinFile keeps the pages a file has. Asked for nothing but pages past
+// its end, or for any past the end outside an overview, it refuses and says
+// how many there are; an overview reaching past the end is simply shorter.
+// total is 0 when the count is unknown, and then every page is kept.
+func withinFile(pathname string, pages []int, total int, overview bool) ([]int, error) {
+	if total <= 0 {
+		return pages, nil
+	}
+	var in, out []int
+	for _, n := range pages {
+		if n <= total {
+			in = append(in, n)
+		} else {
+			out = append(out, n)
+		}
+	}
+	if len(out) > 0 && (len(in) == 0 || !overview) {
+		return nil, pastTheEnd(pathname, total, out)
+	}
+	return in, nil
 }
 
 // contactSheet tiles up to sheetPages pages, numbered, into one picture.
@@ -208,7 +273,7 @@ func contactSheet(ctx context.Context, pathname string, pages []int) ([]byte, []
 					return nil, nil, ctx.Err()
 				}
 				if len(shown) == 0 {
-					return nil, nil, renderFailure(n, err)
+					return nil, nil, renderFailure(ctx, pathname, n, err)
 				}
 				break // past the last page
 			}

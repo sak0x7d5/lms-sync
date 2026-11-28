@@ -221,9 +221,14 @@ jobs:
             # Run the way the scheduler runs it: from the kept copy, with no
             # terminal, so the result lands in update.log. The binary is this
             # release, so the only right answer is that nothing changes.
-            sh "$dir/install.sh" --update --install-dir "$dir" </dev/null >/dev/null 2>&1
+            sh "$dir/install.sh" --update --once-a-day --install-dir "$dir" </dev/null >/dev/null 2>&1
             cat "$dir/update.log"
             grep -q 'up to date' "$dir/update.log" || { echo "--update did not recognise the current release"; exit 1; }
+            # The schedule fires hourly: a second run the same day must stop
+            # before the network, and leave the log of the run that checked.
+            cp "$dir/update.log" first-update.log
+            sh "$dir/install.sh" --update --once-a-day --install-dir "$dir" </dev/null >/dev/null 2>&1
+            cmp -s first-update.log "$dir/update.log" || { echo "a second run the same day checked again"; exit 1; }
 
             sh install.sh --uninstall
             if [ -f "$HOME/Library/LaunchAgents/io.github.sak0x7d5.lms-sync.update.plist" ] ||
@@ -317,6 +322,17 @@ jobs:
             if (-not (Select-String -Path $log -Pattern 'up to date' -Quiet)) {
               throw '-Update did not recognise the current release'
             }
+            # The task fires hourly so an offline moment does not cost the day,
+            # and a second run the same day must stop before the network.
+            $trigger = (Get-ScheduledTask -TaskName 'lms-sync update').Triggers[0]
+            if ($trigger.Repetition.Interval -ne 'PT1H') {
+              throw "the update task does not repeat hourly: '$($trigger.Repetition.Interval)'"
+            }
+            $first = Get-Content $log -Raw
+            $p = Start-Process -FilePath $action.Execute -ArgumentList $action.Arguments `
+                   -WorkingDirectory $action.WorkingDirectory -Wait -PassThru -NoNewWindow
+            if ($p.ExitCode -ne 0) { throw "the second run exited $($p.ExitCode)" }
+            if ((Get-Content $log -Raw) -ne $first) { throw 'a second run the same day checked again' }
 
             & ([scriptblock]::Create($text)) -Uninstall
             if (Get-ScheduledTask -TaskName 'lms-sync update' -ErrorAction SilentlyContinue) {
